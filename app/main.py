@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from . import db
 from .config import PRODUCTS
 from .data.market import market
+from .data.ws_market import WSMarket
 from .data.research import research
 from .data.derivatives import derivatives
 from .data.universe import universe
@@ -12,32 +13,48 @@ from .data.calendar import calendar
 from .nlp.sentiment import nlp
 from .signals.engine import engine, STRATEGIES
 from .execution.paper import broker
+from .execution.shadow import ShadowBroker
 from .risk.manager import risk
 from .learn.loop import learner
 from .orchestrator import orch
 from .backtest.engine import full_report
+from .backtest.composite import composite_report
 from . import persistence
 from . import settings as app_settings
 from . import alerts
+from . import security
 
-app = FastAPI(title="CryptoMind", version="1.0")
+app = FastAPI(title="CryptoMind", version="2.0")
+app.middleware("http")(security.auth_middleware)   # protect state-changing routes
 STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+
+# shadow execution: OMS-driven mirror account (NEVER trades real money) that
+# runs in parallel to measure live-vs-paper divergence.
+shadow = ShadowBroker(market)
+ws_market = WSMarket(market)
+orch.shadow = shadow
 
 
 @app.on_event("startup")
 async def startup():
     db.init()
-    db.log_event("system", "CryptoMind starting (paper-trading mode)")
+    db.log_event("system", "CryptoMind starting (paper-trading mode; shadow OMS active)")
+    # surface the API token location once so the operator can find it
+    db.log_event("system", "Control API requires a token for mutations "
+                           "(see api_token.txt or CRYPTOMIND_API_TOKEN); "
+                           "loopback is allowed for local ops.")
     restored = persistence.load()
     if not restored:
         db.log_event("system", "No saved state found — starting fresh ($100k paper account)")
     asyncio.create_task(market.run())
+    asyncio.create_task(ws_market.run())
     asyncio.create_task(research.run())
     asyncio.create_task(derivatives.run())
     asyncio.create_task(universe.run())
     asyncio.create_task(calendar.run())
     asyncio.create_task(orch.decision_loop())
     asyncio.create_task(orch.watchdog())
+    asyncio.create_task(orch.reconcile_loop())
     asyncio.create_task(alerts.worker())
     alerts.alert("info", "System started",
                  "CryptoMind is up (paper mode). State restored." )
@@ -47,6 +64,7 @@ async def startup():
 async def shutdown():
     persistence.save()
     db.log_event("system", "State saved on shutdown")
+    db.flush()
 
 
 @app.get("/")
@@ -69,7 +87,35 @@ def signals():
 def market_data():
     return {"tickers": market.tickers, "books": market.books,
             "features": {p: market.features(p) for p in PRODUCTS},
-            "regime": market.regime(), "last_update": market.last_update}
+            "regime": market.regime(), "last_update": market.last_update,
+            "ws": ws_market.stats()}
+
+
+@app.get("/api/shadow")
+def shadow_data():
+    """Shadow-execution account (OMS-driven, no real money) + live-vs-paper
+    divergence. This is the safe stand-in for the roadmap's Stage-2 shadow
+    trading and Stage-3 divergence tracking."""
+    return shadow.snapshot()
+
+
+@app.get("/api/oms")
+def oms_data():
+    """Order-management state + append-only order/fill audit trail."""
+    return {"stats": shadow.oms.stats(),
+            "recent_order_events": db.order_events(limit=60)}
+
+
+@app.get("/api/security")
+def security_info(request: Request):
+    """Tells the operator whether their control API is protected. Never
+    returns the token itself."""
+    return {"auth_required_for_mutations": True,
+            "loopback_allowed": os.environ.get("CRYPTOMIND_ALLOW_LOOPBACK", "1") == "1",
+            "token_source": ("env CRYPTOMIND_API_TOKEN"
+                             if os.environ.get("CRYPTOMIND_API_TOKEN")
+                             else "api_token.txt"),
+            "your_request_authorized": security.check(request)}
 
 
 @app.get("/api/derivatives")
@@ -183,10 +229,27 @@ def resume():
 @app.post("/api/control/kill")
 def kill():
     risk.killed = True
+    orch.running = False
+    flattened, stranded = [], []
     for p in list(broker.positions.keys()):
-        broker.sell(p, market.price(p) or broker.positions[p]["entry"], "KILL SWITCH")
-    db.log_event("risk", "KILL SWITCH triggered by operator — all positions flattened")
-    return {"kill_switch": True}
+        px = market.price(p)
+        if px is None:
+            # feed down during a kill is EXACTLY when we must not fabricate a
+            # flat exit at entry price — leave the position, halt, and alert.
+            stranded.append(p)
+            continue
+        broker.sell(p, px, "KILL SWITCH")
+        flattened.append(p)
+    if stranded:
+        db.log_event("risk", f"KILL SWITCH: flattened {flattened}; COULD NOT price "
+                             f"{stranded} (feed down) — trading halted, positions held")
+        from .alerts import alert
+        alert("critical", "KILL SWITCH — positions stranded",
+              f"Flattened {flattened}. NO price for {stranded}; they remain open. "
+              f"Trading halted. Resolve manually when the feed recovers.")
+    else:
+        db.log_event("risk", "KILL SWITCH triggered by operator — all positions flattened")
+    return {"kill_switch": True, "flattened": flattened, "stranded": stranded}
 
 
 @app.post("/api/control/shutdown")
@@ -198,10 +261,17 @@ def shutdown_server():
     orch.running = False
     flatten = app_settings.get("flatten_on_shutdown")
     if flatten:
+        stranded = []
         for p in list(broker.positions.keys()):
-            broker.sell(p, market.price(p) or broker.positions[p]["entry"],
-                        "SERVER SHUTDOWN")
-        note = "Positions flattened and state saved."
+            px = market.price(p)
+            if px is None:          # don't fabricate exits when the feed is down
+                stranded.append(p)
+                continue
+            broker.sell(p, px, "SERVER SHUTDOWN")
+        note = ("Positions flattened and state saved."
+                if not stranded else
+                f"Flattened all but {stranded} (no price; kept & will be "
+                f"restored/re-managed on restart). State saved.")
     else:
         note = (f"{len(broker.positions)} open position(s) KEPT — they will "
                 f"be restored and re-managed on restart.")
@@ -393,3 +463,25 @@ async def backtest(product: str = "BTC-USD", strategy: str = "trend"):
         return rep
     except Exception as e:
         return JSONResponse({"error": str(e)}, 500)
+
+
+@app.get("/api/backtest/composite")
+async def backtest_composite(product: str = "BTC-USD"):
+    """Validate the REAL ensemble (not 3 toy rules): composite vs buy-and-hold
+    benchmark, walk-forward, Deflated Sharpe, PBO, and confidence intervals."""
+    if product not in PRODUCTS:
+        return JSONResponse({"error": f"unknown product, use one of {PRODUCTS}"}, 400)
+    try:
+        allow_shorts = app_settings.get("allow_shorts")
+        rep = await asyncio.to_thread(_run_composite_sync, product, allow_shorts)
+        db.log_event("backtest", f"Composite backtest on {product}",
+                     {"beat_benchmark": rep.get("beat_benchmark"),
+                      "validation": rep.get("validation", {}).get("gates")})
+        return rep
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+def _run_composite_sync(product, allow_shorts):
+    return asyncio.run(composite_report(product, weights=learner.weights,
+                                        allow_shorts=allow_shorts))

@@ -57,8 +57,9 @@ def capture():
         "broker": {
             "cash": broker.cash,
             "realized_pnl": broker.realized_pnl,
-            "positions": {p: dict(pos) for p, pos in broker.positions.items()},
-            "closed_trades": [dict(t) for t in broker.closed_trades[-200:]],
+            # copy the dict/list first (feeds/threads mutate these live)
+            "positions": {p: dict(pos) for p, pos in list(broker.positions.items())},
+            "closed_trades": [dict(t) for t in list(broker.closed_trades)[-200:]],
         },
         "risk": {
             "peak_equity": risk.peak_equity,
@@ -66,6 +67,7 @@ def capture():
             "day_start_ts": risk.day_start_ts,
             "killed": risk.killed,
             "halted_today": risk.halted_today,
+            "day_index": getattr(risk, "day_index", None),
             "cooldowns": risk.cooldowns,
             "risk_scale": risk.risk_scale,
             "consecutive_losses": risk.consecutive_losses,
@@ -136,17 +138,27 @@ def _capture_research():
     }
 
 
+_save_lock = None
+
+
 def save():
-    try:
-        state = capture()
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(STATE_PATH))
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f)
-        os.replace(tmp, STATE_PATH)   # atomic
-        return True
-    except Exception as e:
-        db.log_event("error", f"State save failed: {e}")
-        return False
+    # serialize concurrent saves (event loop + executor) so two writers can't
+    # race on the temp file / shared collections.
+    global _save_lock
+    if _save_lock is None:
+        import threading
+        _save_lock = threading.Lock()
+    with _save_lock:
+        try:
+            state = capture()
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(STATE_PATH))
+            with os.fdopen(fd, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, STATE_PATH)   # atomic
+            return True
+        except Exception as e:
+            db.log_event("error", f"State save failed: {e}")
+            return False
 
 
 # ---------------- restore ----------------
@@ -187,6 +199,8 @@ def load():
             risk.day_start_ts = r.get("day_start_ts", time.time())
             risk.killed = r.get("killed", False)
             risk.halted_today = r.get("halted_today", False)
+            if r.get("day_index") is not None:
+                risk.day_index = r["day_index"]
             risk.cooldowns = r.get("cooldowns", {})
             risk.risk_scale = r.get("risk_scale", 1.0)
             risk.consecutive_losses = r.get("consecutive_losses", 0)

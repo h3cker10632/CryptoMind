@@ -1,8 +1,15 @@
 """Adaptive Risk Manager — position sizing, portfolio limits, kill switches,
 and regime-adaptive risk scaling."""
 import time
+from datetime import datetime, timezone
 from ..tunables import tv
 from .. import db
+
+
+def _utc_day():
+    """UTC calendar-day index — the daily loss limit resets at 00:00 UTC,
+    not on a rolling 24h from first tick (bug fix)."""
+    return int(datetime.now(timezone.utc).timestamp() // 86400)
 
 
 class RiskManager:
@@ -10,6 +17,7 @@ class RiskManager:
         self.peak_equity = 0.0
         self.day_start_equity = None
         self.day_start_ts = time.time()
+        self.day_index = _utc_day()
         self.killed = False
         self.halted_today = False
         self.cooldowns = {}          # product -> ts of last exit/entry
@@ -29,8 +37,10 @@ class RiskManager:
     def update(self, equity, regime):
         from ..learn.rl_risk import agent as rl_agent
         self.peak_equity = max(self.peak_equity, equity)
-        # daily rollover
-        if time.time() - self.day_start_ts > 86400:
+        # daily rollover — on UTC calendar-day boundary (not rolling 24h)
+        today = _utc_day()
+        if today != self.day_index:
+            self.day_index = today
             self.day_start_ts = time.time()
             self.day_start_equity = equity
             self.halted_today = False
@@ -133,11 +143,33 @@ class RiskManager:
         stop_dist = take_dist / rr
         notional = risk_dollars / (stop_dist / price)
         notional = min(notional, equity * tv("max_position_pct") * min(1.5, st["risk_mult"]))
+        # per-coin liquidity cap: never take more than `liq_cap_pct` of the
+        # asset's ~24h traded dollar volume, so our own order can't move a thin
+        # discovered coin's book (also keeps paper fills realistic).
+        liq = self._liquidity_notional(price)
+        if liq is not None:
+            notional = min(notional, liq * tv("liq_cap_pct"))
         if direction > 0:
             stop, take = price - stop_dist, price + take_dist
         else:
             stop, take = price + stop_dist, price - take_dist
         return notional, stop, take
+
+    def _liquidity_notional(self, price):
+        """Rough 24h traded dollar volume for the product being sized.
+
+        Uses the market feed's stored 5-min candles (288 bars ≈ 24h). Returns
+        None if we can't estimate it (then no liquidity cap is applied).
+        """
+        from ..data.market import market
+        from ..signals.engine import _cur_product
+        p = getattr(self, "_sizing_product", None) or _cur_product()
+        cs = market.candles.get(p, [])
+        if len(cs) < 12:
+            return None
+        recent = cs[-288:]
+        base_vol = sum(c[5] for c in recent)      # base-asset volume
+        return base_vol * price
 
     def reset_kill(self):
         self.killed = False

@@ -160,7 +160,8 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0):
     wins = sum(1 for t in trades if t > 0)
     return {"total_return": total, "max_drawdown": maxdd,
             "n_trades": len(trades),
-            "win_rate": wins / len(trades) if trades else 0.0}
+            "win_rate": wins / len(trades) if trades else 0.0,
+            "trades": list(trades)}
 
 
 def fitness(res):
@@ -230,18 +231,38 @@ class Evolution:
                 nxt.append(child)
             pop = nxt
 
-        # validate the best genome out-of-sample
+        # validate the best genome out-of-sample, then apply a MULTIPLE-TESTING
+        # aware promotion gate (the GA evaluated pop_size*generations genomes,
+        # so a raw OOS-positive is not enough — price the selection bias).
         best_fit, best_g, best_train = scored[0]
         val = simulate(best_g, valid)
-        promoted = (fitness(val) > -0.2 and val["total_return"] > -0.02)
+        n_trials = self.pop_size * self.generations
+        dsr = None
+        val_trades = val.get("trades", [])
+        try:
+            from ..backtest.stats import deflated_sharpe_ratio
+            if len(val_trades) >= 5:
+                dsr = deflated_sharpe_ratio(val_trades, n_trials=n_trials)
+        except Exception:
+            dsr = None
+        # gates: OOS profitable AND enough OOS trades AND deflated-Sharpe passes
+        # (or DSR unavailable but OOS is clearly positive on decent samples).
+        enough = val["n_trades"] >= 8
+        oos_ok = fitness(val) > 0 and val["total_return"] > 0
+        dsr_ok = (dsr is not None and dsr > 0.90) or (dsr is None and val["total_return"] > 0.03)
+        promoted = bool(enough and oos_ok and dsr_ok)
         report = {
             "product": product,
             "genome": best_g,
-            "train": {k: round(v, 4) for k, v in best_train.items()},
-            "validation": {k: round(v, 4) for k, v in val.items()},
+            "train": {k: round(v, 4) for k, v in best_train.items() if k != "trades"},
+            "validation": {k: round(v, 4) for k, v in val.items() if k != "trades"},
             "train_fitness": round(best_fit, 4),
             "validation_fitness": round(fitness(val), 4),
+            "deflated_sharpe": round(dsr, 4) if dsr is not None else None,
+            "n_trials": n_trials,
             "promoted": promoted,
+            "gate": {"enough_oos_trades": enough, "oos_profitable": oos_ok,
+                     "deflated_sharpe_ok": dsr_ok},
             "ts": time.time(),
         }
         if promoted:

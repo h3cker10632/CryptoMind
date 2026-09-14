@@ -27,6 +27,7 @@ class Orchestrator:
         self.last_risk_status = {}
         self.started = time.time()
         self._blackout_logged = False
+        self.shadow = None       # ShadowBroker, set by main.py
 
     async def decision_loop(self):
         await asyncio.sleep(10)  # let feeds warm up
@@ -55,6 +56,22 @@ class Orchestrator:
             if stalled > TICK_SEC * 6:
                 alert("critical", "Decision loop STALLED",
                       f"No tick for {int(stalled)}s (expected every {TICK_SEC}s).")
+
+    async def reconcile_loop(self):
+        """Periodically reconcile the shadow OMS against its venue (source of
+        truth) and prune the equity table. Runs off the hot decision path."""
+        await asyncio.sleep(45)
+        n = 0
+        while True:
+            try:
+                if self.shadow is not None:
+                    await asyncio.to_thread(self.shadow.reconcile)
+                n += 1
+                if n % 30 == 0:          # ~ every 30 min: retention on equity
+                    await asyncio.to_thread(db.prune_equity)
+            except Exception as e:
+                db.log_event("error", f"reconcile loop failed: {e}")
+            await asyncio.sleep(60)
 
     def tick(self):
         self.tick_count += 1
@@ -106,6 +123,11 @@ class Orchestrator:
         for t in broker.closed_trades[n_before:]:
             risk.on_trade_closed(t)
             learner.on_trade_closed(t)
+            if self.shadow is not None and t["product"] in self.shadow.positions:
+                try:
+                    self.shadow.mirror_close(t["product"], t.get("exit", t["entry"]))
+                except Exception as e:
+                    db.log_event("error", f"shadow close mirror failed: {e}")
 
         # 6. exits on signal flip (direction-aware: close a long on a
         # confident bearish signal, close a short on a confident bullish one)
@@ -132,6 +154,7 @@ class Orchestrator:
                 ok, why = risk.funding_gate(p, sig["direction"])
                 if not ok:
                     continue
+                risk._sizing_product = p
                 notional, stop, take = risk.size(
                     equity, sig["price"], sig["atr"], sig["confidence"],
                     self.last_risk_status, direction=sig["direction"])
@@ -145,6 +168,13 @@ class Orchestrator:
                                     engine.per_strategy.get(p, {}).items()
                                     if abs(v) > 0.05}
                     pos["regime_at_entry"] = sig["regime"]
+                    # mirror into the shadow OMS to measure execution divergence
+                    if self.shadow is not None:
+                        try:
+                            self.shadow.mirror_open(p, sig["direction"], notional,
+                                                    pos["entry"])
+                        except Exception as e:
+                            db.log_event("error", f"shadow mirror failed: {e}")
 
             # 7b. exploration entries — small probing positions on moderate
             # signals so the learning stack earns real trade experience
@@ -160,6 +190,7 @@ class Orchestrator:
                     ok, why = risk.funding_gate(p, sig["direction"])
                     if not ok:
                         continue
+                    risk._sizing_product = p
                     notional, stop, take = risk.size(
                         equity, sig["price"], sig["atr"], sig["confidence"],
                         self.last_risk_status, direction=sig["direction"])
@@ -181,10 +212,14 @@ class Orchestrator:
         if self.tick_count % 9 == 0:    # every ~3 min
             learner.run(market, regime)
 
-        # 9. periodic state snapshot (survives crashes/restarts)
+        # 9. periodic state snapshot (survives crashes/restarts) — run OFF the
+        # event loop so a large JSON serialize can't stall stop management.
         if self.tick_count % 3 == 0:    # every ~1 min
             from . import persistence
-            persistence.save()
+            try:
+                asyncio.get_running_loop().run_in_executor(None, persistence.save)
+            except RuntimeError:
+                persistence.save()
 
     def snapshot(self):
         eq = broker.equity(market)
@@ -200,9 +235,11 @@ class Orchestrator:
             "cash": round(broker.cash, 2),
             "exposure": round(broker.exposure(market), 2),
             "realized_pnl": round(broker.realized_pnl, 2),
-            "unrealized_pnl": round(eq - broker.cash - sum(
-                pos["qty"] * pos["entry"] for pos in broker.positions.values()) -
-                (0 if broker.positions else 0), 2),
+            # unrealized = sum of per-position mark-to-market vs entry, correct
+            # for BOTH longs and shorts (was a convoluted, short-wrong expr).
+            "unrealized_pnl": round(sum(
+                pos.get("side", 1) * ((market.price(p) or pos["entry"]) - pos["entry"])
+                * pos["qty"] for p, pos in broker.positions.items()), 2),
             "risk": self.last_risk_status,
             "stance": stance.current(),
             "hedge": hedger.snapshot(),

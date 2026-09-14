@@ -3,7 +3,7 @@ historical candles fetched from Coinbase, with fees/slippage, per-strategy
 walk-forward split and overfitting sanity metrics."""
 import math, statistics
 import httpx
-from ..config import FEE_RATE, SLIPPAGE_BPS, STOP_ATR_MULT, TAKE_PROFIT_ATR_MULT
+from ..tunables import tv
 
 BASE = "https://api.exchange.coinbase.com"
 
@@ -52,6 +52,11 @@ def run_backtest(candles, strategy="trend", start_cash=10_000.0):
     """Long-only event-driven simulation on [ts, low, high, open, close, vol] bars."""
     cash, qty, entry, stop, take = start_cash, 0.0, 0.0, 0.0, 0.0
     equity_curve, trades = [], []
+    # read LIVE-tuned costs/risk so the backtester matches the running system
+    FEE_RATE = tv("fee_rate")
+    SLIPPAGE_BPS = tv("slippage_bps")
+    STOP_ATR_MULT = tv("stop_atr_mult")
+    TAKE_PROFIT_ATR_MULT = tv("take_profit_atr_mult")
     slip = SLIPPAGE_BPS / 1e4
 
     for i in range(60, len(candles)):

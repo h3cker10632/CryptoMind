@@ -136,7 +136,9 @@
   <div style="color:var(--dim);font-size:12px" id="restart-count"></div>
 </div>
 <style>.spin{animation:spin 1.6s linear infinite;display:inline-block}
-@keyframes spin{to{transform:rotate(360deg)}}</style>
+@keyframes spin{to{transform:rotate(360deg)}}
+.kv{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1a2030}
+.kv span{color:var(--dim)} .kv b{font-variant-numeric:tabular-nums}</style>
 
 <div id="shutdown-overlay" style="display:none;position:fixed;inset:0;background:rgba(11,14,20,.93);
   z-index:99;align-items:center;justify-content:center;flex-direction:column;gap:14px">
@@ -274,20 +276,36 @@
     <div id="alerts-feed"></div>
   </div>
 
+  <div class="card span6">
+    <h2>🛰 Shadow execution &amp; live-vs-paper divergence</h2>
+    <div style="color:var(--dim);font-size:11px;margin-bottom:8px">
+      An OMS-driven mirror account (client order IDs, partial-fill VWAP,
+      reconciliation) runs in parallel — <b>no real money</b>. Divergence is
+      the roadmap's key Stage-3 discovery, measured safely up front.
+    </div>
+    <div id="shadow-panel" style="font-size:12px">loading…</div>
+  </div>
+
+  <div class="card span6">
+    <h2>🔐 Control-API security</h2>
+    <div id="security-panel" style="font-size:12px">loading…</div>
+  </div>
+
   <div class="card span12">
-    <h2>Backtesting &amp; validation (real historical data, walk-forward split)</h2>
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+    <h2>Backtesting &amp; validation (real data · benchmark · walk-forward · DSR/PBO)</h2>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
       <select id="bt-product"></select>
       <select id="bt-strategy">
         <option value="trend">trend</option>
         <option value="meanrev">meanrev</option>
         <option value="breakout">breakout</option>
       </select>
-      <button id="btn-bt">Run backtest</button>
+      <button id="btn-bt">Run single-strategy backtest</button>
+      <button id="btn-bt-comp" style="background:#6c5ce7">Validate REAL ensemble ▶</button>
       <span id="bt-status" style="color:var(--dim)"></span>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <pre id="bt-result">Run a backtest to see in-sample vs out-of-sample results…</pre>
+      <pre id="bt-result">Run a backtest, or "Validate REAL ensemble" for the composite system vs buy-and-hold with Deflated Sharpe / PBO / walk-forward gates…</pre>
       <canvas id="chart-bt" height="150"></canvas>
     </div>
   </div>
@@ -430,10 +448,35 @@ function eqIdxFromEvent(e){
 
 async function refresh(){
   try{
-    const [st,sig,res,tr,eq,ev,ln,dv,un]=await Promise.all([
+    const [st,sig,res,tr,eq,ev,ln,dv,un,sh,sec]=await Promise.all([
       j('/api/status'),j('/api/signals'),j('/api/research'),
       j('/api/trades'),j('/api/equity?tf='+eqTf),j('/api/events'),j('/api/learning'),
-      j('/api/derivatives'),j('/api/universe')]);
+      j('/api/derivatives'),j('/api/universe'),j('/api/shadow'),j('/api/security')]);
+
+    // ===== shadow execution & divergence =====
+    try{
+      const o=sh.oms||{}, bs=o.by_status||{};
+      $('#shadow-panel').innerHTML=
+        `<div class="kv"><span>Mode</span><b>${sh.mode} (no real money)</b></div>
+         <div class="kv"><span>Shadow realized PnL</span><b>${fmt(sh.realized_pnl)}</b></div>
+         <div class="kv"><span>Avg fill divergence</span><b>${sh.avg_divergence_bps==null?'—':sh.avg_divergence_bps+' bps'}</b></div>
+         <div class="kv"><span>Max divergence</span><b>${sh.max_divergence_bps==null?'—':sh.max_divergence_bps+' bps'}</b></div>
+         <div class="kv"><span>Orders (intents)</span><b>${o.n_intents||0}</b></div>
+         <div class="kv"><span>Reconciliations</span><b>${o.reconciliations||0}</b></div>
+         <div class="kv"><span>Unresolved (fail-closed)</span><b style="color:${(o.unresolved||[]).length?'#ff7675':'#7fe0a7'}">${(o.unresolved||[]).length}</b></div>
+         <div style="color:var(--dim);font-size:11px;margin-top:6px">status: ${Object.entries(bs).map(([k,v])=>k+'='+v).join(', ')||'—'}${(o.drift_events||[]).length?' · ⚠ '+o.drift_events.length+' drift events':''}</div>`;
+    }catch(e){}
+
+    // ===== security =====
+    try{
+      const ok=sec.your_request_authorized;
+      $('#security-panel').innerHTML=
+        `<div class="kv"><span>Auth on state changes</span><b style="color:#7fe0a7">required ✅</b></div>
+         <div class="kv"><span>This browser</span><b style="color:${ok?'#7fe0a7':'#ff7675'}">${ok?'authorized':'read-only'}</b></div>
+         <div class="kv"><span>Loopback bypass</span><b>${sec.loopback_allowed?'on (local ops)':'off'}</b></div>
+         <div class="kv"><span>Token source</span><b>${sec.token_source}</b></div>
+         <div style="color:var(--dim);font-size:11px;margin-top:6px">Remote mutations need <code>Authorization: Bearer &lt;token&gt;</code> — see <code>api_token.txt</code> or set <code>CRYPTOMIND_API_TOKEN</code>.</div>`;
+    }catch(e){}
 
     // ===== universe & sources =====
     $('#uni-core').innerHTML='core: '+(un.core||[]).map(p=>'<span class="tag">'+p.split('-')[0]+'</span>').join(' ');
@@ -753,6 +796,49 @@ $('#btn-bt').onclick=async()=>{
     drawLine($('#chart-bt'),r.full.equity_curve,'#2ecc71');
   }catch(e){$('#bt-status').textContent='failed: '+e;}
 };
+
+// composite validation — the REAL ensemble vs buy-and-hold with stat gates
+$('#btn-bt-comp').onclick=async()=>{
+  $('#bt-status').textContent='validating full ensemble (this can take ~20s)…';
+  try{
+    const r=await j('/api/backtest/composite?product='+$('#bt-product').value);
+    if(r.error){$('#bt-status').textContent='error: '+r.error;return;}
+    const g=r.validation.gates, pass=x=>x?'✅':'❌';
+    $('#bt-status').textContent='done — '+r.bars+' bars, shorts '+(r.allow_shorts?'on':'off');
+    $('#bt-result').textContent=JSON.stringify({
+      composite_return:(r.composite.total_return*100).toFixed(2)+'%',
+      buy_hold_return:(r.benchmark_buy_hold.total_return*100).toFixed(2)+'%',
+      beats_buy_and_hold:pass(r.beat_benchmark),
+      composite_sharpe:r.composite.sharpe_annualized,
+      max_drawdown:(r.composite.max_drawdown*100).toFixed(2)+'%',
+      trades:r.composite.n_trades,
+      win_rate_ci95:r.validation.win_rate_ci95,
+      expectancy_ci95:r.validation.expectancy_ci95,
+      deflated_sharpe:r.validation.deflated_sharpe,
+      pbo:r.validation.pbo,
+      walk_forward:r.walk_forward?{
+        positive_oos:r.walk_forward.positive_oos_fraction,
+        sharpe_retention:r.walk_forward.sharpe_retention}:null,
+      GATES:{
+        'DSR>0.95':pass(g.dsr_gt_0_95),'PBO<0.30':pass(g.pbo_lt_0_30),
+        'walk-forward':pass(g.walk_forward_pass),'beats buy&hold':pass(g.beats_buy_and_hold)},
+      note:r.note},null,2);
+    // overlay composite (green) vs buy-and-hold benchmark (amber)
+    drawTwoLines($('#chart-bt'),r.equity_curve,'#2ecc71',
+                 r.benchmark_buy_hold.equity_curve,'#f0932b');
+  }catch(e){$('#bt-status').textContent='failed: '+e;}
+};
+
+function drawTwoLines(canvas,a,b,ca,cb){
+  const W=canvas.width=canvas.clientWidth,H=canvas.height;
+  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,W,H);
+  const all=[...a.map(p=>p[1]),...b.map(p=>p[1])];
+  const lo=Math.min(...all),hi=Math.max(...all)||1;
+  const plot=(pts,col)=>{ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.beginPath();
+    pts.forEach((p,i)=>{const x=i/(pts.length-1)*W,y=H-(p[1]-lo)/(hi-lo||1)*H;
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();};
+  plot(a,ca);plot(b,cb);
+}
 
 // ---------- Settings modal ----------
 const GROUP_TITLES={risk:'🛡 Risk & position limits',costs:'💸 Costs (fees & slippage)',

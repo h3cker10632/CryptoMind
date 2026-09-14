@@ -1,16 +1,32 @@
-"""SQLite persistence: audit log, trades, equity curve, scored signals."""
-import sqlite3, json, time, threading
+"""SQLite persistence: audit log, trades, equity curve, scored signals, and
+an append-only order/fill event log for reconciliation.
+
+Hardening vs the original:
+  * WAL journal mode + busy_timeout  → concurrent readers don't block writers
+  * a background writer thread        → write calls never block the event loop
+  * retention/rollup on the equity    → the table can't grow without bound
+  * order_events table                → immutable audit trail for the OMS
+"""
+import sqlite3, json, time, threading, queue, atexit
 from .config import DB_PATH
 
 _lock = threading.Lock()
+_write_q: "queue.Queue" = queue.Queue()
+_writer_started = False
+EQUITY_RETENTION_SEC = 90 * 86400          # keep 90 days of raw equity samples
+
 
 def _conn():
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA busy_timeout=30000")
     return c
+
 
 def init():
     with _lock, _conn() as c:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
         c.executescript("""
         CREATE TABLE IF NOT EXISTS events(
             ts REAL, kind TEXT, message TEXT, data TEXT);
@@ -23,32 +39,97 @@ def init():
             ts REAL, strategy TEXT, product TEXT, direction REAL,
             confidence REAL, fwd_return REAL, scored INTEGER DEFAULT 0,
             regime TEXT);
+        CREATE TABLE IF NOT EXISTS order_events(
+            ts REAL, intent_id TEXT, client_order_id TEXT, product TEXT,
+            side TEXT, event TEXT, qty REAL, price REAL, status TEXT,
+            venue TEXT, data TEXT);
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity(ts)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_orderev_intent ON order_events(intent_id)")
         cols = {r[1] for r in c.execute("PRAGMA table_info(signal_scores)")}
         if "regime" not in cols:
             c.execute("ALTER TABLE signal_scores ADD COLUMN regime TEXT")
+    _start_writer()
+
+
+# ---------------- background writer ----------------
+
+def _writer_loop():
+    while True:
+        item = _write_q.get()
+        if item is None:
+            _write_q.task_done()
+            return
+        sql, params = item
+        for attempt in range(3):
+            try:
+                with _lock, _conn() as c:
+                    c.execute(sql, params)
+                break
+            except sqlite3.OperationalError:
+                time.sleep(0.1 * (attempt + 1))
+        _write_q.task_done()
+
+
+def _start_writer():
+    global _writer_started
+    if _writer_started:
+        return
+    _writer_started = True
+    t = threading.Thread(target=_writer_loop, daemon=True, name="db-writer")
+    t.start()
+    atexit.register(flush)
+
+
+def _enqueue(sql, params):
+    if not _writer_started:
+        # fallback: synchronous (e.g. before init)
+        with _lock, _conn() as c:
+            c.execute(sql, params)
+        return
+    _write_q.put((sql, params))
+
+
+def flush(timeout=5.0):
+    """Block until queued writes drain (used on shutdown)."""
+    try:
+        _write_q.join()
+    except Exception:
+        pass
+
+
+# ---------------- writes (async via queue) ----------------
 
 def log_event(kind, message, data=None):
-    with _lock, _conn() as c:
-        c.execute("INSERT INTO events VALUES(?,?,?,?)",
-                  (time.time(), kind, message, json.dumps(data or {})))
+    _enqueue("INSERT INTO events VALUES(?,?,?,?)",
+             (time.time(), kind, message, json.dumps(data or {})))
+
 
 def log_trade(product, side, qty, price, fee, reason, pnl=0.0):
-    with _lock, _conn() as c:
-        c.execute("INSERT INTO trades VALUES(?,?,?,?,?,?,?,?)",
-                  (time.time(), product, side, qty, price, fee, reason, pnl))
+    _enqueue("INSERT INTO trades VALUES(?,?,?,?,?,?,?,?)",
+             (time.time(), product, side, qty, price, fee, reason, pnl))
+
 
 def log_equity(equity, cash, exposure):
-    with _lock, _conn() as c:
-        c.execute("INSERT INTO equity VALUES(?,?,?,?)",
-                  (time.time(), equity, cash, exposure))
+    _enqueue("INSERT INTO equity VALUES(?,?,?,?)",
+             (time.time(), equity, cash, exposure))
+
+
+def log_order_event(intent_id, client_order_id, product, side, event,
+                    qty=0.0, price=0.0, status="", venue="paper", data=None):
+    """Append-only OMS audit trail — every intent/submit/ack/fill/cancel."""
+    _enqueue("INSERT INTO order_events VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+             (time.time(), intent_id, client_order_id, product, side, event,
+              qty, price, status, venue, json.dumps(data or {})))
+
 
 def record_signal(strategy, product, direction, confidence, regime=None):
-    with _lock, _conn() as c:
-        c.execute("INSERT INTO signal_scores(ts,strategy,product,direction,confidence,fwd_return,scored,regime) "
-                  "VALUES(?,?,?,?,?,NULL,0,?)",
-                  (time.time(), strategy, product, direction, confidence, regime))
+    _enqueue("INSERT INTO signal_scores(ts,strategy,product,direction,confidence,fwd_return,scored,regime) "
+             "VALUES(?,?,?,?,?,NULL,0,?)",
+             (time.time(), strategy, product, direction, confidence, regime))
+
+
+# ---------------- writes that must be synchronous (return rows) ----------------
 
 def unscored_signals(older_than_ts):
     with _lock, _conn() as c:
@@ -56,15 +137,15 @@ def unscored_signals(older_than_ts):
                          (older_than_ts,)).fetchall()
         return [dict(r) for r in rows]
 
+
 def score_signal(rowid, fwd_return):
-    with _lock, _conn() as c:
-        c.execute("UPDATE signal_scores SET fwd_return=?, scored=1 WHERE rowid=?",
-                  (fwd_return, rowid))
+    _enqueue("UPDATE signal_scores SET fwd_return=?, scored=1 WHERE rowid=?",
+             (fwd_return, rowid))
+
 
 def abandon_signal(rowid):
-    """Mark scored without a return — lookup never resolved. Does not train."""
-    with _lock, _conn() as c:
-        c.execute("UPDATE signal_scores SET scored=1 WHERE rowid=?", (rowid,))
+    _enqueue("UPDATE signal_scores SET scored=1 WHERE rowid=?", (rowid,))
+
 
 def strategy_scores(lookback):
     with _lock, _conn() as c:
@@ -74,17 +155,33 @@ def strategy_scores(lookback):
             (lookback * 8,)).fetchall()
         return [dict(r) for r in rows]
 
+
 def recent(table, limit=100):
     with _lock, _conn() as c:
         rows = c.execute(f"SELECT * FROM {table} ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
-def equity_since(since_ts, max_points=800):
-    """Equity samples at or after since_ts, decimated to max_points (keeps first+last).
 
-    If the window has fewer than 2 samples (typical for 20s — one tick), prepend
-    the last sample before the window so the chart still has a line.
-    """
+def order_events(intent_id=None, limit=200):
+    with _lock, _conn() as c:
+        if intent_id:
+            rows = c.execute("SELECT * FROM order_events WHERE intent_id=? ORDER BY ts ASC",
+                             (intent_id,)).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM order_events ORDER BY ts DESC LIMIT ?",
+                             (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def prune_equity(retention_sec=EQUITY_RETENTION_SEC):
+    """Delete equity samples older than the retention window (called rarely)."""
+    cutoff = time.time() - retention_sec
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM equity WHERE ts < ?", (cutoff,))
+
+
+def equity_since(since_ts, max_points=800):
+    """Equity samples at/after since_ts, decimated to max_points (keeps first+last)."""
     with _lock, _conn() as c:
         rows = c.execute(
             "SELECT ts, equity FROM equity WHERE ts>=? ORDER BY ts ASC LIMIT 200000",

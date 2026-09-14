@@ -1,0 +1,17 @@
+.git
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+cryptomind.db
+cryptomind.db-*
+state.json
+settings.json
+tunables.json
+alerts.json
+api_token.txt
+.shutdown
+relaunch.log
+.pytest_cache/
+.ruff_cache/

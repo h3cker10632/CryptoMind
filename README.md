@@ -58,7 +58,7 @@ Six learning algorithms run concurrently (`app/learn/`):
    returns; ensemble weights are Thompson-sampled per regime, so exploration
    vs exploitation is handled by Bayesian uncertainty, not a fixed schedule.
    Weights are EMA-smoothed with a 4% exploration floor.
-3. **Online neural network** (`online_model.py`) — a 13→16→1 tanh MLP trained
+3. **Online neural network** (`online_model.py`) — a 17→16→1 tanh MLP trained
    continually (pure-Python SGD + AdaGrad) on live feature snapshots vs 30-min
    forward returns. Continual-learning safeguards: experience replay buffer
    (4000 samples, 6 replays per update) against catastrophic forgetting, and
@@ -86,13 +86,47 @@ Inspect everything live: `GET /api/learning` returns bandit posteriors,
 model accuracy, Q-values, PSI per feature, and GA generation history; the
 dashboard's "Learning intelligence stack" panel renders it all.
 
-## Extending to live trading (deliberately not enabled)
+## Extending to live trading (shadow plumbing built; real orders deliberately NOT enabled)
 
-The `PaperBroker` interface (`buy/sell/equity/exposure`) is the seam: implement
-the same interface against CCXT / an exchange SDK, keep read-only vs trading
-keys separated, and progress paper → canary → live with human approval gates.
-Automated trading involves substantial risk of loss and jurisdiction-specific
-regulation — treat this system as research infrastructure first.
+The production execution machinery now exists and runs in **shadow mode** — it
+mirrors the paper account through a real OMS against live prices but **never
+sends a real order**:
+
+- **OMS** (`app/execution/oms.py`): durable trade intents, client order IDs
+  (idempotent retries), an explicit order state machine, partial-fill VWAP
+  aggregation, idempotent fills, **fail-closed** on ambiguity, and a
+  reconciliation loop that treats the venue as the source of truth.
+- **`Venue` interface** is the single seam. `ShadowVenue`/`ShadowBroker`
+  (`app/execution/shadow.py`) implement it as a simulation and measure
+  **live-vs-paper divergence** (`GET /api/shadow`). A `LiveVenue` against
+  CCXT / an exchange SDK would plug in here — keep read-only vs trading keys
+  separated, no withdrawal permission, IP-whitelisted — and progress paper →
+  shadow → canary → live with human approval gates. It is intentionally
+  unimplemented.
+
+Money is normalised with `Decimal` to exchange tick/lot/min-notional
+(`app/money.py`), market data has a **WebSocket** stream
+(`app/data/ws_market.py`), and the control API now **requires a token** for
+any state change (`app/security.py`). Automated trading involves substantial
+risk of loss and jurisdiction-specific regulation — treat this as research
+infrastructure first. See `CRITIQUE.md` and `CHANGES.md`.
+
+## Security
+
+State-changing endpoints (`/api/control/*`, settings, tunables, alerts) require
+`Authorization: Bearer <token>`. The token is auto-generated in `api_token.txt`
+(0600) on first run, or set `CRYPTOMIND_API_TOKEN`. Requests from localhost are
+allowed without a token for local ops; set `CRYPTOMIND_ALLOW_LOOPBACK=0` (as the
+Docker image does) to require it everywhere. Front the app with a TLS reverse
+proxy in production.
+
+## Validation
+
+`GET /api/backtest/composite?product=BTC-USD` validates the **real ensemble**
+(not just the three legacy single-strategy rules) against a **buy-and-hold
+benchmark**, with rolling **walk-forward**, **Deflated Sharpe**, **PBO**, and
+win-rate / expectancy confidence intervals. Promotion gates: DSR>0.95,
+PBO<0.30, walk-forward pass, and beats buy-and-hold. `pytest -q` runs the suite.
 
 ## Notes on realism
 

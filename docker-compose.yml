@@ -1,0 +1,34 @@
+# CryptoMind — always-on deployment (roadmap P0: supervision + restart:always).
+#
+#   docker compose up -d
+#
+# Set a strong control-API token before exposing the port anywhere:
+#   export CRYPTOMIND_API_TOKEN=$(openssl rand -base64 32)
+#
+# Behind a public reverse proxy (Caddy/nginx w/ TLS), keep the port bound to
+# localhost as below so only the proxy can reach it.
+services:
+  cryptomind:
+    build: .
+    restart: always
+    stop_grace_period: 20s          # let shutdown() save state
+    ports:
+      - "127.0.0.1:8000:8000"        # localhost-only; front with a TLS proxy
+    environment:
+      - CRYPTOMIND_API_TOKEN=${CRYPTOMIND_API_TOKEN:-}
+      - CRYPTOMIND_ALLOW_LOOPBACK=0  # inside a container, require the token
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      # optional real sentiment model (requires transformers+torch in image):
+      # - CRYPTOMIND_SENTIMENT_MODEL=ElKulako/cryptobert
+    volumes:
+      - cryptomind-data:/app         # persist state.json / db / tunables
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  cryptomind-data:

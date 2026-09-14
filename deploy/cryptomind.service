@@ -1,0 +1,39 @@
+# systemd unit for CryptoMind (roadmap P0: process supervision + auto-restart).
+#
+# Install:
+#   sudo cp deploy/cryptomind.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cryptomind
+#
+# Edit User/WorkingDirectory/paths to match your box. Put secrets in
+# /etc/cryptomind.env (chmod 600), e.g.:
+#   CRYPTOMIND_API_TOKEN=...
+#   TELEGRAM_BOT_TOKEN=...
+#   TELEGRAM_CHAT_ID=...
+
+[Unit]
+Description=CryptoMind self-learning crypto paper-trading system
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cryptomind
+WorkingDirectory=/opt/cryptomind
+EnvironmentFile=-/etc/cryptomind.env
+Environment=CRYPTOMIND_SUPERVISED=1
+ExecStart=/opt/cryptomind/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/cryptomind
+
+[Install]
+WantedBy=multi-user.target

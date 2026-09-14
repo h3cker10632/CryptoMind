@@ -2,9 +2,22 @@
 confidence, edge estimate and invalidation levels. Strategy weights adapt via
 the self-improvement loop."""
 import time
+import threading
 from ..config import PRODUCTS
 from ..tunables import tv
 from .. import db
+
+# per-thread context (was module-global mutable cells — not reentrant, so
+# concurrent/parallel compute() calls used to cross-contaminate signals).
+_ctx = threading.local()
+
+
+def _cur_product():
+    return getattr(_ctx, "product", "")
+
+
+def _cur_market_sent():
+    return getattr(_ctx, "market_sent", 0.0)
 
 
 class Signal(dict):
@@ -73,7 +86,7 @@ def strat_derivatives(f, sent, regime):
     """Perp-market positioning: funding extremes (contrarian), OI-confirmed
     trends, long/short crowding, and taker aggression."""
     from ..data.derivatives import derivatives
-    d = derivatives.features(_CURRENT_PRODUCT[0])
+    d = derivatives.features(_cur_product())
     if not d:
         return 0.0
     score = 0.0
@@ -96,8 +109,8 @@ def strat_ml(f, sent, regime):
     from ..data.derivatives import derivatives
     if model.n_updates < 40:
         return 0.0
-    d = derivatives.features(_CURRENT_PRODUCT[0])
-    pred = model.predict(build_x(f, sent[0], _MARKET_SENT[0], d))
+    d = derivatives.features(_cur_product())
+    pred = model.predict(build_x(f, sent[0], _cur_market_sent(), d))
     # damp when directional accuracy is poor
     st = model.stats()
     acc = st["directional_accuracy"]
@@ -109,7 +122,7 @@ def strat_evolved(f, sent, regime):
     """GA-evolved champion rule set (promoted only after out-of-sample
     validation). Inactive until evolution has produced a champion."""
     from ..learn.evolution import evolution
-    g = evolution.champion_for(_CURRENT_PRODUCT[0])
+    g = evolution.champion_for(_cur_product())
     if not g:
         return 0.0
     score = 0.0
@@ -141,9 +154,7 @@ def strat_evolved(f, sent, regime):
     return _clip(score)
 
 
-# shared cells (set each tick by the engine before strategies run)
-_MARKET_SENT = [0.0]
-_CURRENT_PRODUCT = [""]
+# (per-thread context is set on `_ctx` in compute(); see top of file)
 
 STRATEGIES = {
     "trend": strat_trend,
@@ -168,14 +179,14 @@ class SignalEngine:
 
     def compute(self, market, nlp, record=True):
         regime = market.regime()
-        _MARKET_SENT[0] = nlp.market_sentiment
+        _ctx.market_sent = nlp.market_sentiment
         out = {}
         for p in PRODUCTS:
             f = market.features(p)
             if not f:
                 continue
             sent = nlp.asset_score(p)
-            _CURRENT_PRODUCT[0] = p
+            _ctx.product = p
             raw = {}
             for name, fn in STRATEGIES.items():
                 try:

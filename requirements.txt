@@ -1,3 +1,9 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 httpx>=0.27
+websockets>=12.0
+
+# --- optional: real transformer sentiment (CryptoBERT/FinBERT) ---
+# Not installed by default (heavy). To enable, install these and set
+# CRYPTOMIND_SENTIMENT_MODEL=ElKulako/cryptobert  (or ProsusAI/finbert):
+#   pip install "transformers>=4.40" "torch>=2.2"

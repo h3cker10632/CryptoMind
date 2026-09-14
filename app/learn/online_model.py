@@ -50,7 +50,7 @@ def build_x(f, asset_sent, market_sent, deriv=None):
 
 
 class TinyMLP:
-    """13 → 16(tanh) → 1(tanh) regressor predicting scaled forward return."""
+    """17 → 16(tanh) → 1(tanh) regressor predicting scaled forward return."""
 
     def __init__(self, n_in=N_IN, n_hid=N_HID, lr=0.03, l2=1e-5, seed=7):
         rnd = random.Random(seed)

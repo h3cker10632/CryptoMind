@@ -1,9 +1,15 @@
-"""NLP module — lexicon-based crypto sentiment + narrative detection.
+"""NLP module — crypto sentiment + narrative detection.
 
-Lightweight (no model downloads) so it runs anywhere; the interface is the
-same one a FinBERT/CryptoBERT upgrade would slot into.
+Two backends behind ONE interface (`score_text`):
+  * lexicon (default)  — lightweight, no downloads, now with negation handling
+    ("not bullish" no longer scores bullish) so it's less naive.
+  * transformer (opt-in) — set CRYPTOMIND_SENTIMENT_MODEL to a HuggingFace
+    model id (e.g. "ElKulako/cryptobert" or "ProsusAI/finbert"). If
+    `transformers` + the weights are available it is used automatically and
+    cached; otherwise we log once and fall back to the lexicon. This is the
+    critique's "replace the lexicon with a real model" upgrade, made safe.
 """
-import re, time, math
+import os, re, time, math
 from collections import Counter
 
 BULL = {
@@ -48,13 +54,67 @@ def score_macro(text: str) -> float:
     return max(-1.0, min(1.0, s / max(3.0, len(words) * 0.35)))
 
 
-def score_text(text: str) -> float:
-    """Sentiment in [-1, 1]."""
+NEGATORS = {"not", "no", "never", "without", "isn't", "isnt", "aren't",
+            "arent", "won't", "wont", "fails", "fail", "unlikely", "denies",
+            "denied", "rejects", "rejected"}
+
+
+def score_text_lexicon(text: str) -> float:
+    """Lexicon sentiment in [-1, 1] with simple negation flipping."""
     words = WORD_RE.findall(text.lower())
     if not words:
         return 0.0
-    s = sum(BULL.get(w, 0) for w in words) - sum(BEAR.get(w, 0) for w in words)
+    s = 0.0
+    for i, w in enumerate(words):
+        val = BULL.get(w, 0) - BEAR.get(w, 0)
+        if val and i > 0 and words[i - 1] in NEGATORS:
+            val = -val                    # "not bullish" -> bearish
+        s += val
     return max(-1.0, min(1.0, s / max(3.0, len(words) * 0.35)))
+
+
+# ---- optional transformer backend (opt-in, cached, graceful fallback) ----
+_MODEL_ID = os.environ.get("CRYPTOMIND_SENTIMENT_MODEL", "").strip()
+_pipe = None
+_pipe_tried = False
+
+
+def _get_pipe():
+    global _pipe, _pipe_tried
+    if _pipe_tried:
+        return _pipe
+    _pipe_tried = True
+    if not _MODEL_ID:
+        return None
+    try:
+        from transformers import pipeline           # heavy, optional
+        _pipe = pipeline("sentiment-analysis", model=_MODEL_ID, truncation=True)
+        from .. import db
+        db.log_event("system", f"Sentiment: using transformer '{_MODEL_ID}'")
+    except Exception as e:
+        from .. import db
+        db.log_event("system", f"Sentiment: transformer '{_MODEL_ID}' "
+                               f"unavailable ({str(e)[:80]}) — lexicon fallback")
+        _pipe = None
+    return _pipe
+
+
+def score_text(text: str) -> float:
+    """Sentiment in [-1, 1] — transformer if configured/available, else lexicon."""
+    pipe = _get_pipe()
+    if pipe is not None:
+        try:
+            r = pipe(text[:512])[0]
+            label = r["label"].lower()
+            score = float(r["score"])
+            if "pos" in label or "bull" in label:
+                return score
+            if "neg" in label or "bear" in label:
+                return -score
+            return 0.0
+        except Exception:
+            pass
+    return score_text_lexicon(text)
 
 
 class NLPEngine:

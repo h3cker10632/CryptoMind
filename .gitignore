@@ -1,10 +1,14 @@
 # --- runtime state (machine-specific, regenerated at runtime) ---
 cryptomind.db
+cryptomind.db-wal
+cryptomind.db-shm
 state.json
 settings.json
 tunables.json
 alerts.json
+api_token.txt
 .shutdown
+relaunch.log
 
 # --- python ---
 __pycache__/
