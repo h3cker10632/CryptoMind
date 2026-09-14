@@ -1,0 +1,316 @@
+diff --git a/app/orchestrator.py b/app/orchestrator.py
+index 7eb565a..db4680a 100644
+--- a/app/orchestrator.py
++++ b/app/orchestrator.py
+@@ -154,10 +154,9 @@ class Orchestrator:
+                 ok, why = risk.funding_gate(p, sig["direction"])
+                 if not ok:
+                     continue
+-                risk._sizing_product = p
+                 notional, stop, take = risk.size(
+                     equity, sig["price"], sig["atr"], sig["confidence"],
+-                    self.last_risk_status, direction=sig["direction"])
++                    self.last_risk_status, direction=sig["direction"], product=p)
+                 if notional < tv("min_notional"):
+                     continue
+                 pos = broker.open(p, sig["direction"], notional, sig["price"],
+@@ -190,10 +189,9 @@ class Orchestrator:
+                     ok, why = risk.funding_gate(p, sig["direction"])
+                     if not ok:
+                         continue
+-                    risk._sizing_product = p
+                     notional, stop, take = risk.size(
+                         equity, sig["price"], sig["atr"], sig["confidence"],
+-                        self.last_risk_status, direction=sig["direction"])
++                        self.last_risk_status, direction=sig["direction"], product=p)
+                     notional *= tv("explore_size_factor")
+                     if notional < tv("min_notional"):
+                         continue
+diff --git a/app/risk/manager.py b/app/risk/manager.py
+index 3e4dfe2..35d17b8 100644
+--- a/app/risk/manager.py
++++ b/app/risk/manager.py
+@@ -102,6 +102,38 @@ class RiskManager:
+         last = self.cooldowns.get(product, 0)
+         if time.time() - last < tv("cooldown_sec"):
+             return False, "cooldown"
++        ok, why = self.price_sane(product, market)
++        if not ok:
++            return False, why
++        return True, "ok"
++
++    def price_sane(self, product, market):
++        """Reject entries on coins whose price is junk or has just spiked /
++        collapsed versus its own recent history.
++
++        Two independent checks:
++          1. Absolute floor — sub-`min_price` assets (e.g. penny/junk coins)
++             have quote grids and spreads that make honest sizing impossible.
++          2. Relative band — if the live price is more than `price_spike_mult`x
++             its recent median (or below 1/mult of it), the quote is a spike or
++             a stale/broken print; entering there is buying the top of a pump.
++        This is exactly the gate PUMP-USD should have failed.
++        """
++        price = market.price(product)
++        if price is None or price <= 0:
++            return False, "no price"
++        if price < tv("min_price"):
++            return False, f"price ${price:.6f} below min tradable ${tv('min_price'):.4f}"
++        closes = market.closes(product) if hasattr(market, "closes") else []
++        if len(closes) >= 20:
++            import statistics
++            med = statistics.median(closes[-60:])
++            if med > 0:
++                mult = tv("price_spike_mult")
++                if price > med * mult:
++                    return False, f"price spiked {price/med:.1f}x above recent median"
++                if price < med / mult:
++                    return False, f"price collapsed to {price/med:.2f}x of recent median"
+         return True, "ok"
+ 
+     def funding_gate(self, product, direction):
+@@ -119,7 +151,8 @@ class RiskManager:
+             return False, f"funding extreme ({fr:.4%}/8h) — short-squeeze risk"
+         return True, "ok"
+ 
+-    def size(self, equity, price, atr, confidence, risk_status, direction=1):
++    def size(self, equity, price, atr, confidence, risk_status, direction=1,
++             product=None):
+         """Volatility-adjusted sizing: risk a fixed fraction of equity to the stop.
+         Includes a cost-viability gate: the take-profit distance must clear
+         round-trip fees+slippage by a healthy multiple, otherwise the trade
+@@ -128,25 +161,29 @@ class RiskManager:
+         st = stance.current()
+         scale = risk_status["effective_risk_scale"] * st["risk_mult"]
+         risk_dollars = equity * tv("risk_per_trade") * scale * (0.5 + confidence / 2)
++        # ---- honest ATR-based stop & target ----
++        # Size from the REAL volatility horizon, never a fee-floor-inflated one.
+         stop_dist = tv("stop_atr_mult") * atr
+-        if stop_dist <= 0:
++        take_dist = tv("take_profit_atr_mult") * atr
++        if stop_dist <= 0 or take_dist <= 0:
+             return 0, 0, 0
+-        # ---- cost-aware trade horizon ----
+-        # Round-trip cost (fees + slippage both sides). The take-profit must
+-        # clear it by 2.5x or the trade is structurally unprofitable. Rather
+-        # than scalping tiny ATR moves into a fee wall, we WIDEN the horizon:
+-        # target = max(ATR-based, cost floor), stop scaled to keep R:R.
++        # ---- cost-viability gate ----
++        # Round-trip cost (fees + slippage, both sides). If the honest ATR
++        # take-profit can't clear it by `cost_multiple`, the trade is
++        # structurally unprofitable at its natural horizon: SKIP it. We do NOT
++        # widen the target to the cost floor — doing that quietly distorts the
++        # stop and, on a low-ATR penny coin, balloons notional straight to the
++        # position cap (exactly the PUMP-USD failure).
+         round_trip = 2 * tv("fee_rate") + 2 * tv("slippage_bps") / 1e4
+         min_take_dist = round_trip * tv("cost_multiple") * price
+-        take_dist = max(tv("take_profit_atr_mult") * atr, min_take_dist)
+-        rr = tv("take_profit_atr_mult") / tv("stop_atr_mult")  # keep reward:risk
+-        stop_dist = take_dist / rr
++        if take_dist < min_take_dist:
++            return 0, 0, 0        # unprofitable after costs -> no trade
+         notional = risk_dollars / (stop_dist / price)
+         notional = min(notional, equity * tv("max_position_pct") * min(1.5, st["risk_mult"]))
+         # per-coin liquidity cap: never take more than `liq_cap_pct` of the
+         # asset's ~24h traded dollar volume, so our own order can't move a thin
+         # discovered coin's book (also keeps paper fills realistic).
+-        liq = self._liquidity_notional(price)
++        liq = self._liquidity_notional(price, product)
+         if liq is not None:
+             notional = min(notional, liq * tv("liq_cap_pct"))
+         if direction > 0:
+@@ -155,15 +192,23 @@ class RiskManager:
+             stop, take = price + stop_dist, price - take_dist
+         return notional, stop, take
+ 
+-    def _liquidity_notional(self, price):
++    def _liquidity_notional(self, price, product=None):
+         """Rough 24h traded dollar volume for the product being sized.
+ 
++        The product is passed in explicitly (previously this reached into a
++        `_sizing_product` attribute / the signal engine's `_cur_product()`
++        thread-local, which could resolve to the WRONG coin — so thin-coin
++        caps were silently computed against another asset's volume). We fall
++        back to the old hack only if no product was supplied.
++
+         Uses the market feed's stored 5-min candles (288 bars ≈ 24h). Returns
+         None if we can't estimate it (then no liquidity cap is applied).
+         """
+         from ..data.market import market
+-        from ..signals.engine import _cur_product
+-        p = getattr(self, "_sizing_product", None) or _cur_product()
++        p = product or getattr(self, "_sizing_product", None)
++        if not p:
++            from ..signals.engine import _cur_product
++            p = _cur_product()
+         cs = market.candles.get(p, [])
+         if len(cs) < 12:
+             return None
+@@ -174,7 +219,13 @@ class RiskManager:
+     def reset_kill(self):
+         self.killed = False
+         self.peak_equity = 0.0
+-        db.log_event("risk", "Kill switch manually reset")
++        # clearing the kill switch must also clear the daily loss halt and the
++        # loss-streak throttle — otherwise the operator "resets" but new
++        # entries stay blocked by `halted_today` until the next UTC day.
++        self.halted_today = False
++        self.consecutive_losses = 0
++        self.risk_scale = 1.0
++        db.log_event("risk", "Kill switch manually reset (daily halt cleared)")
+ 
+ 
+ risk = RiskManager()
+diff --git a/app/tunables.py b/app/tunables.py
+index 0651fb9..f385033 100644
+--- a/app/tunables.py
++++ b/app/tunables.py
+@@ -42,6 +42,10 @@ TUNABLES = {
+                            "Per-8h funding rate beyond which crowded-side entries are blocked"),
+     "liq_cap_pct":       T(0.01, 0.001, 0.10, 0.001, "risk", "Per-coin liquidity cap",
+                            "Max position as a fraction of the coin's ~24h dollar volume (thin-coin protection)"),
++    "min_price":         T(0.01, 0.0, 5.0, 0.005, "risk", "Min tradable price ($)",
++                           "Reject entries on assets priced below this (junk/penny-coin protection)"),
++    "price_spike_mult":  T(3.0, 1.5, 20.0, 0.5, "risk", "Price-sanity band (x median)",
++                           "Reject entries when price is above this multiple of, or below 1/x of, its recent median"),
+     # ---- costs ----
+     "fee_rate":          T(0.005, 0.0, 0.02, 0.0005, "costs", "Fee rate (per side)",
+                            "Taker fee per fill; 0.005 = 0.5% (realistic retail)"),
+diff --git a/tests/test_risk_sanity.py b/tests/test_risk_sanity.py
+new file mode 100644
+index 0000000..8a5512f
+--- /dev/null
++++ b/tests/test_risk_sanity.py
+@@ -0,0 +1,132 @@
++"""Regression tests for the penny-asset / junk-price blowup (PUMP-USD).
++
++Covers the four fixes:
++  1. price-sanity gate rejects junk (<min_price) and spiked/collapsed prices
++  2. sizing skips (notional=0) when the honest ATR target can't clear costs,
++     instead of ballooning notional to the position cap
++  3. the liquidity cap uses the product passed to size(), not a stale hack
++  4. reset_kill() also clears the daily halt
++"""
++import os, sys
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from app.risk.manager import RiskManager
++
++
++class _Mkt:
++    """Minimal market stub: prices + closes + candles per product."""
++    def __init__(self):
++        self._px = {}
++        self._closes = {}
++        self.candles = {}
++
++    def set(self, p, price, closes=None, candles=None):
++        self._px[p] = price
++        if closes is not None:
++            self._closes[p] = closes
++        if candles is not None:
++            self.candles[p] = candles
++
++    def price(self, p):
++        return self._px.get(p)
++
++    def closes(self, p):
++        return self._closes.get(p, [])
++
++
++_RISK_STATUS = {"effective_risk_scale": 1.0}
++
++
++# ---------- Fix 1: price-sanity gate ----------
++
++def test_price_sane_rejects_junk_penny_price():
++    r = RiskManager()
++    m = _Mkt()
++    m.set("PUMP-USD", 0.0039, closes=[0.0039] * 60)   # sub-cent junk
++    ok, why = r.price_sane("PUMP-USD", m)
++    assert not ok and "min tradable" in why
++
++
++def test_price_sane_rejects_spike():
++    r = RiskManager()
++    m = _Mkt()
++    # median ~ $100 but live print is $500 -> 5x spike (> default 3x band)
++    m.set("SPK-USD", 500.0, closes=[100.0] * 60)
++    ok, why = r.price_sane("SPK-USD", m)
++    assert not ok and "spiked" in why
++
++
++def test_price_sane_rejects_collapse():
++    r = RiskManager()
++    m = _Mkt()
++    m.set("CRSH-USD", 20.0, closes=[100.0] * 60)       # < median/3
++    ok, why = r.price_sane("CRSH-USD", m)
++    assert not ok and "collapsed" in why
++
++
++def test_price_sane_allows_normal_asset():
++    r = RiskManager()
++    m = _Mkt()
++    m.set("BTC-USD", 101.0, closes=[100.0] * 60)
++    ok, why = r.price_sane("BTC-USD", m)
++    assert ok and why == "ok"
++
++
++# ---------- Fix 2: honest sizing / cost gate ----------
++
++def test_size_skips_when_target_cannot_clear_costs():
++    """Tiny ATR relative to price -> ATR take-profit < cost floor -> skip."""
++    r = RiskManager()
++    price = 100.0
++    atr = 0.01                       # 1bp of price; way under the fee wall
++    notional, stop, take = r.size(100_000.0, price, atr, 0.8, _RISK_STATUS,
++                                  direction=1, product="X-USD")
++    assert notional == 0
++
++
++def test_size_does_not_balloon_to_position_cap_on_penny_atr():
++    """Even a viable target must not exceed the position cap; and a tiny ATR
++    that fails the cost gate returns 0 rather than a capped mega-notional."""
++    r = RiskManager()
++    # penny-like: low ATR fails cost gate -> 0 (the PUMP failure mode)
++    n, _, _ = r.size(100_000.0, 0.0039, 0.00001, 0.9, _RISK_STATUS,
++                     direction=1, product="PUMP-USD")
++    assert n == 0
++
++
++def test_size_normal_trade_is_bounded_by_cap():
++    r = RiskManager()
++    equity = 100_000.0
++    price, atr = 100.0, 5.0          # 5% ATR: target clears costs easily
++    n, stop, take = r.size(equity, price, atr, 0.8, _RISK_STATUS,
++                           direction=1, product="BTC-USD")
++    assert n > 0
++    assert n <= equity * 0.20 * 1.5 + 1e-6     # <= max_position_pct * cap
++    assert stop < price < take                 # long geometry
++
++
++# ---------- Fix 3: liquidity cap uses the right product ----------
++
++def test_liquidity_cap_uses_passed_product():
++    r = RiskManager()
++    from app.data import market as mkt_mod
++    # give the sized product thin volume, another product huge volume
++    mkt_mod.market.candles["THIN-USD"] = [
++        [0, 0, 0, 0, 100.0, 1.0] for _ in range(300)]     # ~1 base unit/bar
++    liq = r._liquidity_notional(100.0, product="THIN-USD")
++    assert liq is not None
++    # function sums the last 288 bars (≈24h): 288 * 1 base unit * $100
++    assert abs(liq - 288 * 1.0 * 100.0) < 1e-6
++
++
++# ---------- Fix 4: reset clears daily halt ----------
++
++def test_reset_kill_clears_daily_halt():
++    r = RiskManager()
++    r.killed = True
++    r.halted_today = True
++    r.consecutive_losses = 5
++    r.reset_kill()
++    assert r.killed is False
++    assert r.halted_today is False          # the key fix
++    assert r.consecutive_losses == 0

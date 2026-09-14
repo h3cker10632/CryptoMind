@@ -102,6 +102,38 @@ class RiskManager:
         last = self.cooldowns.get(product, 0)
         if time.time() - last < tv("cooldown_sec"):
             return False, "cooldown"
+        ok, why = self.price_sane(product, market)
+        if not ok:
+            return False, why
+        return True, "ok"
+
+    def price_sane(self, product, market):
+        """Reject entries on coins whose price is junk or has just spiked /
+        collapsed versus its own recent history.
+
+        Two independent checks:
+          1. Absolute floor — sub-`min_price` assets (e.g. penny/junk coins)
+             have quote grids and spreads that make honest sizing impossible.
+          2. Relative band — if the live price is more than `price_spike_mult`x
+             its recent median (or below 1/mult of it), the quote is a spike or
+             a stale/broken print; entering there is buying the top of a pump.
+        This is exactly the gate PUMP-USD should have failed.
+        """
+        price = market.price(product)
+        if price is None or price <= 0:
+            return False, "no price"
+        if price < tv("min_price"):
+            return False, f"price ${price:.6f} below min tradable ${tv('min_price'):.4f}"
+        closes = market.closes(product) if hasattr(market, "closes") else []
+        if len(closes) >= 20:
+            import statistics
+            med = statistics.median(closes[-60:])
+            if med > 0:
+                mult = tv("price_spike_mult")
+                if price > med * mult:
+                    return False, f"price spiked {price/med:.1f}x above recent median"
+                if price < med / mult:
+                    return False, f"price collapsed to {price/med:.2f}x of recent median"
         return True, "ok"
 
     def funding_gate(self, product, direction):
@@ -119,7 +151,8 @@ class RiskManager:
             return False, f"funding extreme ({fr:.4%}/8h) — short-squeeze risk"
         return True, "ok"
 
-    def size(self, equity, price, atr, confidence, risk_status, direction=1):
+    def size(self, equity, price, atr, confidence, risk_status, direction=1,
+             product=None):
         """Volatility-adjusted sizing: risk a fixed fraction of equity to the stop.
         Includes a cost-viability gate: the take-profit distance must clear
         round-trip fees+slippage by a healthy multiple, otherwise the trade
@@ -128,25 +161,29 @@ class RiskManager:
         st = stance.current()
         scale = risk_status["effective_risk_scale"] * st["risk_mult"]
         risk_dollars = equity * tv("risk_per_trade") * scale * (0.5 + confidence / 2)
+        # ---- honest ATR-based stop & target ----
+        # Size from the REAL volatility horizon, never a fee-floor-inflated one.
         stop_dist = tv("stop_atr_mult") * atr
-        if stop_dist <= 0:
+        take_dist = tv("take_profit_atr_mult") * atr
+        if stop_dist <= 0 or take_dist <= 0:
             return 0, 0, 0
-        # ---- cost-aware trade horizon ----
-        # Round-trip cost (fees + slippage both sides). The take-profit must
-        # clear it by 2.5x or the trade is structurally unprofitable. Rather
-        # than scalping tiny ATR moves into a fee wall, we WIDEN the horizon:
-        # target = max(ATR-based, cost floor), stop scaled to keep R:R.
+        # ---- cost-viability gate ----
+        # Round-trip cost (fees + slippage, both sides). If the honest ATR
+        # take-profit can't clear it by `cost_multiple`, the trade is
+        # structurally unprofitable at its natural horizon: SKIP it. We do NOT
+        # widen the target to the cost floor — doing that quietly distorts the
+        # stop and, on a low-ATR penny coin, balloons notional straight to the
+        # position cap (exactly the PUMP-USD failure).
         round_trip = 2 * tv("fee_rate") + 2 * tv("slippage_bps") / 1e4
         min_take_dist = round_trip * tv("cost_multiple") * price
-        take_dist = max(tv("take_profit_atr_mult") * atr, min_take_dist)
-        rr = tv("take_profit_atr_mult") / tv("stop_atr_mult")  # keep reward:risk
-        stop_dist = take_dist / rr
+        if take_dist < min_take_dist:
+            return 0, 0, 0        # unprofitable after costs -> no trade
         notional = risk_dollars / (stop_dist / price)
         notional = min(notional, equity * tv("max_position_pct") * min(1.5, st["risk_mult"]))
         # per-coin liquidity cap: never take more than `liq_cap_pct` of the
         # asset's ~24h traded dollar volume, so our own order can't move a thin
         # discovered coin's book (also keeps paper fills realistic).
-        liq = self._liquidity_notional(price)
+        liq = self._liquidity_notional(price, product)
         if liq is not None:
             notional = min(notional, liq * tv("liq_cap_pct"))
         if direction > 0:
@@ -155,15 +192,23 @@ class RiskManager:
             stop, take = price + stop_dist, price - take_dist
         return notional, stop, take
 
-    def _liquidity_notional(self, price):
+    def _liquidity_notional(self, price, product=None):
         """Rough 24h traded dollar volume for the product being sized.
+
+        The product is passed in explicitly (previously this reached into a
+        `_sizing_product` attribute / the signal engine's `_cur_product()`
+        thread-local, which could resolve to the WRONG coin — so thin-coin
+        caps were silently computed against another asset's volume). We fall
+        back to the old hack only if no product was supplied.
 
         Uses the market feed's stored 5-min candles (288 bars ≈ 24h). Returns
         None if we can't estimate it (then no liquidity cap is applied).
         """
         from ..data.market import market
-        from ..signals.engine import _cur_product
-        p = getattr(self, "_sizing_product", None) or _cur_product()
+        p = product or getattr(self, "_sizing_product", None)
+        if not p:
+            from ..signals.engine import _cur_product
+            p = _cur_product()
         cs = market.candles.get(p, [])
         if len(cs) < 12:
             return None
@@ -174,7 +219,13 @@ class RiskManager:
     def reset_kill(self):
         self.killed = False
         self.peak_equity = 0.0
-        db.log_event("risk", "Kill switch manually reset")
+        # clearing the kill switch must also clear the daily loss halt and the
+        # loss-streak throttle — otherwise the operator "resets" but new
+        # entries stay blocked by `halted_today` until the next UTC day.
+        self.halted_today = False
+        self.consecutive_losses = 0
+        self.risk_scale = 1.0
+        db.log_event("risk", "Kill switch manually reset (daily halt cleared)")
 
 
 risk = RiskManager()

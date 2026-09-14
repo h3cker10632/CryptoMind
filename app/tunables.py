@@ -42,6 +42,10 @@ TUNABLES = {
                            "Per-8h funding rate beyond which crowded-side entries are blocked"),
     "liq_cap_pct":       T(0.01, 0.001, 0.10, 0.001, "risk", "Per-coin liquidity cap",
                            "Max position as a fraction of the coin's ~24h dollar volume (thin-coin protection)"),
+    "min_price":         T(0.01, 0.0, 5.0, 0.005, "risk", "Min tradable price ($)",
+                           "Reject entries on assets priced below this (junk/penny-coin protection)"),
+    "price_spike_mult":  T(3.0, 1.5, 20.0, 0.5, "risk", "Price-sanity band (x median)",
+                           "Reject entries when price is above this multiple of, or below 1/x of, its recent median"),
     # ---- costs ----
     "fee_rate":          T(0.005, 0.0, 0.02, 0.0005, "costs", "Fee rate (per side)",
                            "Taker fee per fill; 0.005 = 0.5% (realistic retail)"),

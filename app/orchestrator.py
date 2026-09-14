@@ -154,10 +154,9 @@ class Orchestrator:
                 ok, why = risk.funding_gate(p, sig["direction"])
                 if not ok:
                     continue
-                risk._sizing_product = p
                 notional, stop, take = risk.size(
                     equity, sig["price"], sig["atr"], sig["confidence"],
-                    self.last_risk_status, direction=sig["direction"])
+                    self.last_risk_status, direction=sig["direction"], product=p)
                 if notional < tv("min_notional"):
                     continue
                 pos = broker.open(p, sig["direction"], notional, sig["price"],
@@ -190,10 +189,9 @@ class Orchestrator:
                     ok, why = risk.funding_gate(p, sig["direction"])
                     if not ok:
                         continue
-                    risk._sizing_product = p
                     notional, stop, take = risk.size(
                         equity, sig["price"], sig["atr"], sig["confidence"],
-                        self.last_risk_status, direction=sig["direction"])
+                        self.last_risk_status, direction=sig["direction"], product=p)
                     notional *= tv("explore_size_factor")
                     if notional < tv("min_notional"):
                         continue
