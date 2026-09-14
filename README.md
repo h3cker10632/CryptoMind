@@ -137,6 +137,16 @@ PBO<0.30, walk-forward pass, and beats buy-and-hold. `pytest -q` runs the suite.
 - **Alerting**: Telegram + webhook (Discord/Slack/ntfy) push for kill-switch,
   daily-loss halt, feed outages, loop stalls; configure via dashboard 🔔 or
   `POST /api/alerts/config`; test with `POST /api/alerts/test`.
+- **Rich trade notifications**: every position OPEN (side, qty, notional,
+  stop/TP, R:R, strategy votes, regime) and CLOSE (entry→exit, PnL $ and %,
+  hold time, reason) is pushed to Telegram. Toggle with `push_trades` (dashboard
+  button or `/notify on|off` in the bot).
+- **Two-way Telegram command bot**: once a bot token + chat id are set, control
+  and query the system from your phone. Commands are private to your chat id.
+  `/status /positions /trades /pnl /balance /stats /signals /risk /why`
+  `/pause /resume /kill /resetkill /shorts on|off /mode <stance>`
+  `/set <tunable> <value> /get <tunable> /tunables /notify on|off /help`.
+  Notably `/resetkill` clears the kill switch + daily halt remotely.
 - Backtests use intra-bar low/high for stop/target fills (no close-only cheating)
   and report in-sample vs out-of-sample separately.
 - Kill switches: 15% max drawdown, 5% daily loss, data-feed health gate.

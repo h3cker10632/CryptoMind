@@ -56,6 +56,7 @@ async def startup():
     asyncio.create_task(orch.watchdog())
     asyncio.create_task(orch.reconcile_loop())
     asyncio.create_task(alerts.worker())
+    asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     alerts.alert("info", "System started",
                  "CryptoMind is up (paper mode). State restored." )
 
@@ -144,7 +145,9 @@ def alerts_status():
 @app.post("/api/alerts/config")
 async def alerts_config(request: Request):
     """Configure channels: {telegram_bot_token, telegram_chat_id,
-    webhook_url, push_level}. Values persist to alerts.json."""
+    webhook_url, push_level, push_trades}. Values persist to alerts.json.
+    Setting telegram_bot_token + telegram_chat_id also activates the two-way
+    command bot (/status, /positions, /resetkill, ...)."""
     changes = await request.json()
     st = alerts.save_conf(changes)
     db.log_event("system", "Alert config updated "

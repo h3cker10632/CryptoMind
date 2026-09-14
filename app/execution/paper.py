@@ -106,9 +106,12 @@ class PaperBroker:
                      pos["qty"], fill, fee, reason, pnl)
         db.log_event("trade", f"CLOSE {'LONG' if side > 0 else 'SHORT'} "
                               f"{product} @ {fill:.2f} pnl={pnl:+.2f} ({reason})")
-        from ..alerts import alert
-        alert("info", f"Closed {product}",
-              f"PnL {pnl:+,.2f} ({reason}) @ {fill:,.2f}")
+        # rich per-trade notification (Telegram/webhook) with full details
+        try:
+            from ..alerts import notify_trade_close
+            notify_trade_close(trade)
+        except Exception:
+            pass
         return trade
 
     # ---------- stops / targets / trailing ----------

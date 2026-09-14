@@ -275,6 +275,7 @@
     <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
       <button id="btn-alert-cfg" style="padding:3px 10px;font-size:11px">⚙ configure</button>
       <button id="btn-alert-test" style="padding:3px 10px;font-size:11px">📤 send test</button>
+      <button id="btn-alert-trades" style="padding:3px 10px;font-size:11px">🔁 toggle trade alerts</button>
     </div>
     <div id="alerts-feed"></div>
   </div>
@@ -773,7 +774,10 @@ async function refreshAlerts(){
   try{
     const a=await j('/api/alerts');
     $('#alert-chan').innerHTML=(a.telegram_configured?'<span class="ok">telegram ✓</span> ':'<span style="color:var(--dim)">telegram ✗</span> ')
-      +(a.webhook_configured?'<span class="ok">webhook ✓</span>':'<span style="color:var(--dim)">webhook ✗</span>');
+      +(a.webhook_configured?'<span class="ok">webhook ✓</span> ':'<span style="color:var(--dim)">webhook ✗</span> ')
+      +(a.commands_active?'<span class="ok">bot ✓</span> ':'<span style="color:var(--dim)">bot ✗</span> ')
+      +(a.push_trades?'<span class="ok">trade alerts ON</span>':'<span style="color:var(--dim)">trade alerts OFF</span>');
+    window._pushTrades=a.push_trades;
     $('#alerts-feed').innerHTML=(a.recent||[]).slice(0,10).map(e=>{
       const icon={critical:'🚨',warning:'⚠️',info:'ℹ️'}[e.level]||'';
       const d=new Date(e.ts*1000).toLocaleTimeString();
@@ -797,6 +801,11 @@ $('#btn-alert-cfg').onclick=async()=>{
   alert('Saved. Press "send test" to verify delivery.');
 };
 $('#btn-alert-test').onclick=async()=>{await j('/api/alerts/test',{method:'POST'});refreshAlerts();};
+$('#btn-alert-trades').onclick=async()=>{
+  await j('/api/alerts/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({push_trades:!window._pushTrades})});
+  refreshAlerts();
+};
 refreshAlerts(); setInterval(refreshAlerts,10000);
 $('#btn-evolve').onclick=()=>j('/api/control/evolve',{method:'POST'}).then(refresh);
 

@@ -167,6 +167,12 @@ class Orchestrator:
                                     engine.per_strategy.get(p, {}).items()
                                     if abs(v) > 0.05}
                     pos["regime_at_entry"] = sig["regime"]
+                    # rich open notification (Telegram/webhook) with full detail
+                    try:
+                        from .alerts import notify_trade_open
+                        notify_trade_open(pos)
+                    except Exception:
+                        pass
                     # mirror into the shadow OMS to measure execution divergence
                     if self.shadow is not None:
                         try:
@@ -204,6 +210,11 @@ class Orchestrator:
                                         engine.per_strategy.get(p, {}).items()
                                         if abs(v) > 0.05}
                         pos["regime_at_entry"] = sig["regime"]
+                        try:
+                            from .alerts import notify_trade_open
+                            notify_trade_open(pos)
+                        except Exception:
+                            pass
 
         # 8. equity log + periodic self-improvement
         db.log_equity(equity, broker.cash, broker.exposure(market))
