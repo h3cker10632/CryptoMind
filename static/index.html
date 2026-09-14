@@ -93,6 +93,7 @@
   <button id="btn-pause">⏸ Pause</button>
   <button id="btn-resume">▶ Resume</button>
   <button class="danger" id="btn-kill">🛑 Kill switch</button>
+  <button id="btn-reset-kill" style="border-color:#3a5a2e;color:#8fd694;display:none">♻️ Reset kill</button>
   <button id="btn-settings" style="border-color:#4a5a7a;color:#9db8e8">⚙️ Settings</button>
   <button id="btn-restart" style="border-color:#3a5a2e;color:#8fd694">🔄 Restart server</button>
   <button class="danger" id="btn-shutdown" style="background:#2a1215">⏻ Kill server</button>
@@ -513,9 +514,25 @@ async function refresh(){
     }
 
     $('#b-data').innerHTML='data: '+(st.data_healthy?'<span class="ok">LIVE</span>':'<span class="bad">DOWN</span>');
-    $('#b-trading').innerHTML='trading: '+(st.kill_switch?'<span class="bad">KILLED</span>'
-      :st.halted_today?'<span class="warn">HALTED</span>'
+    const _why = st.kill_switch ? (st.kill_reason||'reason not recorded')
+               : st.halted_today ? (st.halt_reason||'daily loss halt')
+               : '';
+    const _whyt = _why ? ' title="'+_why.replace(/"/g,'&quot;')+'"' : '';
+    $('#b-trading').innerHTML='trading: '+(st.kill_switch?'<span class="bad"'+_whyt+'>KILLED</span>'
+      :st.halted_today?'<span class="warn"'+_whyt+'>HALTED</span>'
       :st.trading_enabled?'<span class="ok">ACTIVE</span>':'<span class="warn">PAUSED</span>');
+    // spell the reason out under the status bar (not just a tooltip)
+    let _wl=$('#b-why');
+    if(_why){
+      if(!_wl){_wl=document.createElement('div');_wl.id='b-why';
+        _wl.style.cssText='font-size:11px;color:var(--dim);margin-top:2px';
+        $('#b-trading').parentNode.appendChild(_wl);}
+      const _when = st.kill_ts ? ' · since '+new Date(st.kill_ts*1000).toLocaleString() : '';
+      const _how = st.kill_switch ? ' — press “Reset kill” to resume (Resume alone won’t clear it)' : '';
+      _wl.textContent='↳ '+_why+(st.kill_switch?_when:'')+_how;
+    } else if(_wl){ _wl.remove(); }
+    // show the Reset-kill button only when it's actionable (killed or halted)
+    const _rk=$('#btn-reset-kill'); if(_rk) _rk.style.display=(st.kill_switch||st.halted_today)?'':'none';
     $('#b-regime').textContent='regime: '+(st.regime?st.regime.label:'—');
 
     $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD) · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
@@ -678,9 +695,13 @@ async function refresh(){
 
 // controls
 $('#btn-pause').onclick=()=>j('/api/control/pause',{method:'POST'}).then(refresh);
-$('#btn-resume').onclick=()=>j('/api/control/resume',{method:'POST'}).then(refresh);
+$('#btn-resume').onclick=()=>j('/api/control/resume',{method:'POST'}).then(res=>{
+  if(res&&res.blocked){alert(res.message||'Cannot resume: trading is blocked. Reset the kill switch first.');}
+  refresh();});
 $('#btn-kill').onclick=()=>{if(confirm('Flatten all positions and stop trading?'))
   j('/api/control/kill',{method:'POST'}).then(refresh);};
+$('#btn-reset-kill').onclick=()=>{if(confirm('Reset the kill switch?\n\nThis clears the KILLED state and the daily-loss halt so trading can resume.'))
+  j('/api/control/reset-kill',{method:'POST'}).then(()=>j('/api/control/resume',{method:'POST'})).then(refresh);};
 $('#btn-shutdown').onclick=async()=>{
   const s=window._settings||{flatten_on_shutdown:true};
   const posLine=s.flatten_on_shutdown

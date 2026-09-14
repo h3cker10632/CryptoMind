@@ -1,5 +1,36 @@
+diff --git a/app/main.py b/app/main.py
+index 13c055a..3c6ffc4 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -222,6 +222,17 @@ def pause():
+ 
+ @app.post("/api/control/resume")
+ def resume():
++    # Resuming is meaningless while the kill switch is tripped: can_open()
++    # blocks every entry and the status stays KILLED. Refuse clearly instead
++    # of silently flipping trading_enabled with no visible effect.
++    if risk.killed:
++        return {"trading_enabled": False, "blocked": "kill_switch",
++                "message": "Trading is KILLED — reset the kill switch first "
++                           f"({risk.kill_reason or 'reason not recorded'})."}
++    if risk.halted_today:
++        return {"trading_enabled": False, "blocked": "daily_halt",
++                "message": "Daily loss halt active — reset the kill switch to "
++                           "clear it, or wait for the next UTC day."}
+     orch.running = True
+     db.log_event("system", "Trading RESUMED by operator")
+     return {"trading_enabled": True}
+@@ -229,7 +240,7 @@ def resume():
+ 
+ @app.post("/api/control/kill")
+ def kill():
+-    risk.killed = True
++    risk.trip_kill("Manual: operator pressed the kill switch")
+     orch.running = False
+     flattened, stranded = [], []
+     for p in list(broker.positions.keys()):
 diff --git a/app/orchestrator.py b/app/orchestrator.py
-index 7eb565a..db4680a 100644
+index 7eb565a..fbbdd48 100644
 --- a/app/orchestrator.py
 +++ b/app/orchestrator.py
 @@ -154,10 +154,9 @@ class Orchestrator:
@@ -26,11 +57,88 @@ index 7eb565a..db4680a 100644
                      notional *= tv("explore_size_factor")
                      if notional < tv("min_notional"):
                          continue
+@@ -228,7 +226,10 @@ class Orchestrator:
+             "uptime_sec": int(time.time() - self.started),
+             "trading_enabled": self.running,
+             "kill_switch": risk.killed,
++            "kill_reason": risk.kill_reason,
++            "kill_ts": risk.kill_ts,
+             "halted_today": risk.halted_today,
++            "halt_reason": risk.halt_reason,
+             "data_healthy": market.healthy,
+             "research_healthy": research.healthy,
+             "equity": round(eq, 2),
+diff --git a/app/persistence.py b/app/persistence.py
+index f5513b7..e1a8030 100644
+--- a/app/persistence.py
++++ b/app/persistence.py
+@@ -66,7 +66,10 @@ def capture():
+             "day_start_equity": risk.day_start_equity,
+             "day_start_ts": risk.day_start_ts,
+             "killed": risk.killed,
++            "kill_reason": risk.kill_reason,
++            "kill_ts": risk.kill_ts,
+             "halted_today": risk.halted_today,
++            "halt_reason": risk.halt_reason,
+             "day_index": getattr(risk, "day_index", None),
+             "cooldowns": risk.cooldowns,
+             "risk_scale": risk.risk_scale,
+@@ -198,7 +201,17 @@ def load():
+             risk.day_start_equity = r.get("day_start_equity")
+             risk.day_start_ts = r.get("day_start_ts", time.time())
+             risk.killed = r.get("killed", False)
++            risk.kill_ts = r.get("kill_ts")
+             risk.halted_today = r.get("halted_today", False)
++            risk.halt_reason = r.get("halt_reason", "")
++            if risk.killed:
++                # a kill flag reloaded from a snapshot is the sneaky "why is it
++                # KILLED and I never pressed it?" case — make that explicit.
++                prev = r.get("kill_reason", "")
++                risk.kill_reason = (
++                    (prev + " · restored from saved state on restart")
++                    if prev else "Restored from saved state on restart "
++                                 "(kill switch was active when last saved)")
+             if r.get("day_index") is not None:
+                 risk.day_index = r["day_index"]
+             risk.cooldowns = r.get("cooldowns", {})
 diff --git a/app/risk/manager.py b/app/risk/manager.py
-index 3e4dfe2..35d17b8 100644
+index 3e4dfe2..d62da62 100644
 --- a/app/risk/manager.py
 +++ b/app/risk/manager.py
-@@ -102,6 +102,38 @@ class RiskManager:
+@@ -19,7 +19,10 @@ class RiskManager:
+         self.day_start_ts = time.time()
+         self.day_index = _utc_day()
+         self.killed = False
++        self.kill_reason = ""        # human-readable why + when the switch tripped
++        self.kill_ts = None
+         self.halted_today = False
++        self.halt_reason = ""
+         self.cooldowns = {}          # product -> ts of last exit/entry
+         self.risk_scale = 1.0        # adaptive multiplier
+         self.consecutive_losses = 0
+@@ -51,14 +54,19 @@ class RiskManager:
+         day_loss = 1 - equity / self.day_start_equity if self.day_start_equity else 0.0
+ 
+         if dd >= tv("max_drawdown_kill") and not self.killed:
+-            self.killed = True
+-            db.log_event("risk", f"KILL SWITCH: max drawdown {dd:.1%} breached")
++            self.trip_kill(
++                f"Auto: max drawdown {dd:.1%} breached the "
++                f"{tv('max_drawdown_kill'):.0%} limit "
++                f"(equity ${equity:,.0f}, peak ${self.peak_equity:,.0f})")
+             from ..alerts import alert
+             alert("critical", "KILL SWITCH TRIPPED",
+                   f"Max drawdown {dd:.1%} breached (limit {tv('max_drawdown_kill'):.0%}). "
+                   f"Equity ${equity:,.0f}. Trading stopped until manual reset.")
+         if day_loss >= tv("daily_loss_limit") and not self.halted_today:
+             self.halted_today = True
++            self.halt_reason = (f"Auto: daily loss {day_loss:.1%} hit the "
++                                f"{tv('daily_loss_limit'):.0%} limit "
++                                f"(equity ${equity:,.0f})")
+             db.log_event("risk", f"Daily loss limit hit ({day_loss:.1%}) — trading halted for the day")
+             from ..alerts import alert
+             alert("critical", "DAILY LOSS HALT",
+@@ -102,6 +110,38 @@ class RiskManager:
          last = self.cooldowns.get(product, 0)
          if time.time() - last < tv("cooldown_sec"):
              return False, "cooldown"
@@ -69,7 +177,7 @@ index 3e4dfe2..35d17b8 100644
          return True, "ok"
  
      def funding_gate(self, product, direction):
-@@ -119,7 +151,8 @@ class RiskManager:
+@@ -119,7 +159,8 @@ class RiskManager:
              return False, f"funding extreme ({fr:.4%}/8h) — short-squeeze risk"
          return True, "ok"
  
@@ -79,7 +187,7 @@ index 3e4dfe2..35d17b8 100644
          """Volatility-adjusted sizing: risk a fixed fraction of equity to the stop.
          Includes a cost-viability gate: the take-profit distance must clear
          round-trip fees+slippage by a healthy multiple, otherwise the trade
-@@ -128,25 +161,29 @@ class RiskManager:
+@@ -128,25 +169,29 @@ class RiskManager:
          st = stance.current()
          scale = risk_status["effective_risk_scale"] * st["risk_mult"]
          risk_dollars = equity * tv("risk_per_trade") * scale * (0.5 + confidence / 2)
@@ -119,7 +227,7 @@ index 3e4dfe2..35d17b8 100644
          if liq is not None:
              notional = min(notional, liq * tv("liq_cap_pct"))
          if direction > 0:
-@@ -155,15 +192,23 @@ class RiskManager:
+@@ -155,15 +200,23 @@ class RiskManager:
              stop, take = price + stop_dist, price - take_dist
          return notional, stop, take
  
@@ -146,15 +254,31 @@ index 3e4dfe2..35d17b8 100644
          cs = market.candles.get(p, [])
          if len(cs) < 12:
              return None
-@@ -174,7 +219,13 @@ class RiskManager:
+@@ -171,10 +224,29 @@ class RiskManager:
+         base_vol = sum(c[5] for c in recent)      # base-asset volume
+         return base_vol * price
+ 
++    def trip_kill(self, reason):
++        """Trip the kill switch and RECORD why + when, so the dashboard can
++        always explain a KILLED state (auto-drawdown, operator, or a kill flag
++        restored from a saved snapshot). Idempotent-ish: keeps the first
++        reason if already killed without one."""
++        self.killed = True
++        self.kill_reason = reason
++        self.kill_ts = time.time()
++        db.log_event("risk", f"KILL SWITCH: {reason}")
++
      def reset_kill(self):
          self.killed = False
++        self.kill_reason = ""
++        self.kill_ts = None
          self.peak_equity = 0.0
 -        db.log_event("risk", "Kill switch manually reset")
 +        # clearing the kill switch must also clear the daily loss halt and the
 +        # loss-streak throttle — otherwise the operator "resets" but new
 +        # entries stay blocked by `halted_today` until the next UTC day.
 +        self.halted_today = False
++        self.halt_reason = ""
 +        self.consecutive_losses = 0
 +        self.risk_scale = 1.0
 +        db.log_event("risk", "Kill switch manually reset (daily halt cleared)")
@@ -176,12 +300,67 @@ index 0651fb9..f385033 100644
      # ---- costs ----
      "fee_rate":          T(0.005, 0.0, 0.02, 0.0005, "costs", "Fee rate (per side)",
                             "Taker fee per fill; 0.005 = 0.5% (realistic retail)"),
+diff --git a/static/index.html b/static/index.html
+index b591553..28bc519 100644
+--- a/static/index.html
++++ b/static/index.html
+@@ -93,6 +93,7 @@
+   <button id="btn-pause">⏸ Pause</button>
+   <button id="btn-resume">▶ Resume</button>
+   <button class="danger" id="btn-kill">🛑 Kill switch</button>
++  <button id="btn-reset-kill" style="border-color:#3a5a2e;color:#8fd694;display:none">♻️ Reset kill</button>
+   <button id="btn-settings" style="border-color:#4a5a7a;color:#9db8e8">⚙️ Settings</button>
+   <button id="btn-restart" style="border-color:#3a5a2e;color:#8fd694">🔄 Restart server</button>
+   <button class="danger" id="btn-shutdown" style="background:#2a1215">⏻ Kill server</button>
+@@ -513,9 +514,25 @@ async function refresh(){
+     }
+ 
+     $('#b-data').innerHTML='data: '+(st.data_healthy?'<span class="ok">LIVE</span>':'<span class="bad">DOWN</span>');
+-    $('#b-trading').innerHTML='trading: '+(st.kill_switch?'<span class="bad">KILLED</span>'
+-      :st.halted_today?'<span class="warn">HALTED</span>'
++    const _why = st.kill_switch ? (st.kill_reason||'reason not recorded')
++               : st.halted_today ? (st.halt_reason||'daily loss halt')
++               : '';
++    const _whyt = _why ? ' title="'+_why.replace(/"/g,'&quot;')+'"' : '';
++    $('#b-trading').innerHTML='trading: '+(st.kill_switch?'<span class="bad"'+_whyt+'>KILLED</span>'
++      :st.halted_today?'<span class="warn"'+_whyt+'>HALTED</span>'
+       :st.trading_enabled?'<span class="ok">ACTIVE</span>':'<span class="warn">PAUSED</span>');
++    // spell the reason out under the status bar (not just a tooltip)
++    let _wl=$('#b-why');
++    if(_why){
++      if(!_wl){_wl=document.createElement('div');_wl.id='b-why';
++        _wl.style.cssText='font-size:11px;color:var(--dim);margin-top:2px';
++        $('#b-trading').parentNode.appendChild(_wl);}
++      const _when = st.kill_ts ? ' · since '+new Date(st.kill_ts*1000).toLocaleString() : '';
++      const _how = st.kill_switch ? ' — press “Reset kill” to resume (Resume alone won’t clear it)' : '';
++      _wl.textContent='↳ '+_why+(st.kill_switch?_when:'')+_how;
++    } else if(_wl){ _wl.remove(); }
++    // show the Reset-kill button only when it's actionable (killed or halted)
++    const _rk=$('#btn-reset-kill'); if(_rk) _rk.style.display=(st.kill_switch||st.halted_today)?'':'none';
+     $('#b-regime').textContent='regime: '+(st.regime?st.regime.label:'—');
+ 
+     $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD) · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
+@@ -678,9 +695,13 @@ async function refresh(){
+ 
+ // controls
+ $('#btn-pause').onclick=()=>j('/api/control/pause',{method:'POST'}).then(refresh);
+-$('#btn-resume').onclick=()=>j('/api/control/resume',{method:'POST'}).then(refresh);
++$('#btn-resume').onclick=()=>j('/api/control/resume',{method:'POST'}).then(res=>{
++  if(res&&res.blocked){alert(res.message||'Cannot resume: trading is blocked. Reset the kill switch first.');}
++  refresh();});
+ $('#btn-kill').onclick=()=>{if(confirm('Flatten all positions and stop trading?'))
+   j('/api/control/kill',{method:'POST'}).then(refresh);};
++$('#btn-reset-kill').onclick=()=>{if(confirm('Reset the kill switch?\n\nThis clears the KILLED state and the daily-loss halt so trading can resume.'))
++  j('/api/control/reset-kill',{method:'POST'}).then(()=>j('/api/control/resume',{method:'POST'})).then(refresh);};
+ $('#btn-shutdown').onclick=async()=>{
+   const s=window._settings||{flatten_on_shutdown:true};
+   const posLine=s.flatten_on_shutdown
 diff --git a/tests/test_risk_sanity.py b/tests/test_risk_sanity.py
 new file mode 100644
-index 0000000..8a5512f
+index 0000000..72a4e80
 --- /dev/null
 +++ b/tests/test_risk_sanity.py
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,150 @@
 +"""Regression tests for the penny-asset / junk-price blowup (PUMP-USD).
 +
 +Covers the four fixes:
@@ -314,3 +493,21 @@ index 0000000..8a5512f
 +    assert r.killed is False
 +    assert r.halted_today is False          # the key fix
 +    assert r.consecutive_losses == 0
++
++
++# ---------- kill-reason feature ----------
++
++def test_trip_kill_records_reason_and_time():
++    r = RiskManager()
++    r.trip_kill("Manual: operator pressed the kill switch")
++    assert r.killed is True
++    assert "operator" in r.kill_reason
++    assert r.kill_ts is not None
++
++
++def test_reset_clears_kill_reason():
++    r = RiskManager()
++    r.trip_kill("Auto: max drawdown breached")
++    r.reset_kill()
++    assert r.kill_reason == ""
++    assert r.kill_ts is None

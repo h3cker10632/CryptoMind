@@ -130,3 +130,21 @@ def test_reset_kill_clears_daily_halt():
     assert r.killed is False
     assert r.halted_today is False          # the key fix
     assert r.consecutive_losses == 0
+
+
+# ---------- kill-reason feature ----------
+
+def test_trip_kill_records_reason_and_time():
+    r = RiskManager()
+    r.trip_kill("Manual: operator pressed the kill switch")
+    assert r.killed is True
+    assert "operator" in r.kill_reason
+    assert r.kill_ts is not None
+
+
+def test_reset_clears_kill_reason():
+    r = RiskManager()
+    r.trip_kill("Auto: max drawdown breached")
+    r.reset_kill()
+    assert r.kill_reason == ""
+    assert r.kill_ts is None

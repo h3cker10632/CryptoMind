@@ -66,7 +66,10 @@ def capture():
             "day_start_equity": risk.day_start_equity,
             "day_start_ts": risk.day_start_ts,
             "killed": risk.killed,
+            "kill_reason": risk.kill_reason,
+            "kill_ts": risk.kill_ts,
             "halted_today": risk.halted_today,
+            "halt_reason": risk.halt_reason,
             "day_index": getattr(risk, "day_index", None),
             "cooldowns": risk.cooldowns,
             "risk_scale": risk.risk_scale,
@@ -198,7 +201,17 @@ def load():
             risk.day_start_equity = r.get("day_start_equity")
             risk.day_start_ts = r.get("day_start_ts", time.time())
             risk.killed = r.get("killed", False)
+            risk.kill_ts = r.get("kill_ts")
             risk.halted_today = r.get("halted_today", False)
+            risk.halt_reason = r.get("halt_reason", "")
+            if risk.killed:
+                # a kill flag reloaded from a snapshot is the sneaky "why is it
+                # KILLED and I never pressed it?" case — make that explicit.
+                prev = r.get("kill_reason", "")
+                risk.kill_reason = (
+                    (prev + " · restored from saved state on restart")
+                    if prev else "Restored from saved state on restart "
+                                 "(kill switch was active when last saved)")
             if r.get("day_index") is not None:
                 risk.day_index = r["day_index"]
             risk.cooldowns = r.get("cooldowns", {})

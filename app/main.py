@@ -222,6 +222,17 @@ def pause():
 
 @app.post("/api/control/resume")
 def resume():
+    # Resuming is meaningless while the kill switch is tripped: can_open()
+    # blocks every entry and the status stays KILLED. Refuse clearly instead
+    # of silently flipping trading_enabled with no visible effect.
+    if risk.killed:
+        return {"trading_enabled": False, "blocked": "kill_switch",
+                "message": "Trading is KILLED — reset the kill switch first "
+                           f"({risk.kill_reason or 'reason not recorded'})."}
+    if risk.halted_today:
+        return {"trading_enabled": False, "blocked": "daily_halt",
+                "message": "Daily loss halt active — reset the kill switch to "
+                           "clear it, or wait for the next UTC day."}
     orch.running = True
     db.log_event("system", "Trading RESUMED by operator")
     return {"trading_enabled": True}
@@ -229,7 +240,7 @@ def resume():
 
 @app.post("/api/control/kill")
 def kill():
-    risk.killed = True
+    risk.trip_kill("Manual: operator pressed the kill switch")
     orch.running = False
     flattened, stranded = [], []
     for p in list(broker.positions.keys()):

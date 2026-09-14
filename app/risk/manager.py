@@ -19,7 +19,10 @@ class RiskManager:
         self.day_start_ts = time.time()
         self.day_index = _utc_day()
         self.killed = False
+        self.kill_reason = ""        # human-readable why + when the switch tripped
+        self.kill_ts = None
         self.halted_today = False
+        self.halt_reason = ""
         self.cooldowns = {}          # product -> ts of last exit/entry
         self.risk_scale = 1.0        # adaptive multiplier
         self.consecutive_losses = 0
@@ -51,14 +54,19 @@ class RiskManager:
         day_loss = 1 - equity / self.day_start_equity if self.day_start_equity else 0.0
 
         if dd >= tv("max_drawdown_kill") and not self.killed:
-            self.killed = True
-            db.log_event("risk", f"KILL SWITCH: max drawdown {dd:.1%} breached")
+            self.trip_kill(
+                f"Auto: max drawdown {dd:.1%} breached the "
+                f"{tv('max_drawdown_kill'):.0%} limit "
+                f"(equity ${equity:,.0f}, peak ${self.peak_equity:,.0f})")
             from ..alerts import alert
             alert("critical", "KILL SWITCH TRIPPED",
                   f"Max drawdown {dd:.1%} breached (limit {tv('max_drawdown_kill'):.0%}). "
                   f"Equity ${equity:,.0f}. Trading stopped until manual reset.")
         if day_loss >= tv("daily_loss_limit") and not self.halted_today:
             self.halted_today = True
+            self.halt_reason = (f"Auto: daily loss {day_loss:.1%} hit the "
+                                f"{tv('daily_loss_limit'):.0%} limit "
+                                f"(equity ${equity:,.0f})")
             db.log_event("risk", f"Daily loss limit hit ({day_loss:.1%}) — trading halted for the day")
             from ..alerts import alert
             alert("critical", "DAILY LOSS HALT",
@@ -216,13 +224,26 @@ class RiskManager:
         base_vol = sum(c[5] for c in recent)      # base-asset volume
         return base_vol * price
 
+    def trip_kill(self, reason):
+        """Trip the kill switch and RECORD why + when, so the dashboard can
+        always explain a KILLED state (auto-drawdown, operator, or a kill flag
+        restored from a saved snapshot). Idempotent-ish: keeps the first
+        reason if already killed without one."""
+        self.killed = True
+        self.kill_reason = reason
+        self.kill_ts = time.time()
+        db.log_event("risk", f"KILL SWITCH: {reason}")
+
     def reset_kill(self):
         self.killed = False
+        self.kill_reason = ""
+        self.kill_ts = None
         self.peak_equity = 0.0
         # clearing the kill switch must also clear the daily loss halt and the
         # loss-streak throttle — otherwise the operator "resets" but new
         # entries stay blocked by `halted_today` until the next UTC day.
         self.halted_today = False
+        self.halt_reason = ""
         self.consecutive_losses = 0
         self.risk_scale = 1.0
         db.log_event("risk", "Kill switch manually reset (daily halt cleared)")
