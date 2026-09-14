@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CryptoMind — Autonomous Trading System</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#12161f; --panel2:#181d29; --border:#232a3a;
+    --text:#dbe2f0; --dim:#7c8798; --green:#2ecc71; --red:#e74c3c;
+    --accent:#4f8ef7; --amber:#f5a623;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.45 'Segoe UI',system-ui,sans-serif;padding:16px}
+  h1{font-size:19px;letter-spacing:.5px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:10px}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+  .badge{padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;border:1px solid var(--border)}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;overflow:auto}
+  .span3{grid-column:span 3}.span4{grid-column:span 4}.span6{grid-column:span 6}
+  .span8{grid-column:span 8}.span12{grid-column:span 12}
+  @media(max-width:1100px){.span3,.span4,.span6,.span8{grid-column:span 12}}
+  .kpi{font-size:22px;font-weight:700}
+  .kpi small{font-size:12px;color:var(--dim);font-weight:400;display:block}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{color:var(--dim);text-align:left;font-weight:600;padding:4px 8px;border-bottom:1px solid var(--border)}
+  td{padding:5px 8px;border-bottom:1px solid #1a2030}
+  .pos{color:var(--green)} .neg{color:var(--red)}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:7px 14px;cursor:pointer;font-size:12.5px;font-weight:600}
+  button:hover{border-color:var(--accent)}
+  button.danger{color:var(--red);border-color:#5a2323}
+  select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px}
+  .bar{height:8px;border-radius:4px;background:#222b3d;overflow:hidden}
+  .bar>div{height:100%;background:var(--accent)}
+  /* toggle switch */
+  .toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);cursor:pointer;user-select:none}
+  #settings-modal{display:none;position:fixed;inset:0;background:rgba(8,10,14,.82);z-index:60;overflow-y:auto}
+  #settings-modal.open{display:block}
+  .sm-box{max-width:980px;margin:32px auto;background:#161a22;border:1px solid #2a3040;border-radius:12px;padding:22px 26px}
+  .sm-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .sm-group{margin-top:20px}
+  .sm-group>h3{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--accent);margin:0 0 8px}
+  .sm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 26px}
+  @media(max-width:800px){.sm-grid{grid-template-columns:1fr}}
+  .sm-row{display:grid;grid-template-columns:1fr 120px 78px;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid #1e2430}
+  .sm-row label{font-size:12.5px;color:#cdd6e4;cursor:help}
+  .sm-row input[type=range]{width:100%}
+  .sm-row input[type=number]{width:100%;background:#0f1218;border:1px solid #333a48;color:#e8ecf4;border-radius:5px;padding:3px 6px;font-size:12px}
+  .sm-row.changed label{color:#ffd479}
+  .seg{display:flex;align-items:center;gap:6px;font-size:12px}
+  .seg button{background:#20242e;border:1px solid #333a48;color:var(--dim);
+    border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px}
+  .seg button.active{background:#2b3242;color:#e8ecf4;border-color:#56607a}
+  .toggle .sw{width:34px;height:18px;border-radius:10px;background:#222b3d;border:1px solid var(--border);
+    position:relative;transition:background .15s;flex:none}
+  .toggle .sw::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;
+    background:var(--dim);transition:left .15s, background .15s}
+  .toggle.on .sw{background:#1d3a2a;border-color:#2e5c42}
+  .toggle.on .sw::after{left:18px;background:var(--green)}
+  .toggle b{color:var(--text);font-weight:600}
+  canvas{width:100%;height:150px}
+  .tf-bar{display:flex;gap:4px;align-items:center}
+  .tf-bar button{padding:3px 9px;font-size:11px;letter-spacing:.4px}
+  .tf-bar button.on{background:#1d2a45;border-color:var(--accent);color:#8fb4ff}
+  .chart-wrap{position:relative}
+  .chart-tip{position:absolute;pointer-events:none;display:none;z-index:2;
+    background:#0e1420;border:1px solid var(--border);border-radius:6px;
+    padding:6px 10px;font-size:12px;line-height:1.35;white-space:nowrap;
+    box-shadow:0 6px 18px rgba(0,0,0,.4)}
+  .chart-tip b{font-size:13px}
+  .doc{padding:5px 0;border-bottom:1px solid #1a2030;font-size:12.5px}
+  .doc .src{color:var(--dim);font-size:11px}
+  .tag{display:inline-block;background:#1d2a45;color:#8fb4ff;border-radius:4px;
+    padding:1px 6px;font-size:10.5px;margin-left:5px}
+  .event{font-size:12px;padding:3px 0;border-bottom:1px solid #1a2030}
+  .event .t{color:var(--dim)}
+  pre{font-size:11.5px;white-space:pre-wrap;color:#a9c1e8}
+  .mono{font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ CryptoMind <span style="color:var(--dim);font-weight:400">— self-learning crypto trading system</span></h1>
+  <span class="badge" id="b-mode">PAPER TRADING</span>
+  <span class="badge" id="b-data">data: …</span>
+  <span class="badge" id="b-trading">trading: …</span>
+  <span class="badge" id="b-regime">regime: …</span>
+  <span class="badge" id="b-blackout" style="display:none"></span>
+  <span style="flex:1"></span>
+  <button id="btn-pause">⏸ Pause</button>
+  <button id="btn-resume">▶ Resume</button>
+  <button class="danger" id="btn-kill">🛑 Kill switch</button>
+  <button id="btn-settings" style="border-color:#4a5a7a;color:#9db8e8">⚙️ Settings</button>
+  <button id="btn-restart" style="border-color:#3a5a2e;color:#8fd694">🔄 Restart server</button>
+  <button class="danger" id="btn-shutdown" style="background:#2a1215">⏻ Kill server</button>
+</header>
+<div style="display:flex;gap:22px;flex-wrap:wrap;margin:-6px 0 14px 0;padding:8px 12px;
+  background:var(--panel);border:1px solid var(--border);border-radius:8px">
+  <div class="toggle" id="tg-flatten" title="What happens to open positions when you press Kill server">
+    <div class="sw"></div>
+    <span>on kill server: <b id="tg-flatten-label">flatten positions</b></span>
+  </div>
+  <div class="toggle" id="tg-carry" title="What happens to the paper account when the server restarts">
+    <div class="sw"></div>
+    <span>on restart: <b id="tg-carry-label">carry equity over</b></span>
+  </div>
+  <div class="toggle" id="tg-shorts" title="Allow the system to open SHORT positions (margin-style paper)">
+    <div class="sw"></div>
+    <span>shorts: <b id="tg-shorts-label">enabled</b></span>
+  </div>
+  <div class="toggle" id="tg-hedge" title="Market-neutral pair hedging: long laggard / short leader when relative strength diverges past the z-score gate (needs shorts enabled)">
+    <div class="sw"></div>
+    <span>pair hedge: <b id="tg-hedge-label">on</b></span>
+  </div>
+  <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
+    <span style="color:var(--dim)">stance:</span>
+    <button data-mode="passive">🛡 passive</button>
+    <button data-mode="auto">🤖 auto</button>
+    <button data-mode="aggressive">🔥 aggressive</button>
+    <span id="stance-now" style="color:var(--dim)"></span>
+  </div>
+  <span style="color:var(--dim);font-size:11.5px;align-self:center">learned intelligence (models · bandit · Q-table · champion · universe) always survives restarts</span>
+</div>
+
+<div id="restart-overlay" style="display:none;position:fixed;inset:0;background:rgba(11,14,20,.93);
+  z-index:99;align-items:center;justify-content:center;flex-direction:column;gap:14px">
+  <div style="font-size:42px" class="spin">🔄</div>
+  <div style="font-size:20px;font-weight:700">Restarting server…</div>
+  <div style="color:var(--dim);text-align:center;max-width:440px" id="restart-msg">
+    State saved. Waiting for the server to come back —
+    this page will reconnect automatically.
+  </div>
+  <div style="color:var(--dim);font-size:12px" id="restart-count"></div>
+</div>
+<style>.spin{animation:spin 1.6s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}</style>
+
+<div id="shutdown-overlay" style="display:none;position:fixed;inset:0;background:rgba(11,14,20,.93);
+  z-index:99;align-items:center;justify-content:center;flex-direction:column;gap:14px">
+  <div style="font-size:42px">⏻</div>
+  <div style="font-size:20px;font-weight:700">Server shut down</div>
+  <div style="color:var(--dim);text-align:center;max-width:440px" id="shutdown-msg">
+    State was saved to <span class="mono">state.json</span>.<br>
+    Restart the server to resume — state will be restored per your toggles.
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card span3"><div class="kpi" id="k-equity">—<small>Equity (USD)</small></div></div>
+  <div class="card span3"><div class="kpi" id="k-pnl">—<small>Realized PnL</small></div></div>
+  <div class="card span3"><div class="kpi" id="k-exposure">—<small>Exposure / Cash</small></div></div>
+  <div class="card span3"><div class="kpi" id="k-sent">—<small>Market sentiment · Fear&Greed</small></div></div>
+
+  <div class="card span8">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <h2 style="margin:0">Equity curve</h2>
+      <div class="tf-bar" id="eq-tf">
+        <button data-tf="20s">20s</button>
+        <button data-tf="5m">5m</button>
+        <button data-tf="1d" class="on">1D</button>
+        <button data-tf="1w">1W</button>
+        <button data-tf="1m">1M</button>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart-equity" height="150"></canvas>
+      <div class="chart-tip" id="eq-tip"></div>
+    </div>
+  </div>
+  <div class="card span4">
+    <h2>Adaptive strategy weights <span style="text-transform:none">(Thompson bandit, per regime)</span></h2>
+    <div id="weights"></div>
+  </div>
+
+  <div class="card span12">
+    <h2>🧠 Learning intelligence stack</h2>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px" id="learn-grid">
+      <div>
+        <h2>Online neural net (continual)</h2>
+        <div id="ml-stats" style="font-size:12.5px"></div>
+      </div>
+      <div>
+        <h2>RL risk controller (Q-learning)</h2>
+        <div id="rl-stats" style="font-size:12.5px"></div>
+      </div>
+      <div>
+        <h2>Drift detection (PSI)</h2>
+        <div id="drift-stats" style="font-size:12.5px"></div>
+      </div>
+      <div>
+        <h2>Genetic evolution <button id="btn-evolve" style="padding:2px 8px;font-size:11px">▶ run now</button></h2>
+        <div id="evo-stats" style="font-size:12.5px"></div>
+      </div>
+    </div>
+    <h2 style="margin-top:12px">Bandit posteriors — current regime <span id="bandit-regime" style="text-transform:none;color:var(--accent)"></span></h2>
+    <table id="tbl-bandit"><thead><tr>
+      <th>Strategy</th><th>Samples (regime / pool)</th><th>Mean aligned return (bps)</th><th>Std (bps)</th><th>Hit rate</th><th>Weight</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card span12">
+    <h2>🔭 Dynamic universe &amp; source discovery</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div>
+        <h2>Trading universe</h2>
+        <div id="uni-core" style="margin-bottom:6px"></div>
+        <div id="uni-disc" style="margin-bottom:8px"></div>
+        <h2>Narrative heat (mentions)</h2>
+        <div id="uni-heat"></div>
+      </div>
+      <div>
+        <h2>Watching / rejected candidates</h2>
+        <div id="uni-rej" style="font-size:12.5px"></div>
+        <h2 style="margin-top:10px">CoinGecko trending</h2>
+        <div id="uni-trend"></div>
+      </div>
+      <div>
+        <h2>Data sources</h2>
+        <div id="src-list" style="font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card span12">
+    <h2>Derivatives intelligence — OKX perp markets <span id="deriv-health" style="text-transform:none"></span></h2>
+    <table id="tbl-deriv"><thead><tr>
+      <th>Asset</th><th>Funding /8h</th><th>Funding APR</th><th>Open interest</th><th>OI Δ24h</th>
+      <th>Long/Short ratio</th><th>Taker buy %</th><th>Read</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card span6">
+    <h2>Live signals</h2>
+    <table id="tbl-signals"><thead><tr>
+      <th>Asset</th><th>Price</th><th>Dir</th><th>Conf</th><th>RSI</th><th>Sent</th><th>Edge bps</th><th>Action</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card span6">
+    <h2>Open positions</h2>
+    <table id="tbl-pos"><thead><tr>
+      <th>Asset</th><th>Qty</th><th>Entry</th><th>Price</th><th>Stop</th><th>Target</th><th>uPnL</th>
+    </tr></thead><tbody></tbody></table>
+    <h2 style="margin-top:14px">⚖️ Pair hedges <span style="text-transform:none;color:var(--dim);font-size:11px">(market-neutral, 2.7σ divergence)</span></h2>
+    <div id="hedge-box" style="font-size:12px;color:var(--dim)">no active hedges</div>
+    <h2 style="margin-top:14px">Recent closed trades</h2>
+    <table id="tbl-closed"><thead><tr>
+      <th>Asset</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Reason</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card span4">
+    <h2>Research feed (live news &amp; social)</h2>
+    <div style="margin-bottom:8px;font-size:12.5px" id="macro-line"></div>
+    <div style="margin-bottom:8px;font-size:12px" id="macro-cal"></div>
+    <div id="docs"></div>
+  </div>
+  <div class="card span4">
+    <h2>Self-directed research queue &amp; narratives</h2>
+    <div id="queue"></div>
+    <h2 style="margin-top:12px">Top narratives</h2>
+    <div id="narratives"></div>
+  </div>
+  <div class="card span4">
+    <h2>Audit log</h2>
+    <div id="events"></div>
+    <h2 style="margin-top:14px">🔔 Alerts <span id="alert-chan" style="text-transform:none;font-size:11px"></span></h2>
+    <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      <button id="btn-alert-cfg" style="padding:3px 10px;font-size:11px">⚙ configure</button>
+      <button id="btn-alert-test" style="padding:3px 10px;font-size:11px">📤 send test</button>
+    </div>
+    <div id="alerts-feed"></div>
+  </div>
+
+  <div class="card span12">
+    <h2>Backtesting &amp; validation (real historical data, walk-forward split)</h2>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+      <select id="bt-product"></select>
+      <select id="bt-strategy">
+        <option value="trend">trend</option>
+        <option value="meanrev">meanrev</option>
+        <option value="breakout">breakout</option>
+      </select>
+      <button id="btn-bt">Run backtest</button>
+      <span id="bt-status" style="color:var(--dim)"></span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <pre id="bt-result">Run a backtest to see in-sample vs out-of-sample results…</pre>
+      <canvas id="chart-bt" height="150"></canvas>
+    </div>
+  </div>
+</div>
+
+<div id="settings-modal">
+  <div class="sm-box">
+    <div class="sm-head">
+      <h2 style="margin:0">⚙️ Settings — every knob, live</h2>
+      <div style="display:flex;gap:8px">
+        <button id="sm-reset" style="border-color:#5a3a2e;color:#e8a87c">↺ reset all to defaults</button>
+        <button id="sm-close">✕ close</button>
+      </div>
+    </div>
+    <div style="color:var(--dim);font-size:12px">Changes apply <b>immediately</b> to the running system (no restart) and persist across restarts. Amber = changed from default. Hover a name for what it does. Reality check built in: costs are first-class knobs — if a config only works at zero fees, it doesn't work.</div>
+    <div id="sm-groups"></div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const fmt=(x,d=2)=>x==null?'—':Number(x).toLocaleString('en-US',{maximumFractionDigits:d,minimumFractionDigits:d});
+const cls=x=>x>=0?'pos':'neg';
+
+async function j(u,opt){const r=await fetch(u,opt);return r.json();}
+
+function drawLine(canvas, points, color){
+  const c=canvas.getContext('2d'), W=canvas.width=canvas.clientWidth*2, H=canvas.height=300;
+  c.clearRect(0,0,W,H);
+  if(!points||points.length<2){c.fillStyle='#556';c.font='24px sans-serif';c.fillText('collecting data…',20,60);return;}
+  const ys=points.map(p=>p[1]);
+  let lo=Math.min(...ys), hi=Math.max(...ys);
+  if(hi-lo<1e-9){lo-=1;hi+=1;}
+  const pad=(hi-lo)*0.08; lo-=pad; hi+=pad;
+  c.strokeStyle='#232a3a';
+  for(let i=1;i<4;i++){const y=H*i/4;c.beginPath();c.moveTo(0,y);c.lineTo(W,y);c.stroke();}
+  c.strokeStyle=color;c.lineWidth=3;c.beginPath();
+  points.forEach((p,i)=>{
+    const x=i/(points.length-1)*W, y=H-(p[1]-lo)/(hi-lo)*H;
+    i?c.lineTo(x,y):c.moveTo(x,y);
+  });
+  c.stroke();
+  c.fillStyle='#7c8798';c.font='22px sans-serif';
+  c.fillText(fmt(hi-pad),8,26); c.fillText(fmt(lo+pad),8,H-10);
+}
+
+let eqTf='1d', eqHover=null;
+const eqChart={pts:[], lo:0, hi:0, W:0, H:0};
+
+function eqX(i, n, W){return n<=1?0:i/(n-1)*W;}
+function eqY(v, lo, hi, H){return H-(v-lo)/(hi-lo)*H;}
+
+function drawEquity(points, hoverIdx){
+  const canvas=$('#chart-equity');
+  if(!canvas) return;
+  const c=canvas.getContext('2d'), W=canvas.width=canvas.clientWidth*2, H=canvas.height=300;
+  eqChart.W=W; eqChart.H=H; eqChart.pts=points||[];
+  c.clearRect(0,0,W,H);
+  if(!points||!points.length){
+    c.fillStyle='#556';c.font='24px sans-serif';c.fillText('collecting data…',20,60);
+    return;
+  }
+  const ys=points.map(p=>p[1]);
+  let lo=Math.min(...ys), hi=Math.max(...ys);
+  if(hi-lo<1e-9){lo-=1;hi+=1;}
+  const pad=(hi-lo)*0.08; lo-=pad; hi+=pad;
+  eqChart.lo=lo; eqChart.hi=hi;
+  c.strokeStyle='#232a3a';
+  for(let i=1;i<4;i++){const y=H*i/4;c.beginPath();c.moveTo(0,y);c.lineTo(W,y);c.stroke();}
+  c.strokeStyle='#4f8ef7';c.lineWidth=3;c.beginPath();
+  points.forEach((p,i)=>{
+    const x=eqX(i,points.length,W), y=eqY(p[1],lo,hi,H);
+    i?c.lineTo(x,y):c.moveTo(x,y);
+  });
+  c.stroke();
+  if(points.length===1){
+    const x=eqX(0,1,W), y=eqY(points[0][1],lo,hi,H);
+    c.fillStyle='#4f8ef7';c.beginPath();c.arc(x,y,8,0,Math.PI*2);c.fill();
+  }
+  c.fillStyle='#7c8798';c.font='22px sans-serif';
+  c.fillText(fmt(hi-pad),8,26); c.fillText(fmt(lo+pad),8,H-10);
+  if(hoverIdx==null||hoverIdx<0||hoverIdx>=points.length) return;
+  const p=points[hoverIdx];
+  const x=eqX(hoverIdx,points.length,W), y=eqY(p[1],lo,hi,H);
+  c.strokeStyle='rgba(219,226,240,.35)';c.lineWidth=1;
+  c.beginPath();c.moveTo(x,0);c.lineTo(x,H);c.stroke();
+  c.fillStyle='#4f8ef7';
+  c.beginPath();c.arc(x,y,7,0,Math.PI*2);c.fill();
+  c.fillStyle='#dbe2f0';
+  c.beginPath();c.arc(x,y,3,0,Math.PI*2);c.fill();
+}
+
+function eqTipAt(idx){
+  const tip=$('#eq-tip'), pts=eqChart.pts;
+  if(idx==null||idx<0||!pts[idx]){tip.style.display='none';return;}
+  const p=pts[idx], d=new Date(p[0]*1000);
+  const t=d.toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const chg=pts.length?p[1]-pts[0][1]:0;
+  tip.innerHTML=`<b class="${cls(chg)}">$${fmt(p[1])}</b><br><span style="color:var(--dim)">${t}</span>`
+    +(pts.length>1?`<br><span class="${cls(chg)}">${chg>=0?'+':''}${fmt(chg)} from window start</span>`:'');
+  tip.style.display='block';
+  const wrap=$('.chart-wrap'), Wcss=wrap.clientWidth, Hcss=wrap.clientHeight;
+  const x=(eqChart.W?eqX(idx,pts.length,eqChart.W)/eqChart.W:0)*Wcss;
+  let left=x+12, top=12;
+  if(left+tip.offsetWidth+8>Wcss) left=x-tip.offsetWidth-12;
+  if(left<4) left=4;
+  if(top+tip.offsetHeight+8>Hcss) top=Hcss-tip.offsetHeight-8;
+  tip.style.left=left+'px'; tip.style.top=top+'px';
+}
+
+function eqIdxFromEvent(e){
+  const pts=eqChart.pts;
+  if(!pts.length) return null;
+  const r=$('#chart-equity').getBoundingClientRect();
+  const t=Math.max(0, Math.min(1, (e.clientX-r.left)/Math.max(1,r.width)));
+  return Math.round(t*(pts.length-1));
+}
+
+(function(){
+  const canvas=$('#chart-equity');
+  canvas.addEventListener('mousemove', e=>{
+    const i=eqIdxFromEvent(e);
+    eqHover=i;
+    drawEquity(eqChart.pts, i);
+    eqTipAt(i);
+  });
+  canvas.addEventListener('mouseleave', ()=>{
+    eqHover=null;
+    drawEquity(eqChart.pts, null);
+    eqTipAt(null);
+  });
+  $('#eq-tf').addEventListener('click', e=>{
+    const b=e.target.closest('button[data-tf]');
+    if(!b) return;
+    eqTf=b.dataset.tf;
+    $('#eq-tf').querySelectorAll('button').forEach(x=>x.classList.toggle('on', x===b));
+    refresh();
+  });
+})();
+
+async function refresh(){
+  try{
+    const [st,sig,res,tr,eq,ev,ln,dv,un]=await Promise.all([
+      j('/api/status'),j('/api/signals'),j('/api/research'),
+      j('/api/trades'),j('/api/equity?tf='+eqTf),j('/api/events'),j('/api/learning'),
+      j('/api/derivatives'),j('/api/universe')]);
+
+    // ===== universe & sources =====
+    $('#uni-core').innerHTML='core: '+(un.core||[]).map(p=>'<span class="tag">'+p.split('-')[0]+'</span>').join(' ');
+    $('#uni-disc').innerHTML='discovered: '+((un.discovered||[]).length
+      ?un.discovered.map(p=>'<span class="tag" style="background:#1d3a2a;color:#7fe0a7">'+p.split('-')[0]+' 🔭</span>').join(' ')
+      :'<span style="color:var(--dim)">none yet — scanning narratives…</span>');
+    $('#uni-heat').innerHTML=Object.entries(un.mention_heat||{}).slice(0,10).map(([s,h])=>
+      `<div style="display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid #1a2030;padding:2px 0">
+      <span>${s}</span><span class="mono">${h}</span></div>`).join('')||'<span style="color:var(--dim)">collecting…</span>';
+    $('#uni-rej').innerHTML=Object.entries(un.rejected||{}).map(([s,r])=>
+      `<div class="doc">⏳ <b>${s}</b> — ${r}</div>`).join('')||'<span style="color:var(--dim)">none</span>';
+    $('#uni-trend').innerHTML=(un.trending_coingecko||[]).map(s=>'<span class="tag" style="margin:2px">'+s+'</span>').join('');
+    const srcRow=f=>{
+      const h=f.health==='ok'?'<span class="ok">●</span>':f.health==='demoted'?'<span class="bad">●</span>'
+        :f.health.startsWith('backoff')?'<span class="warn">●</span>':'<span style="color:var(--dim)">●</span>';
+      return `<div style="display:flex;justify-content:space-between;border-bottom:1px solid #1a2030;padding:2px 0">
+      <span>${h} ${f.name}</span><span style="color:var(--dim)">${f.health}${f.items?' · '+f.items+' items':''}</span></div>`;};
+    const src=un.sources||{};
+    $('#src-list').innerHTML=
+      '<div style="color:var(--dim);margin:4px 0">promoted</div>'+(src.promoted||[]).map(srcRow).join('')+
+      '<div style="color:var(--dim);margin:4px 0">on trial</div>'+(src.on_trial||[]).map(srcRow).join('')+
+      ((src.coin_specific||[]).length?'<div style="color:var(--dim);margin:4px 0">coin-specific (auto-spawned)</div>'+(src.coin_specific||[]).map(srcRow).join(''):'')+
+      ((src.demoted||[]).length?'<div style="color:var(--dim);margin:4px 0">demoted</div>'+(src.demoted||[]).map(srcRow).join(''):'');
+
+    // keep backtest product list in sync with live universe
+    const uniList=un.universe||[];
+    if(uniList.length && uniList.join()!==window._uniCache){
+      window._uniCache=uniList.join();
+      const sel=$('#bt-product'), cur=sel.value;
+      sel.innerHTML=uniList.map(p=>`<option>${p}</option>`).join('');
+      if(uniList.includes(cur)) sel.value=cur;
+    }
+
+    $('#b-data').innerHTML='data: '+(st.data_healthy?'<span class="ok">LIVE</span>':'<span class="bad">DOWN</span>');
+    $('#b-trading').innerHTML='trading: '+(st.kill_switch?'<span class="bad">KILLED</span>'
+      :st.halted_today?'<span class="warn">HALTED</span>'
+      :st.trading_enabled?'<span class="ok">ACTIVE</span>':'<span class="warn">PAUSED</span>');
+    $('#b-regime').textContent='regime: '+(st.regime?st.regime.label:'—');
+
+    $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD) · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
+    $('#k-pnl').innerHTML='<span class="'+cls(st.realized_pnl)+'">'+fmt(st.realized_pnl)+'</span><small>Realized PnL · '+ (st.stats.trades||0)+' trades · win '+(st.stats.win_rate!=null?fmt(st.stats.win_rate*100,0)+'%':'—')+'</small>';
+    $('#k-exposure').innerHTML=fmt(st.exposure)+'<small>Exposure · Cash '+fmt(st.cash)+'</small>';
+    const fg=st.fear_greed?st.fear_greed.value+' ('+st.fear_greed.label+')':'—';
+    $('#k-sent').innerHTML='<span class="'+cls(st.market_sentiment)+'">'+fmt(st.market_sentiment,3)+'</span><small>Market sentiment · F&G '+fg+'</small>';
+
+    // weights
+    $('#weights').innerHTML=Object.entries(st.strategy_weights||{}).map(([k,v])=>
+      `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between">
+      <span>${k}</span><span class="mono">${(v*100).toFixed(1)}%</span></div>
+      <div class="bar"><div style="width:${v*100}%"></div></div></div>`).join('');
+
+    // derivatives
+    $('#deriv-health').innerHTML=dv.healthy?'<span class="ok">(live)</span>':'<span class="warn">(connecting…)</span>';
+    $('#tbl-deriv tbody').innerHTML=Object.entries(dv.metrics||{}).map(([p,m])=>{
+      const fr=m.funding_rate??0, apr=fr*3*365*100;
+      const oi=m.oi_usd?(m.oi_usd>1e9?(m.oi_usd/1e9).toFixed(2)+'B':(m.oi_usd/1e6).toFixed(0)+'M'):'—';
+      const oic=m.oi_change_24h!=null?(m.oi_change_24h*100).toFixed(2)+'%':'—';
+      const ls=m.long_short_ratio??null, tb=m.taker_buy_ratio!=null?(m.taker_buy_ratio*100).toFixed(1)+'%':'—';
+      let read='balanced';
+      if(fr>0.0005) read='<span class="bad">crowded longs — squeeze risk</span>';
+      else if(fr<-0.0002) read='<span class="ok">shorts paying — squeeze fuel</span>';
+      else if(ls&&ls>2) read='<span class="warn">long-crowded accounts</span>';
+      else if(m.taker_buy_ratio>0.56) read='<span class="ok">aggressive buying</span>';
+      else if(m.taker_buy_ratio<0.44) read='<span class="bad">aggressive selling</span>';
+      return `<tr><td>${p}</td><td class="${cls(-fr)}">${(fr*100).toFixed(4)}%</td>
+      <td class="${cls(-fr)}">${apr.toFixed(1)}%</td><td>$${oi}</td>
+      <td class="${cls(m.oi_change_24h||0)}">${oic}</td>
+      <td>${ls!=null?ls.toFixed(2):'—'}</td><td>${tb}</td><td>${read}</td></tr>`;}).join('')
+      ||'<tr><td colspan="8" style="color:var(--dim)">fetching OKX data…</td></tr>';
+
+    // signals
+    $('#tbl-signals tbody').innerHTML=Object.values(sig.signals||{}).map(s=>
+      `<tr><td>${s.product}</td><td class="mono">${fmt(s.price,s.price<1?4:2)}</td>
+      <td class="${s.direction>0?'pos':'neg'}">${s.direction>0?'LONG':'SHORT'}</td>
+      <td>${fmt(s.confidence*100,0)}%</td><td>${s.rsi}</td>
+      <td class="${cls(s.sentiment)}">${fmt(s.sentiment,2)}</td>
+      <td class="${cls(s.edge_bps)}">${s.edge_bps}</td>
+      <td>${s.actionable?'<span class="ok">✔ enter</span>':'<span style="color:var(--dim)">wait</span>'}</td></tr>`).join('');
+
+    // positions
+    if(st.hedge){
+      const hs=st.hedge;
+      let html='';
+      if(hs.active&&hs.active.length){
+        html+=hs.active.map(h=>`<div style="color:#cdd6e4;margin:2px 0">🟢 long <b>${h.long}</b> / short <b>${h.short}</b> · z=${h.z_entry} corr=${h.corr} · $${(h.notional||0).toLocaleString()}/leg · ${((Date.now()/1000-h.opened)/3600).toFixed(1)}h</div>`).join('');
+      }else{html+='<div>no active hedges</div>';}
+      const scans=Object.entries(hs.scan||{});
+      if(scans.length){html+='<div style="margin-top:4px">watching: '+scans.slice(0,5).map(([k,v])=>`${k.replace(/-USD/g,'')} z=${v.z} ρ=${v.corr}`).join(' · ')+'</div>';}
+      if(hs.recent&&hs.recent.length){
+        html+='<div style="margin-top:4px">recent: '+hs.recent.slice(-3).map(h=>`${h.long}/${h.short} <span class="${h.pnl>=0?'pos':'neg'}">${h.pnl>=0?'+':''}${h.pnl}</span>`).join(' · ')+'</div>';}
+      $('#hedge-box').innerHTML=html;
+    }
+    if(st.stance){
+      const sc=st.stance;
+      const icon=sc.label==='aggressive'?'🔥':sc.label==='passive'?'🛡':'⚖️';
+      $('#stance-now').textContent=`${icon} ${sc.label} (${(sc.score*100).toFixed(0)}%) — risk×${sc.risk_mult} gate ${sc.conf_gate}`;
+      $('#stance-now').title=(sc.reasons||[]).join('\n');
+    }
+    $('#tbl-pos tbody').innerHTML=(st.positions||[]).map(p=>
+      `<tr><td>${p.product} ${p.side<0?'<span class="tag" style="background:#3a1d1d;color:#ff9f9f">SHORT</span>':''}</td><td class="mono">${fmt(p.qty,6)}</td><td>${fmt(p.entry)}</td>
+      <td>${fmt(p.price)}</td><td>${fmt(p.stop)}</td><td>${fmt(p.take)}</td>
+      <td class="${cls(p.unrealized)}">${fmt(p.unrealized)}</td></tr>`).join('')
+      ||'<tr><td colspan="7" style="color:var(--dim)">no open positions</td></tr>';
+
+    $('#tbl-closed tbody').innerHTML=(tr.closed||[]).slice(-8).reverse().map(t=>
+      `<tr><td>${t.product}</td><td>${fmt(t.entry)}</td><td>${fmt(t.exit)}</td>
+      <td class="${cls(t.pnl)}">${fmt(t.pnl)}</td><td>${t.exit_reason}</td></tr>`).join('')
+      ||'<tr><td colspan="5" style="color:var(--dim)">no closed trades yet</td></tr>';
+
+    // macro blackout badge + calendar strip
+    const mb=st.macro_blackout||{};
+    if(mb.blackout_active){
+      $('#b-blackout').style.display='';
+      $('#b-blackout').innerHTML='<span class="bad">⛔ BLACKOUT: '+(mb.blackout_event?mb.blackout_event.title:'macro event')+'</span>';
+    }else if(mb.next_event&&mb.next_event_in_min!=null&&mb.next_event_in_min<180){
+      $('#b-blackout').style.display='';
+      $('#b-blackout').innerHTML='<span class="warn">⏳ '+mb.next_event.title+' in '+(mb.next_event_in_min<60?mb.next_event_in_min+'m':Math.round(mb.next_event_in_min/60)+'h')+'</span>';
+    }else{$('#b-blackout').style.display='none';}
+    $('#macro-cal').innerHTML=(mb.upcoming&&mb.upcoming.length)
+      ?'📅 '+mb.upcoming.slice(0,3).map(e=>{
+        const d=new Date(e.ts*1000);
+        return `<span class="tag" style="margin:1px" title="high-impact USD event">${e.title} · ${d.toLocaleDateString([],{month:'short',day:'numeric'})} ${d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>`;
+      }).join(' ')
+      :'<span style="color:var(--dim)">no high-impact USD events upcoming</span>';
+
+    // research
+    const ms=res.macro_sentiment||0;
+    $('#macro-line').innerHTML=`🌍 macro backdrop: <span class="${cls(ms)}">${ms>=0.05?'risk-on':ms<=-0.05?'risk-off':'neutral'} (${fmt(ms,2)})</span> <span style="color:var(--dim)">· ${res.macro_docs||0} macro headlines</span>`;
+    $('#docs').innerHTML=(res.documents||[]).filter(d=>d.kind!=='macro').slice(0,11).map(d=>
+      `<div class="doc">${d.title}${(d.assets||[]).map(a=>'<span class="tag">'+a.split('-')[0]+'</span>').join('')}
+      <div class="src">${d.source}</div></div>`).join('')||'<span style="color:var(--dim)">fetching…</span>';
+
+    $('#queue').innerHTML=(res.research_queue||[]).map(q=>
+      `<div class="doc">🔍 ${q.task}</div>`).join('')||'<span style="color:var(--dim)">no active research tasks</span>';
+    $('#narratives').innerHTML=(res.narratives||[]).map(n=>
+      `<span class="tag" style="margin:2px">${n.topic} ×${n.count}</span>`).join('');
+
+    // events
+    $('#events').innerHTML=(ev.events||[]).slice(0,18).map(e=>{
+      const d=new Date(e.ts*1000).toLocaleTimeString();
+      return `<div class="event"><span class="t">${d}</span> <b>[${e.kind}]</b> ${e.message}</div>`;}).join('');
+
+    // equity chart
+    drawEquity((eq.curve||[]).map(r=>[r.ts,r.equity]), eqHover);
+    if(eqHover!=null) eqTipAt(eqHover);
+
+    // ===== learning intelligence stack =====
+    const kv=(o)=>Object.entries(o).map(([k,v])=>
+      `<div style="display:flex;justify-content:space-between;border-bottom:1px solid #1a2030;padding:2px 0">
+      <span style="color:var(--dim)">${k}</span><span class="mono">${v==null?'—':v}</span></div>`).join('');
+
+    const om=ln.online_model||{};
+    $('#ml-stats').innerHTML=kv({
+      'updates':om.n_updates,'replay buffer':om.replay_buffer,
+      'directional acc':om.directional_accuracy!=null?(om.directional_accuracy*100).toFixed(1)+'%':'warming up',
+      'avg MSE':om.avg_mse,'LR boost':om.lr_boost,
+      'status':om.warmed_up?'<span class="ok">ACTIVE in ensemble</span>':'<span class="warn">warming up</span>'});
+
+    const rl=ln.rl_risk||{}, cur=rl.current||{};
+    $('#rl-stats').innerHTML=kv({
+      'Q-updates':rl.n_updates,'epsilon (explore)':rl.epsilon,
+      'states visited':rl.states_visited,'last reward':rl.last_reward,
+      'state':cur.state||'—','chosen risk scale':cur.chosen_scale!=null?'×'+cur.chosen_scale:'—'});
+
+    const dr=ln.drift||{};
+    $('#drift-stats').innerHTML=kv({
+      'status':dr.drifting?'<span class="bad">DRIFTING</span>':'<span class="ok">stable</span>',
+      'worst feature':dr.worst_feature||'—','worst PSI':dr.psi,
+      'drift events':dr.n_drift_events,
+      'ref / cur samples':(dr.ref_samples||0)+' / '+(dr.cur_samples||0)});
+
+    const evo=ln.evolution||{};
+    const evoRep=evo.last_run;
+    const champs=Object.keys(evo.champions||{});
+    $('#evo-stats').innerHTML=kv({
+      'status':evo.status==='running'
+        ?'<span class="warn">'+(evo.current_product||'')+' gen '+evo.generation+'/'+evo.generations_total+'</span>'
+        :evo.status+(evo.current_product?' ('+evo.current_product.split('-')[0]+')':''),
+      'champions':champs.length
+        ?'<span class="ok">'+champs.map(c=>c.split('-')[0]).join(', ')+'</span>':'none yet',
+      'last run':evoRep?(evoRep.product||''):'—',
+      'train return':evoRep?(evoRep.train.total_return*100).toFixed(2)+'%':'—',
+      'validation return':evoRep?(evoRep.validation.total_return*100).toFixed(2)+'%':'—',
+      'promoted':evoRep?(evoRep.promoted?'<span class="ok">yes</span>':'<span class="bad">no (failed OOS)</span>'):'—'});
+
+    $('#bandit-regime').textContent='('+(ln.regime||'unknown')+')';
+    const post=ln.bandit_posteriors||{}, sstats=ln.strategy_stats||{};
+    $('#tbl-bandit tbody').innerHTML=Object.keys(ln.weights||{}).map(s=>{
+      const p=post[s]||{}, st2=sstats[s]||{};
+      return `<tr><td>${s}</td><td>${p.n??0} / ${p.n_pool??0}</td>
+      <td class="${cls(p.mean_bps||0)}">${p.mean_bps??'—'}</td>
+      <td>${p.std_bps??'—'}</td>
+      <td>${st2.hit_rate!=null?(st2.hit_rate*100).toFixed(0)+'%':'—'}</td>
+      <td class="mono">${((ln.weights[s]||0)*100).toFixed(1)}%</td></tr>`;}).join('');
+  }catch(e){console.error(e);}
+}
+
+// controls
+$('#btn-pause').onclick=()=>j('/api/control/pause',{method:'POST'}).then(refresh);
+$('#btn-resume').onclick=()=>j('/api/control/resume',{method:'POST'}).then(refresh);
+$('#btn-kill').onclick=()=>{if(confirm('Flatten all positions and stop trading?'))
+  j('/api/control/kill',{method:'POST'}).then(refresh);};
+$('#btn-shutdown').onclick=async()=>{
+  const s=window._settings||{flatten_on_shutdown:true};
+  const posLine=s.flatten_on_shutdown
+    ?'• flatten all open positions'
+    :'• KEEP open positions (restored & re-managed on restart)';
+  if(!confirm('KILL SERVER?\n\nThis will:\n'+posLine+'\n• save full state to disk\n• shut the server down completely\n\nRestart the server to resume (state is restored automatically).'))return;
+  let r=null;
+  try{r=await j('/api/control/shutdown',{method:'POST'});}catch(e){}
+  clearInterval(window._refreshTimer);
+  if(r&&r.note)$('#shutdown-msg').innerHTML=r.note+'<br>State saved to <span class="mono">state.json</span>.'+
+    ((window._settings||{}).carry_equity?'':'<br>⚠ carry-equity is OFF — next start = fresh $100k.');
+  $('#shutdown-overlay').style.display='flex';
+};
+
+$('#btn-restart').onclick=async()=>{
+  if(!confirm('RESTART SERVER?\n\nThis will:\n• save full state (positions are KEPT)\n• exit the process\n• relaunch with the current code (a new console may open on Windows)\n\nThe dashboard reconnects automatically (~5-15s).'))return;
+  try{await j('/api/control/restart',{method:'POST'});}catch(e){}
+  clearInterval(window._refreshTimer);
+  $('#restart-overlay').style.display='flex';
+  let tries=0;
+  const poll=setInterval(async()=>{
+    tries++;
+    $('#restart-count').textContent='waiting… '+(tries*2)+'s';
+    try{
+      const r=await fetch('/api/status',{cache:'no-store'});
+      if(r.ok){clearInterval(poll);location.reload();}
+    }catch(e){}
+    if(tries>60){
+      clearInterval(poll);
+      $('#restart-msg').innerHTML='Server did not come back after 2 minutes.<br>'+
+        'Start it manually: <span class="mono">python -m uvicorn app.main:app --host 0.0.0.0 --port 8000</span>';
+      document.querySelector('#restart-overlay .spin').style.animation='none';
+    }
+  },2000);
+};
+
+// ===== settings toggles =====
+function renderToggles(){
+  const s=window._settings; if(!s)return;
+  $('#tg-flatten').classList.toggle('on', s.flatten_on_shutdown);
+  $('#tg-flatten-label').textContent=s.flatten_on_shutdown?'flatten positions':'keep positions';
+  $('#tg-carry').classList.toggle('on', s.carry_equity);
+  $('#tg-carry-label').textContent=s.carry_equity?'carry equity over':'fresh $100k account';
+  $('#tg-shorts').classList.toggle('on', s.allow_shorts);
+  $('#tg-shorts-label').textContent=s.allow_shorts?'enabled':'long-only';
+  document.querySelectorAll('#seg-mode button').forEach(b=>
+    b.classList.toggle('active', b.dataset.mode===s.trade_mode));
+  $('#tg-hedge').classList.toggle('on', s.hedge_enabled);
+  $('#tg-hedge-label').textContent=s.hedge_enabled?'on':'off';
+}
+async function loadSettings(){
+  try{window._settings=await j('/api/settings');renderToggles();}catch(e){}
+}
+async function setSetting(key,val){
+  try{window._settings=await j('/api/settings',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val})});
+  renderToggles();}catch(e){}
+}
+$('#tg-flatten').onclick=()=>setSetting('flatten_on_shutdown',!(window._settings||{}).flatten_on_shutdown);
+$('#tg-carry').onclick=()=>setSetting('carry_equity',!(window._settings||{}).carry_equity);
+$('#tg-shorts').onclick=()=>setSetting('allow_shorts',!(window._settings||{}).allow_shorts);
+document.querySelectorAll('#seg-mode button').forEach(b=>
+  b.onclick=()=>setSetting('trade_mode', b.dataset.mode));
+$('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).hedge_enabled);
+loadSettings();
+
+// ===== alerts =====
+async function refreshAlerts(){
+  try{
+    const a=await j('/api/alerts');
+    $('#alert-chan').innerHTML=(a.telegram_configured?'<span class="ok">telegram ✓</span> ':'<span style="color:var(--dim)">telegram ✗</span> ')
+      +(a.webhook_configured?'<span class="ok">webhook ✓</span>':'<span style="color:var(--dim)">webhook ✗</span>');
+    $('#alerts-feed').innerHTML=(a.recent||[]).slice(0,10).map(e=>{
+      const icon={critical:'🚨',warning:'⚠️',info:'ℹ️'}[e.level]||'';
+      const d=new Date(e.ts*1000).toLocaleTimeString();
+      return `<div class="event"><span class="t">${d}</span> ${icon} <b>${e.title}</b> <span style="color:var(--dim)">${e.message||''}</span></div>`;
+    }).join('')||'<span style="color:var(--dim)">no alerts yet</span>';
+  }catch(e){}
+}
+$('#btn-alert-cfg').onclick=async()=>{
+  const tok=prompt('Telegram bot token (from @BotFather), or leave blank to skip:');
+  if(tok===null)return;
+  const chat=tok?prompt('Telegram chat id (message @userinfobot to get yours):'):'';
+  if(chat===null)return;
+  const hook=prompt('Webhook URL (Discord/Slack/ntfy.sh), or leave blank:');
+  if(hook===null)return;
+  const body={};
+  if(tok)body.telegram_bot_token=tok.trim();
+  if(chat)body.telegram_chat_id=chat.trim();
+  if(hook)body.webhook_url=hook.trim();
+  await j('/api/alerts/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  refreshAlerts();
+  alert('Saved. Press "send test" to verify delivery.');
+};
+$('#btn-alert-test').onclick=async()=>{await j('/api/alerts/test',{method:'POST'});refreshAlerts();};
+refreshAlerts(); setInterval(refreshAlerts,10000);
+$('#btn-evolve').onclick=()=>j('/api/control/evolve',{method:'POST'}).then(refresh);
+
+// backtest
+const PRODUCTS=['BTC-USD','ETH-USD','SOL-USD','DOGE-USD','LINK-USD','AVAX-USD'];
+$('#bt-product').innerHTML=PRODUCTS.map(p=>`<option>${p}</option>`).join('');
+$('#btn-bt').onclick=async()=>{
+  $('#bt-status').textContent='fetching history & simulating…';
+  try{
+    const r=await j('/api/backtest?product='+$('#bt-product').value+'&strategy='+$('#bt-strategy').value);
+    if(r.error){$('#bt-status').textContent='error: '+r.error;return;}
+    $('#bt-status').textContent='done — '+r.bars+' hourly bars';
+    const pick=o=>({return:(o.total_return*100).toFixed(2)+'%',sharpe:o.sharpe_annualized,
+      maxDD:(o.max_drawdown*100).toFixed(2)+'%',trades:o.n_trades,winRate:o.win_rate});
+    $('#bt-result').textContent=JSON.stringify({
+      product:r.product,strategy:r.strategy,
+      in_sample:pick(r.in_sample),out_of_sample:pick(r.out_of_sample),
+      full_period:pick(r.full),
+      overfitting_flag:r.walk_forward_degradation_flag},null,2);
+    drawLine($('#chart-bt'),r.full.equity_curve,'#2ecc71');
+  }catch(e){$('#bt-status').textContent='failed: '+e;}
+};
+
+// ---------- Settings modal ----------
+const GROUP_TITLES={risk:'🛡 Risk & position limits',costs:'💸 Costs (fees & slippage)',
+  signals:'📶 Signals & exploration',learning:'🧠 Learning',
+  stance:'🎚 Stance presets',hedge:'⚖️ Market-neutral pair hedge'};
+let _tunMeta=null,_tunTimer=null,_tunPending={};
+async function openSettings(){
+  const d=await j('/api/tunables'); _tunMeta=d.meta;
+  renderTunables(d.meta,d.values);
+  $('#settings-modal').classList.add('open');
+}
+function renderTunables(meta,vals){
+  const groups={};
+  Object.entries(meta).forEach(([k,m])=>{(groups[m.group]=groups[m.group]||[]).push([k,m]);});
+  $('#sm-groups').innerHTML=Object.entries(GROUP_TITLES).filter(([g])=>groups[g]).map(([g,title])=>`
+    <div class="sm-group"><h3>${title}</h3><div class="sm-grid">
+      ${groups[g].map(([k,m])=>{
+        const v=vals[k], changed=Math.abs(v-m.default)>1e-12;
+        return `<div class="sm-row ${changed?'changed':''}" id="row-${k}">
+          <label title="${m.desc.replace(/"/g,'&quot;')} (default ${m.default})">${m.label}</label>
+          <input type="range" data-k="${k}" min="${m.min}" max="${m.max}" step="${m.step}" value="${v}">
+          <input type="number" data-k="${k}" min="${m.min}" max="${m.max}" step="${m.step}" value="${v}">
+        </div>`;}).join('')}
+    </div></div>`).join('');
+  document.querySelectorAll('#sm-groups input').forEach(inp=>{
+    inp.oninput=()=>{
+      const k=inp.dataset.k,v=parseFloat(inp.value);
+      if(isNaN(v))return;
+      document.querySelectorAll(`#sm-groups input[data-k="${k}"]`).forEach(o=>{if(o!==inp)o.value=v;});
+      $('#row-'+k).classList.toggle('changed',Math.abs(v-_tunMeta[k].default)>1e-12);
+      _tunPending[k]=v;
+      clearTimeout(_tunTimer);
+      _tunTimer=setTimeout(async()=>{
+        const body=_tunPending;_tunPending={};
+        await j('/api/tunables',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      },500);
+    };
+  });
+}
+$('#btn-settings').onclick=openSettings;
+$('#sm-close').onclick=()=>$('#settings-modal').classList.remove('open');
+$('#settings-modal').onclick=e=>{if(e.target.id==='settings-modal')$('#settings-modal').classList.remove('open');};
+$('#sm-reset').onclick=async()=>{
+  if(!confirm('Reset ALL tunables to defaults?'))return;
+  const d=await j('/api/tunables/reset',{method:'POST'});
+  renderTunables(_tunMeta,d.values);
+};
+refresh(); window._refreshTimer=setInterval(refresh,5000);
+</script>
+</body>
+</html>

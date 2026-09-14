@@ -1,0 +1,21 @@
+# --- runtime state (machine-specific, regenerated at runtime) ---
+cryptomind.db
+state.json
+settings.json
+tunables.json
+alerts.json
+.shutdown
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- editor / OS noise ---
+.vscode/
+.idea/
+.claude/
+.DS_Store
+*.log
