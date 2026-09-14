@@ -117,3 +117,23 @@ def test_push_trades_off_suppresses_notification():
     finally:
         alerts._push_now = orig
         alerts._state["push_trades"] = True
+
+
+def test_render_equity_png_empty_returns_message(tmp_path, monkeypatch):
+    # with no equity history the renderer returns (None, message)
+    import app.db as _db
+    monkeypatch.setattr(_db, "equity_since", lambda *a, **k: [])
+    png, msg = alerts.render_equity_png("1d")
+    assert png is None and "history" in msg.lower()
+
+
+def test_render_equity_png_produces_valid_png(monkeypatch):
+    import app.db as _db, time
+    now = time.time()
+    fake = [{"ts": now - (60 - i) * 60, "equity": 100000 + i * 50}
+            for i in range(60)]
+    monkeypatch.setattr(_db, "equity_since", lambda *a, **k: fake)
+    png, cap = alerts.render_equity_png("1d")
+    assert png is not None
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"      # PNG magic bytes
+    assert "Equity" in cap

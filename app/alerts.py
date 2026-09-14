@@ -209,6 +209,119 @@ async def send_telegram(text, client=None, chat_id=None):
             await client.aclose()
 
 
+async def send_telegram_photo(png_bytes, caption="", client=None, chat_id=None):
+    """Send an image (PNG bytes) to Telegram via sendPhoto, with an optional
+    Markdown caption. Used by the /chart command."""
+    tok = _state["telegram_bot_token"]
+    chat = chat_id or _state["telegram_chat_id"]
+    if not (tok and chat):
+        return False
+    own = client is None
+    if own:
+        client = httpx.AsyncClient()
+    try:
+        r = await client.post(
+            f"https://api.telegram.org/bot{tok}/sendPhoto",
+            data={"chat_id": str(chat), "caption": caption,
+                  "parse_mode": "Markdown"},
+            files={"photo": ("equity.png", png_bytes, "image/png")},
+            timeout=30)
+        if r.status_code != 200:
+            db.log_event("warn", f"Telegram photo failed: {r.status_code} {r.text[:120]}")
+            return False
+        return True
+    except Exception as e:
+        db.log_event("warn", f"Telegram photo error: {e}")
+        return False
+    finally:
+        if own:
+            await client.aclose()
+
+
+def render_equity_png(tf="1d"):
+    """Render an equity-curve PNG (bytes) for the given timeframe using Pillow.
+
+    Returns (png_bytes, caption) or (None, message) if there isn't enough data.
+    Pure-Pillow so it has no matplotlib dependency and is fast/thread-safe.
+    """
+    import time as _time
+    from . import db
+    windows = {"20s": 20, "5m": 300, "10m": 600, "1h": 3600, "1d": 86400,
+               "1w": 7 * 86400, "1m": 30 * 86400}
+    secs = windows.get(tf, 86400)
+    curve = db.equity_since(_time.time() - secs)
+    if not curve or len(curve) < 2:
+        return None, "Not enough equity history yet to draw a chart."
+    ys = [float(p["equity"]) for p in curve]
+    xs = [float(p["ts"]) for p in curve]
+    first, last = ys[0], ys[-1]
+    lo, hi = min(ys), max(ys)
+    span = (hi - lo) or (abs(hi) * 0.01 or 1.0)
+    chg = last - first
+    chg_pct = (chg / first * 100) if first else 0.0
+
+    from PIL import Image, ImageDraw
+    W, H = 900, 420
+    ML, MR, MT, MB = 70, 20, 44, 40           # margins
+    PW, PH = W - ML - MR, H - MT - MB
+    bg = (17, 22, 33)
+    grid = (38, 46, 62)
+    up = (46, 204, 113)
+    down = (231, 76, 60)
+    txt = (150, 165, 190)
+    line_col = up if chg >= 0 else down
+
+    img = Image.new("RGB", (W, H), bg)
+    d = ImageDraw.Draw(img)
+
+    # title
+    d.text((ML, 12), f"CryptoMind Equity — {tf}", fill=(220, 230, 245))
+    # horizontal gridlines + y labels (5 divisions)
+    for i in range(5):
+        gy = MT + PH * i / 4
+        d.line([(ML, gy), (ML + PW, gy)], fill=grid, width=1)
+        val = hi - span * i / 4
+        d.text((6, gy - 6), f"${val:,.0f}", fill=txt)
+
+    n = len(ys)
+
+    def px(idx):
+        # evenly spaced by sample index (robust to clustered timestamps)
+        return ML + PW * idx / (n - 1)
+
+    def py(v):
+        return MT + PH * (1 - (v - lo) / span)
+
+    # baseline (starting equity) as a dashed reference
+    by = py(first)
+    for x0 in range(ML, ML + PW, 10):
+        d.line([(x0, by), (x0 + 5, by)], fill=(90, 100, 120), width=1)
+
+    # filled area under the curve + the line
+    pts = [(px(i), py(ys[i])) for i in range(len(ys))]
+    poly = pts + [(pts[-1][0], MT + PH), (pts[0][0], MT + PH)]
+    fill = (up[0], up[1], up[2]) if chg >= 0 else (down[0], down[1], down[2])
+    d.polygon(poly, fill=(fill[0] // 6 + bg[0], fill[1] // 6 + bg[1],
+                          fill[2] // 6 + bg[2]))
+    d.line(pts, fill=line_col, width=2)
+
+    # last-point marker + value
+    d.ellipse([pts[-1][0] - 3, pts[-1][1] - 3, pts[-1][0] + 3, pts[-1][1] + 3],
+              fill=line_col)
+    d.text((ML, H - 26),
+           f"start ${first:,.0f}   now ${last:,.0f}   "
+           f"{'+' if chg >= 0 else ''}{chg:,.0f} ({chg_pct:+.2f}%)",
+           fill=txt)
+
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    caption = (f"*Equity — {tf}*\n"
+               f"start `${first:,.0f}` → now `${last:,.0f}`  "
+               f"({chg_pct:+.2f}%)")
+    return buf.getvalue(), caption
+
+
 async def _push_telegram(client, entry):
     tok, chat = _state["telegram_bot_token"], _state["telegram_chat_id"]
     if not (tok and chat):
@@ -275,6 +388,7 @@ HELP_TEXT = (
     "/balance — cash, equity, exposure\n"
     "/stats — trade statistics\n"
     "/signals — current actionable signals\n"
+    "/chart [tf] — equity chart image (tf: 1h,1d,1w,1m; default 1d)\n"
     "/risk — drawdown, daily loss, kill/halt state\n"
     "/why — why trading is killed/halted (if it is)\n"
     "/pause — stop opening new trades\n"
@@ -570,6 +684,11 @@ def handle_command(text):
             return _cmd_stats()
         if cmd == "signals":
             return _cmd_signals()
+        if cmd == "chart":
+            # handled asynchronously in command_worker (image send); this path
+            # is only hit if called synchronously — return a hint.
+            return "📊 Generating chart… (if you don't get an image, ensure " \
+                   "there's equity history and the bot token is set)."
         if cmd == "risk":
             return _cmd_risk()
         if cmd == "why":
@@ -635,6 +754,18 @@ async def command_worker():
                             client=client, chat_id=frm)
                         continue
                     if not txt:
+                        continue
+                    # /chart needs an async image send; handle it inline
+                    cmd0 = txt.strip().split()[0].lstrip("/").lower().split("@")[0]
+                    if cmd0 == "chart":
+                        parts = txt.strip().split()
+                        tf = parts[1] if len(parts) > 1 else "1d"
+                        png, cap = render_equity_png(tf)
+                        if png:
+                            await send_telegram_photo(png, cap, client=client,
+                                                      chat_id=frm)
+                        else:
+                            await send_telegram(cap, client=client, chat_id=frm)
                         continue
                     reply = handle_command(txt)
                     if reply:
