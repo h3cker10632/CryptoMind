@@ -52,8 +52,17 @@ class PaperBroker:
         # normalise to the venue tick size (Decimal) so paper matches live
         return money.round_price(product, px) if product else px
 
-    def open(self, product, direction, notional, price, stop, take, reason):
-        """direction: +1 long, -1 short (margin-style)."""
+    def open(self, product, direction, notional, price, stop, take, reason,
+             votes=None, regime_at_entry=None):
+        """direction: +1 long, -1 short (margin-style).
+
+        `votes` (per-strategy vote dict at entry) and `regime_at_entry` are
+        stamped INTO the Position at creation — before it is stored or returned —
+        so the trade-PnL attribution can always credit the right strategies even
+        if the position is closed on the same tick or the process restarts
+        mid-tick. Setting them after open() returned (the old path) risked a
+        snapshot/close dropping them, which is why `trade_attributions` stayed 0.
+        """
         fill = self._fill_price(price, "buy" if direction > 0 else "sell", product)
         fee = notional * tv("fee_rate")
         if notional + fee > self.cash:
@@ -67,6 +76,11 @@ class PaperBroker:
             product=product, side=direction, qty=qty, entry=fill,
             stop=stop, take=take, water=fill, opened=time.time(),
             reason=reason, fees=fee)
+        # bake the learning-attribution fields in atomically at creation
+        pos["votes"] = {k: round(v, 3) for k, v in (votes or {}).items()
+                        if abs(v) > 0.05}
+        if regime_at_entry is not None:
+            pos["regime_at_entry"] = regime_at_entry
         if direction < 0:
             pos["margin"] = notional
         self.positions[product] = pos

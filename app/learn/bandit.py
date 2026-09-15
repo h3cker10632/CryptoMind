@@ -15,6 +15,11 @@ class RegimeBandit:
     PRIOR_STD = 0.0015        # prior uncertainty on aligned return (~15 bps)
     POOL_K = 6                # between-regime extra variance (in prior-obs units)
     MIN_OBS_STD = 0.0015      # floor on estimated observation noise
+    POOL_MAX_OBS = 30         # cap the cross-regime pool's confidence: it is a
+                              # COLD-START PRIOR, never stronger than ~30 obs, so
+                              # it can't overrule well-sampled local evidence.
+    NET_EDGE_N = 25           # in-regime obs needed to trust the sign of the
+                              # local mean for the net-edge floor gate.
 
     def __init__(self, strategies):
         self.strategies = list(strategies)
@@ -70,18 +75,41 @@ class RegimeBandit:
         n_g, mean_g, m2_g = self._strategy_pool(strategy, exclude_regime=regime)
         if n_g <= 0:
             return self._conjugate(n, mean, m2)
-        mu_g, sd_g, _ = self._conjugate(n_g, mean_g, m2_g)
+        # The cross-regime pool is a COLD-START PRIOR, not extra local data.
+        # Cap its effective sample size so a strategy that is great elsewhere
+        # cannot flip the SIGN of a well-sampled negative in-regime posterior
+        # (the 'evolved' bug: −10bps in bear/normal pooled up to +weight).
+        n_g_eff = min(n_g, self.POOL_MAX_OBS)
+        mu_g, sd_g, _ = self._conjugate(n_g_eff, mean_g, m2_g)
         # Inflate so other regimes are a prior, not extra local data.
-        between = (self.PRIOR_STD ** 2) * self.POOL_K / n_g
+        between = (self.PRIOR_STD ** 2) * self.POOL_K / n_g_eff
         prior_sd = math.sqrt(sd_g ** 2 + between)
         return self._conjugate(n, mean, m2, prior_mean=mu_g, prior_std=prior_sd)
+
+    def _net_edge_ok(self, regime, strategy):
+        """True unless the strategy has a WELL-SAMPLED, confidently-negative
+        in-regime edge. This is the net-edge guard: a strategy that actually
+        loses money in THIS regime (raw local mean < 0 over enough trades)
+        must not be handed allocation just because a cross-regime pool pulled
+        its posterior positive."""
+        n, mean, m2 = self.arms.get((regime, strategy), (0, 0.0, 0.0))
+        if n < self.NET_EDGE_N:
+            return True                      # not enough local evidence to judge
+        se = self._obs_std(n, m2) / math.sqrt(n)
+        # negative AND statistically distinguishable from zero (~1 SE)
+        return not (mean < 0 and mean + se < 0)
 
     def sample_weights(self, regime, temperature=4.0):
         """Thompson-sample each arm, softmax the draws into weights."""
         draws = {}
         for s in self.strategies:
             mu, sd, n = self._posterior(regime, s)
-            draws[s] = random.gauss(mu, sd)
+            g = random.gauss(mu, sd)
+            # Pin confirmed in-regime losers to the low end of the draw range so
+            # the softmax gives them near-floor weight regardless of pooling.
+            if not self._net_edge_ok(regime, s):
+                g = min(g, mu * 0.0 - abs(sd))     # push well below zero
+            draws[s] = g
         mx = max(draws.values())
         # *100 → percent-return units so temperature≈4 is actually exploratory
         exps = {s: math.exp(temperature * (v - mx) * 100) for s, v in draws.items()}

@@ -63,6 +63,7 @@ def capture():
         },
         "risk": {
             "peak_equity": risk.peak_equity,
+            "kill_arm_peak": risk.kill_arm_peak,
             "day_start_equity": risk.day_start_equity,
             "day_start_ts": risk.day_start_ts,
             "killed": risk.killed,
@@ -79,6 +80,7 @@ def capture():
             "weights": learner.weights,
             "bandit_arms": _save_dict_tupkeys(
                 {k: list(v) for k, v in learner.bandit.arms.items()}),
+            "trade_attributions": learner.trade_attributions,
         },
         "model": {
             "W1": model.W1, "b1": model.b1, "W2": model.W2, "b2": model.b2,
@@ -198,6 +200,9 @@ def load():
 
             r = s.get("risk", {})
             risk.peak_equity = r.get("peak_equity", 0.0)
+            # fall back to the true peak for snapshots written before the
+            # kill_arm_peak split existed.
+            risk.kill_arm_peak = r.get("kill_arm_peak", risk.peak_equity)
             risk.day_start_equity = r.get("day_start_equity")
             risk.day_start_ts = r.get("day_start_ts", time.time())
             risk.killed = r.get("killed", False)
@@ -226,6 +231,8 @@ def load():
             # merge: keep defaults for any newly added strategies
             learner.weights.update(l["weights"])
         learner.bandit.arms = _load_arms(l.get("bandit_arms", {}))
+        learner.trade_attributions = l.get("trade_attributions",
+                                           learner.trade_attributions)
 
         m = s.get("model", {})
         if m.get("W1") and len(m["W1"][0]) == len(model.W1[0]):

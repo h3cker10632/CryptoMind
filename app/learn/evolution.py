@@ -247,9 +247,16 @@ class Evolution:
             dsr = None
         # gates: OOS profitable AND enough OOS trades AND deflated-Sharpe passes
         # (or DSR unavailable but OOS is clearly positive on decent samples).
-        enough = val["n_trades"] >= 8
+        # A larger OOS sample is required now — 3-trade "champions" (SOL) were
+        # pure luck; the deflated-Sharpe path needs enough trades to be usable
+        # and the no-DSR fallback demands both a healthy sample AND a bounded
+        # drawdown so a 21%-DD genome (UNI) can't sneak through on raw return.
+        MIN_OOS_TRADES = 20
+        enough = val["n_trades"] >= MIN_OOS_TRADES
         oos_ok = fitness(val) > 0 and val["total_return"] > 0
-        dsr_ok = (dsr is not None and dsr > 0.90) or (dsr is None and val["total_return"] > 0.03)
+        dd_ok = val.get("max_drawdown", 1.0) <= 0.15
+        dsr_ok = ((dsr is not None and dsr > 0.90 and val["n_trades"] >= 20) or
+                  (dsr is None and val["total_return"] > 0.03 and dd_ok))
         promoted = bool(enough and oos_ok and dsr_ok)
         report = {
             "product": product,
@@ -268,6 +275,21 @@ class Evolution:
         if promoted:
             self.champions[product] = best_g
             self.champion_reports[product] = report
+        elif product in self.champions:
+            # A rerun failed to re-validate the incumbent's regime, yet the OLD
+            # champion is still voting live (this is exactly the stale-SOL /
+            # UNI case). Evict it: a champion that can no longer earn promotion
+            # on fresh out-of-sample data has no business steering allocation.
+            evicted = self.champions.pop(product, None)
+            self.champion_reports.pop(product, None)
+            report["evicted_stale_champion"] = bool(evicted)
+            from .. import db
+            db.log_event("learn",
+                         f"GA champion for {product} EVICTED — latest rerun "
+                         f"failed promotion (OOS return {val['total_return']:+.1%}, "
+                         f"{val['n_trades']} trades, DD "
+                         f"{val.get('max_drawdown', 0):.1%}); no live vote until "
+                         f"a genome re-validates.")
         self.last_run = report
         self.status = "done"
         return report

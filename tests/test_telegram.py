@@ -137,3 +137,91 @@ def test_render_equity_png_produces_valid_png(monkeypatch):
     assert png is not None
     assert png[:8] == b"\x89PNG\r\n\x1a\n"      # PNG magic bytes
     assert "Equity" in cap
+
+
+def test_diag_reports_kill_block():
+    from app.risk.manager import risk
+    risk.trip_kill("test kill")
+    out = alerts.handle_command("/diag")
+    assert "KILLED" in out
+    assert "kill switch active" in out.lower()
+    risk.reset_kill()
+
+
+def test_diag_lists_all_products():
+    out = alerts.handle_command("/diag")
+    from app.config import PRODUCTS
+    for p in PRODUCTS:
+        assert p in out
+
+
+def test_diag_in_help():
+    assert "/diag" in alerts.handle_command("/help")
+
+
+# ------------------------------------------------------------------ /close
+def _set_price(product, price):
+    """Stub the market ticker so market.price(product) returns `price`."""
+    from app.data.market import market
+    market.tickers[product] = {"price": price}
+
+
+def _open_test_position(product="BTC-USD", price=100.0, direction=1):
+    """Open a position via the broker and stub the market price feed."""
+    from app.execution.paper import broker
+    broker.cash = 1_000_000.0
+    broker.positions.pop(product, None)
+    _set_price(product, price)
+    broker.open(product, direction, 1000.0, price, price * 0.9, price * 1.3,
+                "test setup")
+    return broker
+
+
+def test_close_in_help():
+    assert "/close" in alerts.handle_command("/help")
+
+
+def test_close_no_positions():
+    from app.execution.paper import broker
+    broker.positions.clear()
+    out = alerts.handle_command("/close BTC")
+    assert "No open position" in out
+
+
+def test_close_no_arg_lists_open():
+    _open_test_position("ETH-USD", 50.0)
+    out = alerts.handle_command("/close")
+    assert "ETH-USD" in out and "Usage" in out
+    from app.execution.paper import broker
+    broker.positions.clear()
+
+
+def test_close_resolves_loose_token_and_flattens():
+    from app.execution.paper import broker
+    from app.data.market import market
+    _open_test_position("BTC-USD", 100.0)
+    # bump the price so there is a positive PnL
+    _set_price("BTC-USD", 110.0)
+    out = alerts.handle_command("/close btc")     # loose lowercase token
+    assert "Closed" in out and "BTC-USD" in out
+    assert "BTC-USD" not in broker.positions
+
+
+def test_close_unknown_product_reports_open_set():
+    _open_test_position("BTC-USD", 100.0)
+    out = alerts.handle_command("/close DOGE")
+    assert "No open position matching" in out and "BTC-USD" in out
+    from app.execution.paper import broker
+    broker.positions.clear()
+
+
+def test_close_all_flattens_everything():
+    from app.execution.paper import broker
+    from app.data.market import market
+    broker.positions.clear()
+    _open_test_position("BTC-USD", 100.0)
+    _open_test_position("ETH-USD", 50.0)
+    _set_price("BTC-USD", 100.0); _set_price("ETH-USD", 50.0)
+    out = alerts.handle_command("/close all")
+    assert "Closed" in out
+    assert not broker.positions

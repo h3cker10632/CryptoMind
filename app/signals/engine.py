@@ -109,12 +109,18 @@ def strat_ml(f, sent, regime):
     from ..data.derivatives import derivatives
     if model.n_updates < 40:
         return 0.0
-    d = derivatives.features(_cur_product())
-    pred = model.predict(build_x(f, sent[0], _cur_market_sent(), d))
-    # damp when directional accuracy is poor
+    # Gate the vote on MEASURED directional accuracy BEFORE spending a forward
+    # pass. A model at or below a coin flip (or one we haven't measured yet)
+    # contributes NOTHING — no credit for being unmeasured, and no partial
+    # credit below 50%. Trust ramps in only once it's genuinely better than
+    # random, so a broken head (20.7% dir-acc) can no longer earn ensemble weight.
     st = model.stats()
     acc = st["directional_accuracy"]
-    trust = 1.0 if acc is None else _clip((acc - 0.45) / 0.15, 0.0, 1.0)
+    if acc is None or acc <= 0.50:
+        return 0.0
+    trust = _clip((acc - 0.50) / 0.10, 0.0, 1.0)   # 50%→0, 60%→full
+    d = derivatives.features(_cur_product())
+    pred = model.predict(build_x(f, sent[0], _cur_market_sent(), d))
     return _clip(pred * 1.3) * trust
 
 

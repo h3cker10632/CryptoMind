@@ -78,6 +78,12 @@ class Orchestrator:
         if not market.tickers:
             return
 
+        # Did THIS interval offer a real chance to trade? Used to tell the RL
+        # agent whether flat equity was a wise sit-out or just a locked door
+        # (every candidate fee-gated). Seeded True if we already hold exposure —
+        # an open position is live risk being managed, so the interval counts.
+        tradable = len(broker.positions) > 0
+
         # 1. NLP over latest research corpus
         if research.documents:
             nlp.process(research.documents, research.fear_greed)
@@ -159,14 +165,17 @@ class Orchestrator:
                     self.last_risk_status, direction=sig["direction"], product=p)
                 if notional < tv("min_notional"):
                     continue
+                # A cost-viable conviction candidate cleared the gate — this
+                # interval WAS a real chance to trade, whether or not the fill
+                # ultimately succeeds. That's what makes flat equity meaningful
+                # (or not) to the RL agent.
+                tradable = True
                 pos = broker.open(p, sig["direction"], notional, sig["price"],
                                   stop, take,
-                                  f"composite={sig['composite']} regime={sig['regime']}")
+                                  f"composite={sig['composite']} regime={sig['regime']}",
+                                  votes=engine.per_strategy.get(p, {}),
+                                  regime_at_entry=sig["regime"])
                 if pos is not None:
-                    pos["votes"] = {k: round(v, 3) for k, v in
-                                    engine.per_strategy.get(p, {}).items()
-                                    if abs(v) > 0.05}
-                    pos["regime_at_entry"] = sig["regime"]
                     # rich open notification (Telegram/webhook) with full detail
                     try:
                         from .alerts import notify_trade_open
@@ -182,8 +191,12 @@ class Orchestrator:
                             db.log_event("error", f"shadow mirror failed: {e}")
 
             # 7b. exploration entries — small probing positions on moderate
-            # signals so the learning stack earns real trade experience
-            if random.random() < tv("explore_prob") * stance.current()["explore_mult"]:
+            # signals so the learning stack earns real trade experience.
+            # Skipped when the RL agent has chosen to SIT OUT: that is exactly
+            # what a sit-out means — no discretionary probes / extra names —
+            # WITHOUT ever zeroing a cost-viable conviction trade above.
+            if (not self.last_risk_status.get("rl_sit_out")
+                    and random.random() < tv("explore_prob") * stance.current()["explore_mult"]):
                 explorable = sorted(
                     (s for s in signals.values() if s.get("explorable")),
                     key=lambda s: -s["confidence"])
@@ -201,20 +214,24 @@ class Orchestrator:
                     notional *= tv("explore_size_factor")
                     if notional < tv("min_notional"):
                         continue
+                    tradable = True
                     pos = broker.open(p, sig["direction"], notional,
                                       sig["price"], stop, take,
                                       f"EXPLORE composite={sig['composite']} "
-                                      f"regime={sig['regime']}")
+                                      f"regime={sig['regime']}",
+                                      votes=engine.per_strategy.get(p, {}),
+                                      regime_at_entry=sig["regime"])
                     if pos is not None:
-                        pos["votes"] = {k: round(v, 3) for k, v in
-                                        engine.per_strategy.get(p, {}).items()
-                                        if abs(v) > 0.05}
-                        pos["regime_at_entry"] = sig["regime"]
                         try:
                             from .alerts import notify_trade_open
                             notify_trade_open(pos)
                         except Exception:
                             pass
+
+        # Tell the RL agent whether THIS interval was a genuine chance to trade,
+        # so next tick's learning update only fires when flat/negative equity
+        # actually reflects a decision (not a fee-gated locked door).
+        risk._tradable_next = tradable
 
         # 8. equity log + periodic self-improvement
         db.log_equity(equity, broker.cash, broker.exposure(market))

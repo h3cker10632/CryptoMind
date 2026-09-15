@@ -388,11 +388,13 @@ HELP_TEXT = (
     "/balance — cash, equity, exposure\n"
     "/stats — trade statistics\n"
     "/signals — current actionable signals\n"
+    "/diag — per-coin: why each isn't trading (or would)\n"
     "/chart [tf] — equity chart image (tf: 1h,1d,1w,1m; default 1d)\n"
     "/risk — drawdown, daily loss, kill/halt state\n"
     "/why — why trading is killed/halted (if it is)\n"
     "/pause — stop opening new trades\n"
     "/resume — resume trading\n"
+    "/close <product>|all — flatten one position (or all)\n"
     "/kill — 🛑 flatten all & stop (kill switch)\n"
     "/resetkill — ♻️ clear the kill switch + daily halt\n"
     "/shorts on|off — allow/deny short positions\n"
@@ -520,6 +522,91 @@ def _cmd_signals():
     return "\n".join(out)
 
 
+def _cmd_diag():
+    """Run the full entry-gate chain per product and report the single
+    blocking reason for each — a one-command answer to 'why am I not trading?'.
+    Mirrors exactly the checks the orchestrator runs before opening a trade."""
+    from .orchestrator import orch
+    from .risk.manager import risk
+    from .execution.paper import broker
+    from .data.market import market
+    from .signals.engine import engine
+    from .tunables import tv
+    from .config import PRODUCTS
+
+    lines = ["*Trade diagnostics — why each coin isn't trading*"]
+
+    # ---- global blocks first (affect everything) ----
+    if not orch.running:
+        lines.append("⏸ GLOBAL: trading is paused — use /resume")
+    if risk.killed:
+        lines.append(f"🛑 GLOBAL: KILLED — {risk.kill_reason or 'reason not recorded'} "
+                     "(use /resetkill)")
+    if risk.halted_today:
+        lines.append(f"⏸ GLOBAL: daily loss halt — {risk.halt_reason or ''} "
+                     "(use /resetkill)")
+    if not market.healthy:
+        lines.append("📵 GLOBAL: market data feed is DOWN — entries blocked")
+    try:
+        from .data.calendar import calendar
+        bl, ev = calendar.blackout()
+        if bl:
+            lines.append(f"🗓 GLOBAL: macro blackout — {ev['title']}")
+    except Exception:
+        pass
+
+    equity = broker.equity(market)
+    rs = orch.last_risk_status or {"effective_risk_scale": 1.0}
+    lines.append("")
+
+    for p in PRODUCTS:
+        sig = engine.latest.get(p)
+        # 1) risk gates (kill/halt/feed/blackout/inpos/maxpos/exposure/cooldown/price)
+        ok, why = risk.can_open(p, broker, market, market.healthy)
+        if not ok:
+            lines.append(f"`{p}` ⛔ {why}")
+            continue
+        # 2) need a signal at all
+        if not sig:
+            lines.append(f"`{p}` … no signal yet (warming up / not enough data)")
+            continue
+        # 3) actionable? (confidence gate + direction allowed)
+        if not sig.get("actionable"):
+            lines.append(f"`{p}` … signal not actionable "
+                         f"(conf {sig['confidence']:.2f}, need higher; "
+                         f"composite {sig['composite']:+.2f})")
+            continue
+        # 4) funding gate
+        ok, why = risk.funding_gate(p, sig["direction"])
+        if not ok:
+            lines.append(f"`{p}` ⛔ {why}")
+            continue
+        # 5) sizing / cost-viability gate
+        notional, stop, take = risk.size(
+            equity, sig["price"], sig["atr"], sig["confidence"], rs,
+            direction=sig["direction"], product=p)
+        if notional <= 0:
+            lines.append(f"`{p}` ⛔ cost gate: ATR target can't clear fees "
+                         "(unprofitable — try lower fee_rate/cost_multiple)")
+            continue
+        if notional < tv("min_notional"):
+            lines.append(f"`{p}` ⛔ notional ${notional:,.0f} < min "
+                         f"${tv('min_notional')}")
+            continue
+        d = "LONG" if sig["direction"] > 0 else "SHORT"
+        lines.append(f"`{p}` ✅ WOULD TRADE {d}  conf {sig['confidence']:.2f}  "
+                     f"~${notional:,.0f}")
+
+    # helpful hints if literally nothing is tradable
+    tradable = any("✅" in ln for ln in lines)
+    if not tradable:
+        lines.append("")
+        lines.append("_Tips:_ /set min_confidence 0.35 (lower entry bar) · "
+                     "/mode aggressive · /get fee_rate (0.5% is strict — "
+                     "/set fee_rate 0.001) · /get cost_multiple")
+    return "\n".join(lines)
+
+
 def _cmd_risk():
     from .risk.manager import risk
     from .orchestrator import orch
@@ -571,6 +658,83 @@ def _cmd_kill():
             flat.append(p)
     return f"🛑 Kill switch ON. Flattened: {', '.join(flat) or 'none'}.\n" \
            "Trading stopped until /resetkill."
+
+
+def _resolve_product(arg):
+    """Map a loose user token to a real open-position product.
+    Accepts 'btc', 'BTC', 'btc-usd', 'BTC-USD' (case-insensitive)."""
+    from .execution.paper import broker
+    if not arg:
+        return None
+    a = arg.strip().upper()
+    if a in broker.positions:
+        return a
+    if (a + "-USD") in broker.positions:
+        return a + "-USD"
+    # match on the base symbol before the dash
+    for p in broker.positions:
+        if p.split("-")[0] == a:
+            return p
+    return None
+
+
+def _cmd_close(args):
+    from .execution.paper import broker
+    from .data.market import market
+    from .risk.manager import risk
+    from .learn.loop import learner
+    if not args:
+        if not broker.positions:
+            return "No open positions to close."
+        return ("Usage: /close <product>  (e.g. /close BTC)\nOpen: "
+                + ", ".join(broker.positions.keys()))
+    arg = args[0]
+    # /close all — flatten everything
+    if arg.lower() == "all":
+        if not broker.positions:
+            return "No open positions to close."
+        closed, stranded = [], []
+        for p in list(broker.positions.keys()):
+            px = market.price(p)
+            if px is None:
+                stranded.append(p)
+                continue
+            t = broker.sell(p, px, "manual /close all (telegram)")
+            if t:
+                risk.on_trade_closed(t)
+                learner.on_trade_closed(t)
+                closed.append(f"{p} ({t['pnl']:+,.2f})")
+        msg = f"✅ Closed: {', '.join(closed) or 'none'}."
+        if stranded:
+            msg += f"\n⚠️ No price for: {', '.join(stranded)} (kept open)."
+        return msg
+    # single product
+    p = _resolve_product(arg)
+    if not p:
+        from .execution.paper import broker as b
+        return (f"No open position matching `{arg}`.\n"
+                + ("Open: " + ", ".join(b.positions.keys()) if b.positions
+                   else "No open positions."))
+    px = market.price(p)
+    if px is None:
+        return f"⚠️ Can't price `{p}` right now (feed issue) — not closed."
+    pos = broker.positions[p]
+    side = "LONG" if pos.get("side", 1) > 0 else "SHORT"
+    t = broker.sell(p, px, "manual /close (telegram)")
+    if not t:
+        return f"Failed to close `{p}`."
+    risk.on_trade_closed(t)
+    learner.on_trade_closed(t)
+    # keep the shadow OMS in sync, mirroring the orchestrator's close path
+    try:
+        sh = getattr(__import__("app.orchestrator", fromlist=["orch"]).orch,
+                     "shadow", None)
+        if sh is not None and p in getattr(sh, "positions", {}):
+            sh.mirror_close(p, t.get("exit", px))
+    except Exception:
+        pass
+    return (f"✅ Closed {side} `{p}` @ `{t['exit']:,.6f}`\n"
+            f"• PnL: *{t['pnl']:+,.2f}*  ({t.get('exit_reason','manual')})")
 
 
 def _cmd_resetkill():
@@ -684,6 +848,8 @@ def handle_command(text):
             return _cmd_stats()
         if cmd == "signals":
             return _cmd_signals()
+        if cmd in ("diag", "diagnose", "why_not"):
+            return _cmd_diag()
         if cmd == "chart":
             # handled asynchronously in command_worker (image send); this path
             # is only hit if called synchronously — return a hint.
@@ -699,6 +865,8 @@ def handle_command(text):
             return _cmd_resume()
         if cmd == "kill":
             return _cmd_kill()
+        if cmd in ("close", "flatten"):
+            return _cmd_close(args)
         if cmd in ("resetkill", "reset_kill", "unkill"):
             return _cmd_resetkill()
         if cmd == "shorts":

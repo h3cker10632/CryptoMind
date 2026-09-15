@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from ..tunables import tv
 from .. import db
 
+# The RL agent can dial CONVICTION risk down to this floor but never to zero —
+# a sit-out only skips discretionary probes, never a cost-viable conviction fill.
+RL_CONVICTION_FLOOR = 0.25
+
 
 def _utc_day():
     """UTC calendar-day index — the daily loss limit resets at 00:00 UTC,
@@ -14,7 +18,13 @@ def _utc_day():
 
 class RiskManager:
     def __init__(self):
-        self.peak_equity = 0.0
+        self.peak_equity = 0.0        # TRUE high-water mark — never zeroed
+        # After a manual kill-reset we must NOT instantly re-trip on the same
+        # historical drawdown, but we must also keep telling the truth about the
+        # real high-water mark. So the auto-kill re-arms against this separate
+        # baseline (set to equity at reset time) while `peak_equity` stays the
+        # genuine all-time peak that `drawdown` is reported from.
+        self.kill_arm_peak = 0.0
         self.day_start_equity = None
         self.day_start_ts = time.time()
         self.day_index = _utc_day()
@@ -26,6 +36,12 @@ class RiskManager:
         self.cooldowns = {}          # product -> ts of last exit/entry
         self.risk_scale = 1.0        # adaptive multiplier
         self.consecutive_losses = 0
+        # Was the interval just ending a REAL chance to trade? Set by the
+        # orchestrator at the end of each tick (a fill fired, exposure was open,
+        # or a signal cleared the cost gate). When False, flat equity reflects a
+        # LOCKED DOOR (fee gate), not a wise sit-out, so the RL agent must not
+        # learn from it. Defaults False so the very first tick isn't credited.
+        self._tradable_next = False
 
     # ---------- adaptive updates ----------
     def on_trade_closed(self, trade):
@@ -39,7 +55,12 @@ class RiskManager:
 
     def update(self, equity, regime):
         from ..learn.rl_risk import agent as rl_agent
+        # TRUE high-water mark — persists across kill-resets so drawdown never
+        # lies (previously zeroed on reset, making DD read 0% at a loss).
         self.peak_equity = max(self.peak_equity, equity)
+        # kill re-arm baseline — tracks peak since the last reset so a fresh
+        # drawdown (not the already-acknowledged one) is what re-trips the kill.
+        self.kill_arm_peak = max(self.kill_arm_peak, equity)
         # daily rollover — on UTC calendar-day boundary (not rolling 24h)
         today = _utc_day()
         if today != self.day_index:
@@ -50,14 +71,20 @@ class RiskManager:
         if self.day_start_equity is None:
             self.day_start_equity = equity
 
+        # `dd` is the TRUE drawdown from the all-time peak — this is what gets
+        # reported everywhere (dashboard, stance, snapshot) and never resets.
         dd = 1 - equity / self.peak_equity if self.peak_equity else 0.0
+        # `arm_dd` is the drawdown since the last kill-reset — the auto-kill
+        # trips on THIS so a reset genuinely re-arms instead of instantly
+        # re-tripping on a drawdown the operator already acknowledged.
+        arm_dd = 1 - equity / self.kill_arm_peak if self.kill_arm_peak else 0.0
         day_loss = 1 - equity / self.day_start_equity if self.day_start_equity else 0.0
 
-        if dd >= tv("max_drawdown_kill") and not self.killed:
+        if arm_dd >= tv("max_drawdown_kill") and not self.killed:
             self.trip_kill(
-                f"Auto: max drawdown {dd:.1%} breached the "
+                f"Auto: max drawdown {arm_dd:.1%} breached the "
                 f"{tv('max_drawdown_kill'):.0%} limit "
-                f"(equity ${equity:,.0f}, peak ${self.peak_equity:,.0f})")
+                f"(equity ${equity:,.0f}, peak ${self.kill_arm_peak:,.0f})")
             from ..alerts import alert
             alert("critical", "KILL SWITCH TRIPPED",
                   f"Max drawdown {dd:.1%} breached (limit {tv('max_drawdown_kill'):.0%}). "
@@ -75,14 +102,26 @@ class RiskManager:
 
         # regime-adaptive scaling
         regime_scale = 0.5 if regime.get("vol_state") == "high-vol" else 1.0
-        # RL agent chooses a risk multiplier and learns from equity outcomes
-        rl_scale = rl_agent.act(regime, dd, self.consecutive_losses, equity)
-        effective = self.risk_scale * regime_scale * rl_scale
+        # RL agent chooses a risk multiplier and learns from equity outcomes.
+        # It only learns from the PREVIOUS interval when that interval was a real
+        # chance to trade (`_tradable_next`, set by the orchestrator last tick) —
+        # otherwise flat equity is a locked door, not a good sit-out call.
+        rl_scale = rl_agent.act(regime, dd, self.consecutive_losses, equity,
+                                tradable=self._tradable_next)
+        rl_sit_out = (rl_scale == 0.0)
+        # CRITICAL CONTRACT: sit-out means "skip discretionary probes / extra
+        # names", NOT "size a cost-viable conviction trade to zero". So the
+        # scale that reaches size() is floored — the agent can dial risk DOWN
+        # but can never freeze the account shut on a structurally profitable
+        # signal (that decision belongs to the cost gate, not the Q-table).
+        conviction_scale = max(RL_CONVICTION_FLOOR, rl_scale)
+        effective = self.risk_scale * regime_scale * conviction_scale
         self._last_status = {"drawdown": dd, "day_loss": day_loss}
         return {"drawdown": dd, "day_loss": day_loss,
                 "effective_risk_scale": round(min(1.25, effective), 3),
                 "regime_scale": regime_scale,
-                "rl_scale": rl_scale,
+                "rl_scale": rl_scale,               # raw agent choice (may be 0)
+                "rl_sit_out": rl_sit_out,           # skip probes this tick
                 "streak_scale": self.risk_scale}
 
     # ---------- gates & sizing ----------
@@ -238,7 +277,11 @@ class RiskManager:
         self.killed = False
         self.kill_reason = ""
         self.kill_ts = None
-        self.peak_equity = 0.0
+        # DO NOT zero peak_equity — that would erase the true high-water mark
+        # and make drawdown read 0% at a loss (drawdown amnesia). Instead,
+        # re-arm the kill baseline to the CURRENT equity so the same
+        # already-acknowledged drawdown does not instantly re-trip the switch.
+        self.kill_arm_peak = 0.0
         # clearing the kill switch must also clear the daily loss halt and the
         # loss-streak throttle — otherwise the operator "resets" but new
         # entries stay blocked by `halted_today` until the next UTC day.

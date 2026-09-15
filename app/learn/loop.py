@@ -111,9 +111,21 @@ class Learner:
         self.drift_state = {"drifting": drifting, "worst_feature": worst_f,
                             "psi": round(psi, 4)}
         if drifting and model.lr_boost <= 1.05:
-            model.lr_boost = 3.0                       # fast re-adaptation
-            db.log_event("learn", f"DRIFT detected on '{worst_f}' "
-                                  f"(PSI={psi:.3f}) — online-model LR boosted x3")
+            # Only boost the LR to re-adapt a model that was ACTUALLY WORKING.
+            # Boosting the learning rate of a head that's already below a coin
+            # flip just makes it fit the drift faster in the wrong direction
+            # (this is exactly what happened: 20.7% dir-acc + PSI≈6 → LR×2.5).
+            st = model.stats()
+            acc = st["directional_accuracy"]
+            if acc is not None and acc > 0.50 and model.n_updates >= 40:
+                model.lr_boost = 3.0                   # fast re-adaptation
+                db.log_event("learn", f"DRIFT on '{worst_f}' (PSI={psi:.3f}) "
+                                      f"— LR boosted x3 (model acc {acc:.1%})")
+            else:
+                db.log_event("learn", f"DRIFT on '{worst_f}' (PSI={psi:.3f}) "
+                                      f"— LR boost SUPPRESSED (model acc "
+                                      f"{'n/a' if acc is None else format(acc,'.1%')} "
+                                      f"≤ coin flip; not chasing a broken head)")
 
     # ------------------------------------------------ background evolution
     def _next_evolution_product(self):
@@ -219,10 +231,17 @@ class Learner:
                  or market.price(s["product"])
             if p0 and p1:
                 fwd = (p1 / p0 - 1) * s["direction"]
-                db.score_signal(s["rowid"], fwd)
+                db.score_signal(s["rowid"], fwd)   # store GROSS fwd for the UI
                 arm_regime = s.get("regime") or regime_label
+                # Feed the bandit the NET edge — the same exam the cost gate and
+                # real fills face. A signal that's directionally right but can't
+                # clear round-trip fees+slippage is NOT a winning arm; scoring it
+                # gross is how a structurally-unprofitable sleeve keeps weight.
+                from ..tunables import tv
+                round_trip = 2 * tv("fee_rate") + 2 * tv("slippage_bps") / 1e4
+                net = fwd - round_trip
                 self.bandit.update(arm_regime, s["strategy"],
-                                   fwd * s["confidence"])
+                                   net * s["confidence"])
                 n_scored += 1
             elif now - s["ts"] > LOOKUP_GIVE_UP_SEC:
                 db.abandon_signal(s["rowid"])
@@ -251,14 +270,25 @@ class Learner:
                                "hit_rate": None}
         self.strategy_stats = stats
 
-        # 3. Thompson-sampled weights (EMA-smoothed), exploration floor
+        # 3. Thompson-sampled weights (EMA-smoothed), exploration floor.
+        # The 0.04 floor keeps healthy-but-unlucky sleeves alive for exploration
+        # — but it must NOT prop up a sleeve we have positive evidence is broken.
+        # A confirmed in-regime loser (bandit net-edge gate) or an ML head still
+        # at/below a coin flip gets NO floor, so its weight can decay to ~0
+        # instead of being pinned in the book at 4%.
         draw = self.bandit.sample_weights(regime_label, temperature=ALLOC_TEMPERATURE)
-        floor = 0.04
+        base_floor = 0.04
+        model_acc = model.stats()["directional_accuracy"]
+        ml_broken = (model.n_updates >= 40 and
+                     (model_acc is None or model_acc <= 0.50))
         mixed = {}
         for k in STRATEGIES:
             w = WEIGHT_SMOOTH * draw.get(k, 0) + (1 - WEIGHT_SMOOTH) * self.weights.get(k, 0)
-            mixed[k] = max(floor, w)
-        z = sum(mixed.values())
+            floored = not self.bandit._net_edge_ok(regime_label, k)
+            if k == "ml" and ml_broken:
+                floored = True
+            mixed[k] = max(0.0, w) if floored else max(base_floor, w)
+        z = sum(mixed.values()) or 1.0
         self.weights = {k: round(v / z, 4) for k, v in mixed.items()}
 
         # 4. online model training + drift check
