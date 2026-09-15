@@ -112,13 +112,22 @@ class MarketData:
         avg_g, avg_l = sum(gains) / 14, sum(losses) / 14
         rsi = 100.0 if avg_l == 0 else 100 - 100 / (1 + avg_g / avg_l)
 
-        # ATR(14)
+        # ATR(14) on the native 5m bar — used for SHORT-horizon signal
+        # normalization (e.g. MACD-delta scaling), NOT for sizing.
         trs = []
         for i in range(-14, 0):
             tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]),
                      abs(lows[i] - closes[i - 1]))
             trs.append(tr)
         atr = sum(trs) / 14
+
+        # ATR(14) on an aggregated HIGHER-TIMEFRAME bar (default 1h = 12x5m).
+        # Stops / targets / trailing are sized off THIS so a swing trade can
+        # clear round-trip costs at its natural horizon. Sizing off the 5m ATR
+        # made every trade a scalp whose target could never honestly beat fees;
+        # the fix is the HORIZON, not looser fees. Configurable via the
+        # `swing_atr_bars` tunable (12 = 1h, 3 = 15m, 1 = native 5m).
+        atr_swing = self._swing_atr(highs, lows, closes)
 
         # MACD
         macd = ema(closes, 12) - ema(closes, 26)
@@ -132,7 +141,7 @@ class MarketData:
         book = self.books.get(p, {})
 
         return {
-            "price": price, "rsi": rsi, "atr": atr,
+            "price": price, "rsi": rsi, "atr": atr, "atr_swing": atr_swing,
             "sma20": sma(closes, 20), "sma50": sma(closes, 50),
             "ema12": ema(closes, 12), "ema26": ema(closes, 26),
             "macd": macd, "macd_delta": macd - macd_prev,
@@ -144,8 +153,51 @@ class MarketData:
             "spread_bps": book.get("spread_bps", 0.0),
         }
 
+    @staticmethod
+    def _swing_atr(highs, lows, closes, period=14):
+        """ATR(14) computed on a HIGHER-TIMEFRAME bar aggregated from the native
+        5m candles, so stop/target distances reflect a swing horizon (e.g. 1h)
+        rather than a 5m scalp. `swing_atr_bars` 5m candles are folded into one
+        swing bar (high=max, low=min, close=last); ATR is the mean true range
+        over the last `period` swing bars. Falls back to the native 5m ATR when
+        there isn't enough history yet.
+        """
+        from ..tunables import tv
+        try:
+            n = int(tv("swing_atr_bars"))
+        except Exception:
+            n = 12
+        n = max(1, n)
+        # native 5m ATR fallback (also the n==1 case)
+        def _native():
+            trs = []
+            for i in range(-period, 0):
+                trs.append(max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]),
+                               abs(lows[i] - closes[i - 1])))
+            return sum(trs) / period
+        if n == 1:
+            return _native()
+        # fold the trailing 5m bars into (period+1) higher-timeframe bars
+        need = (period + 1) * n
+        if len(closes) < need:
+            return _native()
+        H, L, C = [], [], []
+        for j in range(period + 1):
+            seg_hi = highs[-(j + 1) * n: len(highs) - j * n or None]
+            seg_lo = lows[-(j + 1) * n: len(lows) - j * n or None]
+            seg_cl = closes[-(j + 1) * n: len(closes) - j * n or None]
+            if not seg_hi:
+                return _native()
+            H.append(max(seg_hi)); L.append(min(seg_lo)); C.append(seg_cl[-1])
+        H.reverse(); L.reverse(); C.reverse()      # oldest -> newest
+        trs = []
+        for i in range(1, len(C)):
+            trs.append(max(H[i] - L[i], abs(H[i] - C[i - 1]),
+                           abs(L[i] - C[i - 1])))
+        return sum(trs) / len(trs) if trs else _native()
+
     def regime(self):
-        """Simple market regime detector from BTC."""
+        """Simple market regime detector from BTC.""" 
         f = self.features("BTC-USD")
         if not f:
             return {"label": "unknown", "vol": 0}

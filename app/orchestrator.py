@@ -124,8 +124,10 @@ class Orchestrator:
             db.log_event("error", f"hedger tick failed: {e}")
 
         n_before = len(broker.closed_trades)
+        # trailing stop keys off the SAME swing ATR the entry was sized on, so
+        # the whole trade lifecycle lives on one honest (higher-tf) horizon.
         broker.manage(market, trail_mult,
-                      lambda p: (market.features(p) or {}).get("atr"))
+                      lambda p: (market.features(p) or {}).get("atr_swing"))
         for t in broker.closed_trades[n_before:]:
             risk.on_trade_closed(t)
             learner.on_trade_closed(t)

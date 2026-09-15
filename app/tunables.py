@@ -30,6 +30,11 @@ TUNABLES = {
                            "Target distance in ATR multiples (cost floor may widen it)"),
     "trail_atr_mult":    T(2.5, 0.5, 6.0, 0.1, "risk", "Trailing stop ATR mult",
                            "Trailing stop distance from the high/low-water mark"),
+    "swing_atr_bars":    T(12, 1, 48, 1, "risk", "Swing ATR timeframe (x5m bars)",
+                           "5m candles folded into one ATR bar for sizing stops/"
+                           "targets: 12=1h, 3=15m, 1=native 5m. Bigger = wider, "
+                           "more cost-viable swing stops (a different strategy, "
+                           "not a looser scalp).", True),
     "max_drawdown_kill": T(0.15, 0.03, 0.50, 0.01, "risk", "Kill-switch drawdown",
                            "Peak-to-trough drawdown that trips the kill switch"),
     "daily_loss_limit":  T(0.05, 0.01, 0.25, 0.005, "risk", "Daily loss halt",

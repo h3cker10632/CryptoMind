@@ -234,9 +234,12 @@ class SignalEngine:
                 actionable=confidence >= gate and dir_ok,
                 explorable=(tv("explore_min_confidence") <= confidence < gate
                             and dir_ok),
-                stop=round(f["price"] - 2 * f["atr"], 6) if direction > 0
-                     else round(f["price"] + 2 * f["atr"], 6),
-                price=f["price"], atr=f["atr"], rsi=round(f["rsi"], 1),
+                # stop/target/sizing use the SWING ATR (higher timeframe) so a
+                # trade can clear round-trip costs at its natural horizon — the
+                # fix for "target can't beat fees" is the HORIZON, not fees.
+                stop=round(f["price"] - 2 * f["atr_swing"], 6) if direction > 0
+                     else round(f["price"] + 2 * f["atr_swing"], 6),
+                price=f["price"], atr=f["atr_swing"], rsi=round(f["rsi"], 1),
                 sentiment=round(sent[0], 3), regime=regime["label"],
                 ts=time.time(),
             )

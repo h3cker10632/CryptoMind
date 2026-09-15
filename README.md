@@ -132,8 +132,15 @@ PBO<0.30, walk-forward pass, and beats buy-and-hold. `pytest -q` runs the suite.
 
 - **Real retail costs modeled**: 50 bps taker fee + 10 bps slippage per side
   (~1.2% round trip — matches Coinbase Advanced/Kraken base tiers). A
-  cost-viability gate widens take-profit targets to >= 2.5x round-trip cost
-  so structurally unprofitable scalps are never taken.
+  cost-viability gate rejects any trade whose honest take-profit can't clear
+  round-trip cost by >= 2.5x, so structurally unprofitable trades are skipped
+  (the target is never quietly widened to the cost floor).
+- **Swing-horizon sizing**: stops/targets/trailing are sized off a
+  higher-timeframe ATR (default 1h, aggregated from 5m bars via the
+  `swing_atr_bars` tunable: 12 = 1h, 3 = 15m, 1 = native 5m) so a trade can
+  clear costs at its natural horizon. Widening the horizon — not loosening
+  fees — is what makes a signal cost-viable; it's a different strategy, not a
+  looser 5m scalp.
 - **Alerting**: Telegram + webhook (Discord/Slack/ntfy) push for kill-switch,
   daily-loss halt, feed outages, loop stalls; configure via dashboard 🔔 or
   `POST /api/alerts/config`; test with `POST /api/alerts/test`.
