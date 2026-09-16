@@ -19,6 +19,7 @@ class PairHedger:
         self.active = {}      # "A|B" -> hedge dict
         self.history = []     # closed hedges
         self.last_scan = {}   # pair -> {z, corr} for the dashboard
+        self.cooldowns = {}   # "A|B" -> ts the pair last closed (re-entry gate)
 
     # ---------- statistics ----------
     @staticmethod
@@ -35,6 +36,54 @@ class PairHedger:
         if sx == 0 or sy == 0:
             return 0.0
         return sum((a-mx)*(b-my) for a, b in zip(x, y)) / (sx*sy)
+
+    @staticmethod
+    def _pair_cost_viable(ca, cb, z, leg_notional, lookback=96):
+        """Cost gate on the PAIR. The expected reversion move (spread going from
+        the current |z| back to the exit band) must translate into a dollar
+        profit that clears round-trip cost on ALL FOUR fills — open+close on
+        BOTH legs — by `hedge_cost_multiple`. A pair whose expected convergence
+        can't beat the fee drag on four fills is structurally unprofitable and
+        is skipped (the direct analogue of the directional cost-viability gate).
+        """
+        import math
+        n = min(len(ca), len(cb), lookback)
+        if n < 40:
+            return False
+        ratio = [math.log(ca[-n + i] / cb[-n + i]) for i in range(n)]
+        sd = statistics.pstdev(ratio)
+        if sd < 1e-9:
+            return False
+        # expected fractional convergence of the log-ratio (entry z -> exit z)
+        delta_z = abs(z) - tv("hedge_z_exit")
+        if delta_z <= 0:
+            return False
+        expected_move_frac = delta_z * sd
+        expected_pnl = leg_notional * expected_move_frac
+        per_fill = tv("fee_rate") + tv("slippage_bps") / 1e4
+        cost_four_fills = 4 * per_fill * leg_notional
+        return expected_pnl > tv("hedge_cost_multiple") * cost_four_fills
+
+    @staticmethod
+    def _attribute(trade, h):
+        """Feed a closed hedge leg's NET return to the bandit under the `hedge`
+        sleeve. The generic learner.on_trade_closed would DROP hedge legs (they
+        carry no directional `votes`), so the hedge book would learn nothing.
+        Here we stamp an explicit `hedge` vote + the entry regime and route it
+        through the same attribution path so the sleeve is scored like any other.
+        """
+        try:
+            from ..learn.loop import learner
+            entry_notional = trade["qty"] * trade["entry"]
+            if entry_notional <= 0:
+                return
+            # a hedge leg's outcome credits the `hedge` sleeve, direction-agnostic
+            trade = dict(trade)
+            trade["votes"] = {"hedge": 1.0}
+            trade.setdefault("regime_at_entry", h.get("regime_at_entry", "unknown"))
+            learner.on_trade_closed(trade)
+        except Exception:
+            pass
 
     def _spread_z(self, ca, cb, lookback=96):
         """z-score of the log-ratio spread between two close series."""
@@ -80,19 +129,41 @@ class PairHedger:
                         if t:
                             pnl += t["pnl"]
                             risk.on_trade_closed(t)
+                            # attribute the leg's realized PnL to the `hedge`
+                            # strategy sleeve (never an empty-votes drop): the
+                            # bandit must see how the hedge book actually does.
+                            self._attribute(t, h)
                 h["closed"] = time.time(); h["pnl"] = round(pnl, 2)
                 h["exit_reason"] = reason
                 self.history.append(h)
+                # start the re-entry cooldown for this pair (prevents churn on a
+                # spread that keeps grazing the entry band).
+                self.cooldowns[key] = time.time()
                 del self.active[key]
                 db.log_event("hedge", f"HEDGE CLOSED {key}: {reason} pnl={pnl:+.2f}")
 
         # --- scan for new entries ---
         if len(self.active) >= 2:          # at most 2 concurrent pair hedges
             return
+        # Respect the SAME global risk gates as directional entries: a kill
+        # switch, a daily-loss halt, or being at the gross-exposure cap must
+        # block new hedge risk too (a "market-neutral" book is still capital and
+        # still bleeds fees while a stop is being hunted).
+        if risk.killed or risk.halted_today:
+            return
         equity = broker.equity(market)
+        if equity <= 0:
+            return
+        if broker.exposure(market) / equity >= tv("max_gross_exposure"):
+            return
         leg_notional = equity * tv("hedge_notional_pct")
         if leg_notional < tv("min_notional"):
             return
+        # two legs add 2*leg_notional of gross exposure — don't breach the cap
+        if (broker.exposure(market) + 2 * leg_notional) / equity > tv("max_gross_exposure"):
+            return
+        now = time.time()
+        cooldown_s = tv("hedge_cooldown_hours") * 3600
         best = None
         for a, b in itertools.combinations(sorted(products), 2):
             if a in broker.positions or b in broker.positions:
@@ -100,12 +171,20 @@ class PairHedger:
             key = f"{a}|{b}"
             if key in self.active:
                 continue
+            # re-entry cooldown: skip a pair that closed within the window
+            last_close = self.cooldowns.get(key, 0)
+            if now - last_close < cooldown_s:
+                continue
             corr = self._corr(self._rets(closes[a]), self._rets(closes[b]))
             z = self._spread_z(closes[a], closes[b])
             if z is None:
                 continue
             self.last_scan[key] = {"z": round(z, 2), "corr": round(corr, 2)}
             if corr < tv("hedge_corr_min") or abs(z) < tv("hedge_z_entry"):
+                continue
+            # PAIR cost gate: the expected reversion move must clear round-trip
+            # cost on ALL FOUR fills (open+close, both legs) by a healthy margin.
+            if not self._pair_cost_viable(closes[a], closes[b], z, leg_notional):
                 continue
             if best is None or abs(z) > abs(best[2]):
                 best = (a, b, z, corr)
@@ -119,20 +198,31 @@ class PairHedger:
             return
         fa = market.features(long_leg) or {}
         fb = market.features(short_leg) or {}
-        atr_a = fa.get("atr") or pa * 0.02
-        atr_b = fb.get("atr") or pb * 0.02
-        # wide safety stops — the pair exit does the real work
+        atr_a = fa.get("atr_swing") or fa.get("atr") or pa * 0.02
+        atr_b = fb.get("atr_swing") or fb.get("atr") or pb * 0.02
+        regime_label = market.regime().get("label", "unknown")
+        # BOTH LEGS LIVE OR NEITHER: open the long, then the short; if the short
+        # fails to fill, immediately unwind the long so we never carry a naked,
+        # directional orphan from what is supposed to be a market-neutral book.
         l = broker.open(long_leg, 1, leg_notional, pa,
-                        pa - 4*atr_a, pa + 8*atr_a, f"HEDGE long leg z={z:+.2f}")
+                        pa - 4*atr_a, pa + 8*atr_a, f"HEDGE long leg z={z:+.2f}",
+                        is_hedge=True, regime_at_entry=regime_label)
         if l is None:
             return
         s = broker.open(short_leg, -1, leg_notional, pb,
-                        pb + 4*atr_b, pb - 8*atr_b, f"HEDGE short leg z={z:+.2f}")
+                        pb + 4*atr_b, pb - 8*atr_b, f"HEDGE short leg z={z:+.2f}",
+                        is_hedge=True, regime_at_entry=regime_label)
         if s is None:
-            broker.sell(long_leg, pa, "hedge abort: short leg failed")
+            # unwind the orphaned long and attribute its (tiny) round-trip loss
+            t = broker.sell(long_leg, market.price(long_leg) or pa,
+                            "hedge abort: short leg failed")
+            if t:
+                risk.on_trade_closed(t)
+                self._attribute(t, {"regime_at_entry": regime_label})
             return
         h = {"pair": (a, b), "long": long_leg, "short": short_leg,
              "z_entry": round(z, 2), "corr": round(corr, 2),
+             "regime_at_entry": regime_label,
              "notional": round(leg_notional, 2), "opened": time.time()}
         self.active[f"{a}|{b}"] = h
         db.log_event("hedge", f"HEDGE OPEN {a}|{b}: long {long_leg} / short "

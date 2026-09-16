@@ -194,8 +194,12 @@ class Learner:
             return
         net_return = trade["pnl"] / entry_notional     # after fees+slippage
         total_w = sum(abs(v) for v in votes.values()) or 1e-9
+        # `hedge` is an attributable sleeve (the market-neutral pair book) even
+        # though it is not a directional strategy that votes in the composite —
+        # so its realized PnL is scored by the bandit rather than dropped.
+        attributable = STRATEGIES if "hedge" in STRATEGIES else (*STRATEGIES, "hedge")
         for strat, v in votes.items():
-            if strat not in STRATEGIES:
+            if strat not in attributable:
                 continue
             share = abs(v) / total_w
             # a strategy that voted long gets the trade's return as-is;

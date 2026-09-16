@@ -94,6 +94,12 @@ TUNABLES = {
                            "Only hedge pairs whose returns correlate at least this much"),
     "hedge_max_age_hours": T(72, 1, 336, 1, "hedge", "Hedge max age (h)",
                            "Force-close a pair hedge older than this", True),
+    "hedge_cooldown_hours": T(6, 0, 72, 1, "hedge", "Hedge re-entry cooldown (h)",
+                           "Hours to wait before re-opening a pair after it closed "
+                           "(prevents churn on a spread that keeps grazing the band)"),
+    "hedge_cost_multiple": T(1.5, 1.0, 5.0, 0.1, "hedge", "Hedge pair cost multiple",
+                           "Expected z-reversion move (in $) must clear round-trip "
+                           "cost on ALL FOUR fills by this multiple, or skip the pair"),
 }
 
 _overrides = None

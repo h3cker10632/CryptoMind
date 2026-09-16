@@ -141,6 +141,14 @@ PBO<0.30, walk-forward pass, and beats buy-and-hold. `pytest -q` runs the suite.
   clear costs at its natural horizon. Widening the horizon — not loosening
   fees — is what makes a signal cost-viable; it's a different strategy, not a
   looser 5m scalp.
+- **Market-neutral pair hedge**: longs the laggard / shorts the leader when a
+  correlated pair's spread diverges beyond `hedge_z_entry`. Managed as a unit:
+  both legs live or neither (a failed second leg unwinds the first), the
+  directional signal-flip exit can never close a hedge leg, a pair cost gate
+  requires the expected reversion move to clear round-trip cost on all four
+  fills (`hedge_cost_multiple`), a re-entry cooldown (`hedge_cooldown_hours`)
+  stops churn, the kill switch / daily-loss halt / gross-exposure cap all block
+  new hedge risk, and realized PnL is attributed to the `hedge` learning sleeve.
 - **Alerting**: Telegram + webhook (Discord/Slack/ntfy) push for kill-switch,
   daily-loss halt, feed outages, loop stalls; configure via dashboard 🔔 or
   `POST /api/alerts/config`; test with `POST /api/alerts/test`.

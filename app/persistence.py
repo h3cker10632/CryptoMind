@@ -115,7 +115,8 @@ def capture():
 def _capture_hedge():
     from .strategies.hedge import hedger
     return {"active": {k: dict(v) for k, v in hedger.active.items()},
-            "history": hedger.history[-50:]}
+            "history": hedger.history[-50:],
+            "cooldowns": dict(hedger.cooldowns)}
 
 
 def _capture_calendar():
@@ -266,6 +267,7 @@ def load():
                 if isinstance(h.get("pair"), list):
                     h["pair"] = tuple(h["pair"])
             hedger.history = list(hd.get("history") or [])
+            hedger.cooldowns = dict(hd.get("cooldowns") or {})
 
         e = s.get("evolution", {})
         evolution.champions = e.get("champions", {}) or {}

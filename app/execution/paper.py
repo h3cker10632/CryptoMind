@@ -53,7 +53,7 @@ class PaperBroker:
         return money.round_price(product, px) if product else px
 
     def open(self, product, direction, notional, price, stop, take, reason,
-             votes=None, regime_at_entry=None):
+             votes=None, regime_at_entry=None, is_hedge=False):
         """direction: +1 long, -1 short (margin-style).
 
         `votes` (per-strategy vote dict at entry) and `regime_at_entry` are
@@ -62,6 +62,10 @@ class PaperBroker:
         if the position is closed on the same tick or the process restarts
         mid-tick. Setting them after open() returned (the old path) risked a
         snapshot/close dropping them, which is why `trade_attributions` stayed 0.
+
+        `is_hedge` marks a market-neutral pair-hedge leg. Hedge legs are managed
+        as a PAIR by the hedger (both live or neither) and MUST NOT be closed by
+        the directional signal-flip exit, so the flag is baked in here too.
         """
         fill = self._fill_price(price, "buy" if direction > 0 else "sell", product)
         fee = notional * tv("fee_rate")
@@ -81,6 +85,8 @@ class PaperBroker:
                         if abs(v) > 0.05}
         if regime_at_entry is not None:
             pos["regime_at_entry"] = regime_at_entry
+        if is_hedge:
+            pos["hedge"] = True
         if direction < 0:
             pos["margin"] = notional
         self.positions[product] = pos

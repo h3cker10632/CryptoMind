@@ -143,6 +143,11 @@ class Orchestrator:
             sig = signals.get(p)
             if not sig:
                 continue
+            # NEVER let a directional signal flip close a hedge leg — a pair
+            # hedge is market-neutral and managed as a unit by the hedger; a
+            # confident directional call on one leg would orphan the other.
+            if broker.positions[p].get("hedge"):
+                continue
             side = broker.positions[p].get("side", 1)
             if sig["direction"] * side < 0 and sig["confidence"] > 0.5:
                 t = broker.sell(p, market.price(p), "signal flip")
