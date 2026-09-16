@@ -678,8 +678,11 @@ async function refresh(){
       'champions':champs.length
         ?'<span class="ok">'+champs.map(c=>c.split('-')[0]).join(', ')+'</span>':'none yet',
       'last run':evoRep?(evoRep.product||''):'—',
-      'train return':evoRep?(evoRep.train.total_return*100).toFixed(2)+'%':'—',
-      'validation return':evoRep?(evoRep.validation.total_return*100).toFixed(2)+'%':'—',
+      'train return':(evoRep&&evoRep.train)?(evoRep.train.total_return*100).toFixed(2)+'%':'—',
+      'OOS windows +':(evoRep&&evoRep.walk_forward&&evoRep.walk_forward.frac_positive!=null)
+        ?(evoRep.walk_forward.frac_positive*100).toFixed(0)+'%':'—',
+      'OOS pooled Sharpe':(evoRep&&evoRep.pooled_oos_sharpe!=null)?evoRep.pooled_oos_sharpe.toFixed(2):'—',
+      'portfolio':(evoRep&&evoRep.portfolio_size!=null)?evoRep.portfolio_size:'—',
       'promoted':evoRep?(evoRep.promoted?'<span class="ok">yes</span>':'<span class="bad">no (failed OOS)</span>'):'—'});
 
     $('#bandit-regime').textContent='('+(ln.regime||'unknown')+')';

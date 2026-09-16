@@ -125,3 +125,60 @@ def test_evolved_vote_averages_portfolio(monkeypatch):
     monkeypatch.setattr(evo_mod, "evolution", FakeEvo())
     out = eng.strat_evolved(feats, (0.0,), "bull")
     assert abs(out - max(-1, min(1, (v_bull + v_flat) / 2))) < 1e-9
+
+
+def test_evolve_report_schema_matches_loop_and_dashboard_consumers():
+    """Regression: Phase 2 renamed the report keys; the live loop's log line and
+    the dashboard read them. A run's report MUST expose the keys those consumers
+    use, and MUST NOT rely on the removed 'validation'/'validation_fitness'.
+    """
+    e = ev.Evolution(pop_size=12, generations=3, seed=9)
+    rep = e.evolve(_synth_candles(n=800, seed=2), product="BTC-USD")
+    # keys the loop's log message + dashboard now read (must all resolve):
+    for k in ("product", "train_fitness", "pooled_oos_sharpe", "walk_forward",
+              "promoted", "portfolio_size", "genome"):
+        assert k in rep, k
+    # the removed keys must be gone so nothing silently reads a stale schema:
+    assert "validation" not in rep
+    assert "validation_fitness" not in rep
+    # emulate the exact f-string the loop builds — this used to KeyError:
+    wf = rep.get("walk_forward") or {}
+    msg = (f"train_fit={rep.get('train_fitness')} "
+           f"pooled_oos_sharpe={rep.get('pooled_oos_sharpe')} "
+           f"oos_windows_positive={wf.get('frac_positive')} "
+           f"promoted={rep.get('promoted')} "
+           f"portfolio={rep.get('portfolio_size', 0)}")
+    assert "promoted=" in msg
+
+
+def test_maybe_evolve_worker_logs_without_keyerror(monkeypatch):
+    """End-to-end: the loop's evolution worker must complete WITHOUT throwing,
+    so a finished GA run is never swallowed as 'Evolution failed'."""
+    import app.learn.loop as loop_mod
+    import app.backtest.engine as bt_engine
+    from app.learn.loop import learner
+
+    candles = _synth_candles(n=800, seed=2)
+
+    async def _fake_fetch(product):
+        return candles
+    # the worker does `from ..backtest.engine import fetch_history` at call time,
+    # so patch it on the source module (this is the real target).
+    monkeypatch.setattr(bt_engine, "fetch_history", _fake_fetch, raising=False)
+
+    logged = []
+    monkeypatch.setattr(loop_mod.db, "log_event",
+                        lambda *a, **k: logged.append(a))
+    # force a small, fast GA and bypass the cadence/thread guards
+    learner._evo_thread = None
+    learner.last_evolution_start = 0
+    monkeypatch.setattr(loop_mod, "tv", lambda k: 0 if k == "evolve_every_sec" else 1,
+                        raising=False)
+    loop_mod.evolution.pop_size = 10
+    loop_mod.evolution.generations = 2
+
+    learner.maybe_evolve(product="BTC-USD")
+    learner._evo_thread.join(timeout=30)
+    # no error event was logged, and the run reached "done" (not "error")
+    assert loop_mod.evolution.status != "error"
+    assert not any(a and a[0] == "error" for a in logged), logged

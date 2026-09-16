@@ -170,12 +170,15 @@ class Learner:
                                          f"insufficient history ({len(candles)} bars)")
                     return
                 rep = evolution.evolve(candles, product=product)
+                wf = rep.get("walk_forward") or {}
                 msg = (f"Evolution finished on {product}: "
-                       f"train_fit={rep['train_fitness']} "
-                       f"val_fit={rep['validation_fitness']} "
-                       f"promoted={rep['promoted']} "
+                       f"train_fit={rep.get('train_fitness')} "
+                       f"pooled_oos_sharpe={rep.get('pooled_oos_sharpe')} "
+                       f"oos_windows_positive={wf.get('frac_positive')} "
+                       f"promoted={rep.get('promoted')} "
+                       f"portfolio={rep.get('portfolio_size', 0)} "
                        f"(champions: {len(evolution.champions)})")
-                db.log_event("learn", msg, rep["genome"])
+                db.log_event("learn", msg, rep.get("genome"))
             except Exception as e:
                 evolution.status = "error"
                 db.log_event("error", f"Evolution failed on {product}: {e}")
