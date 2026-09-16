@@ -158,7 +158,7 @@ PBO<0.30, walk-forward pass, and beats buy-and-hold. `pytest -q` runs the suite.
   button or `/notify on|off` in the bot).
 - **Two-way Telegram command bot**: once a bot token + chat id are set, control
   and query the system from your phone. Commands are private to your chat id.
-  `/status /positions /trades /pnl /balance /stats /signals /diag /chart /risk /why`
+  `/status /positions /trades /pnl /balance /stats /brains /signals /diag /chart /risk /why`
   `/pause /resume /kill /resetkill /close <product>|all /shorts on|off /mode <stance>`
   `/set <tunable> <value> /get <tunable> /tunables /notify on|off /help`.
   Notably `/resetkill` clears the kill switch + daily halt remotely, and

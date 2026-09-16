@@ -162,6 +162,26 @@ def recent(table, limit=100):
         return [dict(r) for r in rows]
 
 
+def learning_counts():
+    """Durable-memory row counts used by the /brains report: how much history
+    the learning stack has actually accumulated in SQLite."""
+    out = {}
+    with _lock, _conn() as c:
+        for t in ("events", "trades", "equity", "signal_scores", "order_events"):
+            try:
+                out[t] = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            except Exception:
+                out[t] = 0
+        try:
+            out["signals_scored"] = c.execute(
+                "SELECT COUNT(*) FROM signal_scores WHERE scored=1").fetchone()[0]
+            out["signals_pending"] = c.execute(
+                "SELECT COUNT(*) FROM signal_scores WHERE scored=0").fetchone()[0]
+        except Exception:
+            out["signals_scored"] = out["signals_pending"] = 0
+    return out
+
+
 def order_events(intent_id=None, limit=200):
     with _lock, _conn() as c:
         if intent_id:

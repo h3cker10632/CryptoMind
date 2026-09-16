@@ -225,3 +225,37 @@ def test_close_all_flattens_everything():
     out = alerts.handle_command("/close all")
     assert "Closed" in out
     assert not broker.positions
+
+
+# ------------------------------------------------------------------ /brains
+def test_brains_reports_learning_state():
+    out = alerts.handle_command("/brains")
+    assert "learning state" in out.lower()
+    # the four learning subsystems + durable store are all surfaced
+    for section in ("Bandit", "Online model", "RL risk", "GA evolution",
+                    "Durable history"):
+        assert section in out, section
+    # tells the operator WHERE it's stored
+    assert "cryptomind.db" in out and "state.json" in out
+
+
+def test_brains_aliases_and_help():
+    assert "/brains" in alerts.handle_command("/help")
+    for alias in ("/brains", "/learning", "/learn"):
+        assert "learning state" in alerts.handle_command(alias).lower()
+
+
+def test_env_seeded_credentials_persist_to_disk(tmp_path, monkeypatch):
+    """A bot token seeded from an env var must be written to alerts.json so it
+    survives a restart WITHOUT the env var (the persistence-gap fix)."""
+    import json
+    conf = tmp_path / "alerts.json"
+    monkeypatch.setattr(alerts, "CONF_PATH", str(conf), raising=False)
+    # simulate env-seeded credentials with an empty/absent file
+    monkeypatch.setitem(alerts._state, "telegram_bot_token", "111:ENVTOKEN")
+    monkeypatch.setitem(alerts._state, "telegram_chat_id", "777")
+    alerts._load_conf()
+    assert conf.exists(), "credentials were never persisted to disk"
+    saved = json.loads(conf.read_text())
+    assert saved.get("telegram_bot_token") == "111:ENVTOKEN"
+    assert saved.get("telegram_chat_id") == "777"

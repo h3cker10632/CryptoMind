@@ -36,6 +36,17 @@ LEVELS = {"info": 0, "warning": 1, "critical": 2}
 
 
 def _load_conf():
+    """Reconcile the in-memory alert/bot config with alerts.json.
+
+    Disk is the source of truth once configured (via the API or the bot), but
+    the Telegram bot token + chat id can also be seeded from environment
+    variables on first boot. Those env-seeded credentials were previously NEVER
+    written to disk, so a restart WITHOUT the env var silently lost the bot.
+    Here we load disk values, then persist any credentials we ended up holding
+    that the file doesn't already reflect — so the bot survives restart/shutdown
+    regardless of how it was first configured.
+    """
+    saved = {}
     try:
         if os.path.exists(CONF_PATH):
             with open(CONF_PATH) as f:
@@ -48,7 +59,14 @@ def _load_conf():
                 elif saved.get(k):
                     _state[k] = saved[k]
     except Exception:
-        pass
+        saved = {}
+    # persist env-seeded (or otherwise not-yet-saved) credentials so they last
+    creds = ("telegram_bot_token", "telegram_chat_id", "webhook_url")
+    if any(_state.get(k) and not saved.get(k) for k in creds):
+        try:
+            save_conf({})        # writes the full current _state atomically
+        except Exception:
+            pass
 
 
 def save_conf(changes: dict):
@@ -387,6 +405,7 @@ HELP_TEXT = (
     "/pnl — realized/unrealized PnL + win rate\n"
     "/balance — cash, equity, exposure\n"
     "/stats — trade statistics\n"
+    "/brains — how much the system has learned (models/DB)\n"
     "/signals — current actionable signals\n"
     "/diag — per-coin: why each isn't trading (or would)\n"
     "/chart [tf] — equity chart image (tf: 1h,1d,1w,1m; default 1d)\n"
@@ -506,6 +525,59 @@ def _cmd_stats():
             f"• Avg win: {_fmt_money(st['avg_win'])}\n"
             f"• Avg loss: {_fmt_money(st['avg_loss'])}\n"
             f"• Realized PnL: {_fmt_money(st['realized_pnl'])}")
+
+
+def _cmd_brains():
+    """How much has the system actually learned? Surfaces the live in-memory
+    learning state (bandit arms, online model, RL Q-table, GA champions) plus
+    the durable SQLite row counts, and where all of it is stored on disk."""
+    from .learn.loop import learner
+    from .learn.online_model import model
+    from .learn.rl_risk import agent as rl_agent
+    from .learn.evolution import evolution
+    from . import db
+
+    arms = learner.bandit.arms
+    regimes_seen = len({r for (r, _s) in arms})
+    total_obs = sum(v[0] for v in arms.values())          # v = (n, mean, M2)
+    mst = model.stats()
+    rst = rl_agent.stats()
+    champs = evolution.champions or {}
+    counts = db.learning_counts()
+
+    acc = mst["directional_accuracy"]
+    acc_str = "—" if acc is None else f"{acc*100:.0f}%"
+
+    out = ["*🧠 CryptoMind — learning state*", ""]
+    out.append("*Bandit (strategy allocation)*")
+    out.append(f"• Arms populated: {len(arms)}  ({regimes_seen} regimes)")
+    out.append(f"• Total observations: {total_obs}")
+    out.append(f"• Trade attributions: {learner.trade_attributions}")
+    out.append("")
+    out.append("*Online model (TinyMLP)*")
+    out.append(f"• Updates: {mst['n_updates']}  ({'warm' if mst['warmed_up'] else 'cold'})")
+    out.append(f"• Directional acc: {acc_str}   replay: {mst['replay_buffer']}")
+    out.append("")
+    out.append("*RL risk agent (Q-learning)*")
+    out.append(f"• Updates: {rst['n_updates']}   states: {rst['states_visited']}")
+    out.append(f"• Epsilon: {rst['epsilon']}   last reward: {rst['last_reward']}")
+    out.append("")
+    out.append("*GA evolution*")
+    if champs:
+        out.append(f"• Champions: {len(champs)} → " +
+                   ", ".join(sorted(champs.keys())))
+    else:
+        out.append("• Champions: none promoted yet")
+    out.append("")
+    out.append("*Durable history (SQLite)*")
+    out.append(f"• Signals: {counts['signals_scored']} scored / "
+               f"{counts['signals_pending']} pending")
+    out.append(f"• Trades: {counts['trades']}   equity pts: {counts['equity']}")
+    out.append(f"• Events: {counts['events']}   order events: {counts['order_events']}")
+    out.append("")
+    out.append("_Stored in: `cryptomind.db` (history) + `state.json` "
+               "(model snapshot, saved ~1/min)._")
+    return "\n".join(out)
 
 
 def _cmd_signals():
@@ -846,6 +918,8 @@ def handle_command(text):
             return _cmd_balance()
         if cmd == "stats":
             return _cmd_stats()
+        if cmd in ("brains", "learning", "learn"):
+            return _cmd_brains()
         if cmd == "signals":
             return _cmd_signals()
         if cmd in ("diag", "diagnose", "why_not"):
