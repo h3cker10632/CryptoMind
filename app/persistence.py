@@ -127,6 +127,15 @@ def capture():
             "bandit_arms": _save_dict_tupkeys(
                 {k: list(v) for k, v in learner.bandit.arms.items()}),
             "trade_attributions": learner.trade_attributions,
+            # Pending ML training samples + price history are IN-MEMORY working
+            # state, but the online model only labels a sample ML_HORIZON_SEC
+            # (30 min) after it was recorded. The process restarts far more often
+            # than that, so if these aren't persisted every pending label is
+            # wiped before it matures and the model NEVER trains (n_updates=0).
+            "pending_ml": [[ts, p, x, pred]
+                           for (ts, p, x, pred) in list(learner.pending_ml)],
+            "price_history": {p: hist[-400:]
+                              for p, hist in learner.price_history.items()},
         },
         # `model` = the committee's PRIMARY member, kept under the same key/
         # schema (now incl. quantile heads) so old snapshots keep loading.
@@ -277,6 +286,17 @@ def load():
         learner.bandit.arms = _load_arms(l.get("bandit_arms", {}))
         learner.trade_attributions = l.get("trade_attributions",
                                            learner.trade_attributions)
+        # Restore the pending ML label queue + price history so samples recorded
+        # before a restart still mature into training examples afterwards. This
+        # is what actually lets the online model accumulate updates across the
+        # frequent restarts (without it, n_updates is pinned at 0 forever).
+        pend = l.get("pending_ml") or []
+        learner.pending_ml = deque(
+            [(ts, p, x, pred) for ts, p, x, pred in pend],
+            maxlen=learner.pending_ml.maxlen)
+        ph = l.get("price_history") or {}
+        learner.price_history = {p: [tuple(pt) for pt in hist]
+                                 for p, hist in ph.items()}
 
         # ---- online model / committee ----
         # Prefer the full committee snapshot; fall back to the legacy single
