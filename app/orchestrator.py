@@ -169,7 +169,8 @@ class Orchestrator:
                     continue
                 notional, stop, take = risk.size(
                     equity, sig["price"], sig["atr"], sig["confidence"],
-                    self.last_risk_status, direction=sig["direction"], product=p)
+                    self.last_risk_status, direction=sig["direction"], product=p,
+                    ml_confidence=sig.get("ml_confidence", 1.0))
                 if notional < tv("min_notional"):
                     continue
                 # A cost-viable conviction candidate cleared the gate — this
@@ -217,7 +218,8 @@ class Orchestrator:
                         continue
                     notional, stop, take = risk.size(
                         equity, sig["price"], sig["atr"], sig["confidence"],
-                        self.last_risk_status, direction=sig["direction"], product=p)
+                        self.last_risk_status, direction=sig["direction"], product=p,
+                        ml_confidence=sig.get("ml_confidence", 1.0))
                     notional *= tv("explore_size_factor")
                     if notional < tv("min_notional"):
                         continue

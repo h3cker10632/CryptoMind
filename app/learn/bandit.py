@@ -34,6 +34,28 @@ class RegimeBandit:
         m2 += d * (aligned_return - mean)
         self.arms[key] = (n, mean, m2)
 
+    def decay(self, gamma=0.995, prune_below=0.05):
+        """Exponentially forget old evidence so the bandit tracks a
+        NON-STATIONARY market. Each cycle every arm's effective sample size and
+        its variance accumulator are multiplied by `gamma` (the mean is kept),
+        so a strategy that stopped working sheds its old reputation instead of
+        coasting on 3-week-old wins. Arms whose effective n falls below
+        `prune_below` are dropped (a stale regime/strategy pair we haven't seen
+        in a long time), which also keeps the table small. A live arm is
+        continuously topped back up by update(), so only genuinely idle arms age
+        out. The half-life at gamma=0.995 is ~140 cycles (~7h at 3-min cycles).
+        """
+        dead = []
+        for key, (n, mean, m2) in list(self.arms.items()):
+            n2 = n * gamma
+            if n2 < prune_below:
+                dead.append(key)
+                continue
+            self.arms[key] = (n2, mean, m2 * gamma)
+        for key in dead:
+            del self.arms[key]
+        return len(dead)
+
     def _obs_std(self, n, m2):
         if n >= 2:
             return max(math.sqrt(m2 / (n - 1)), self.MIN_OBS_STD)

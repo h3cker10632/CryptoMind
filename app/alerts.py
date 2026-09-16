@@ -532,15 +532,16 @@ def _cmd_brains():
     learning state (bandit arms, online model, RL Q-table, GA champions) plus
     the durable SQLite row counts, and where all of it is stored on disk."""
     from .learn.loop import learner
-    from .learn.online_model import model
+    from .learn.online_model import model, committee
     from .learn.rl_risk import agent as rl_agent
     from .learn.evolution import evolution
+    from .learn.drift import page_hinkley
     from . import db
 
     arms = learner.bandit.arms
     regimes_seen = len({r for (r, _s) in arms})
     total_obs = sum(v[0] for v in arms.values())          # v = (n, mean, M2)
-    mst = model.stats()
+    mst = committee.stats()
     rst = rl_agent.stats()
     champs = evolution.champions or {}
     counts = db.learning_counts()
@@ -554,18 +555,29 @@ def _cmd_brains():
     out.append(f"• Total observations: {total_obs}")
     out.append(f"• Trade attributions: {learner.trade_attributions}")
     out.append("")
-    out.append("*Online model (TinyMLP)*")
-    out.append(f"• Updates: {mst['n_updates']}  ({'warm' if mst['warmed_up'] else 'cold'})")
+    out.append("*Online model (committee of TinyMLPs)*")
+    out.append(f"• Members: {mst.get('committee_members', 1)}   "
+               f"updates: {mst['n_updates']}  "
+               f"({'warm' if mst['warmed_up'] else 'cold'})")
     out.append(f"• Directional acc: {acc_str}   replay: {mst['replay_buffer']}")
     out.append("")
     out.append("*RL risk agent (Q-learning)*")
     out.append(f"• Updates: {rst['n_updates']}   states: {rst['states_visited']}")
     out.append(f"• Epsilon: {rst['epsilon']}   last reward: {rst['last_reward']}")
     out.append("")
+    out.append("*Concept drift*")
+    ph = getattr(page_hinkley, "stats", lambda: {})() or {}
+    out.append(f"• Feature drift (PSI): {'yes' if learner.drift_state.get('drifting') else 'no'}"
+               f"   error drift (Page-Hinkley): {ph.get('concept_drift_events', 0)} events")
+    out.append("")
     out.append("*GA evolution*")
+    ports = evolution.champion_portfolios or {}
     if champs:
         out.append(f"• Champions: {len(champs)} → " +
                    ", ".join(sorted(champs.keys())))
+        if ports:
+            out.append("• Portfolios (top-k): " +
+                       ", ".join(f"{p}×{len(g)}" for p, g in sorted(ports.items())))
     else:
         out.append("• Champions: none promoted yet")
     out.append("")
@@ -656,7 +668,8 @@ def _cmd_diag():
         # 5) sizing / cost-viability gate
         notional, stop, take = risk.size(
             equity, sig["price"], sig["atr"], sig["confidence"], rs,
-            direction=sig["direction"], product=p)
+            direction=sig["direction"], product=p,
+            ml_confidence=sig.get("ml_confidence", 1.0))
         if notional <= 0:
             lines.append(f"`{p}` ⛔ cost gate: ATR target can't clear fees "
                          "(unprofitable — try lower fee_rate/cost_multiple)")

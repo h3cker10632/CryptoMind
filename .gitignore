@@ -23,3 +23,8 @@ venv/
 .claude/
 .DS_Store
 *.log
+
+# --- local patch artifacts ---
+cryptomind-*.zip
+cryptomind-*.diff
+cryptomind-*.patch

@@ -105,7 +105,7 @@ def strat_derivatives(f, sent, regime):
 def strat_ml(f, sent, regime):
     """Online neural network prediction (continual learning). Silent until
     the model has warmed up on enough labeled live samples."""
-    from ..learn.online_model import model, build_x
+    from ..learn.online_model import model, committee, build_x
     from ..data.derivatives import derivatives
     if model.n_updates < 40:
         return 0.0
@@ -120,17 +120,18 @@ def strat_ml(f, sent, regime):
         return 0.0
     trust = _clip((acc - 0.50) / 0.10, 0.0, 1.0)   # 50%→0, 60%→full
     d = derivatives.features(_cur_product())
-    pred = model.predict(build_x(f, sent[0], _cur_market_sent(), d))
-    return _clip(pred * 1.3) * trust
+    x = build_x(f, sent[0], _cur_market_sent(), d)
+    # COMMITTEE + UNCERTAINTY: use the ensemble mean, and scale the vote down
+    # when the members disagree or their quantile bands are wide. A confident,
+    # agreed-upon signal keeps full weight; an uncertain one is damped toward 0.
+    u = committee.predict_with_uncertainty(x)
+    # stash the uncertainty for the sizer to read this cycle (see compute()).
+    _ctx.ml_uncertainty = u
+    return _clip(u["mean"] * 1.3) * trust * u["confidence"]
 
 
-def strat_evolved(f, sent, regime):
-    """GA-evolved champion rule set (promoted only after out-of-sample
-    validation). Inactive until evolution has produced a champion."""
-    from ..learn.evolution import evolution
-    g = evolution.champion_for(_cur_product())
-    if not g:
-        return 0.0
+def _evolved_vote(g, f):
+    """Score a single evolved genome's rule set on the current features."""
     score = 0.0
     ema_f = f["ema12"] if g["ema_fast"] <= 16 else f["ema26"]
     trend_ok = f["ema12"] > f["ema26"] if g["ema_fast"] < g["ema_slow"] else True
@@ -158,6 +159,21 @@ def strat_evolved(f, sent, regime):
         else:
             score = -0.3 if f["rsi"] > 70 else 0.0
     return _clip(score)
+
+
+def strat_evolved(f, sent, regime):
+    """GA-evolved champion rule set (promoted only after purged walk-forward
+    validation). Now averages the CHAMPION PORTFOLIO (top-k promoted genomes)
+    instead of betting on a single champion: a signal several independently
+    validated genomes agree on is far less likely to be an overfit artefact,
+    and disagreement naturally shrinks the vote toward zero. Inactive until
+    evolution has promoted at least one genome."""
+    from ..learn.evolution import evolution
+    pop = evolution.portfolio_for(_cur_product())
+    if not pop:
+        return 0.0
+    votes = [_evolved_vote(g, f) for g in pop]
+    return _clip(sum(votes) / len(votes))
 
 
 # (per-thread context is set on `_ctx` in compute(); see top of file)
@@ -193,6 +209,7 @@ class SignalEngine:
                 continue
             sent = nlp.asset_score(p)
             _ctx.product = p
+            _ctx.ml_uncertainty = None      # strat_ml sets this if it votes
             raw = {}
             for name, fn in STRATEGIES.items():
                 try:
@@ -222,6 +239,13 @@ class SignalEngine:
             else:
                 composite, confidence = 0.0, 0.0
             direction = 1 if composite > 0 else -1
+            # MODEL-UNCERTAINTY sizing hint (Phase 3): when the online committee
+            # voted, expose its confidence so the risk manager can shrink the
+            # position when the model is unsure (wide bands / members disagree)
+            # and only press size when it's confident. Defaults to 1.0 (no
+            # effect) whenever the ML head didn't participate.
+            mlu = getattr(_ctx, "ml_uncertainty", None)
+            ml_conf = float(mlu["confidence"]) if mlu else 1.0
             from .. import settings as app_settings
             from ..risk.stance import stance
             shorts_ok = app_settings.get("allow_shorts")
@@ -230,6 +254,7 @@ class SignalEngine:
             out[p] = Signal(
                 product=p, direction=direction, confidence=round(confidence, 3),
                 composite=round(composite, 3),
+                ml_confidence=round(ml_conf, 3),
                 edge_bps=round(composite * 25, 1),
                 actionable=confidence >= gate and dir_ok,
                 explorable=(tv("explore_min_confidence") <= confidence < gate

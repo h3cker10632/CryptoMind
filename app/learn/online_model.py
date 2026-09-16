@@ -2,16 +2,27 @@
 on live market features vs realized forward returns.
 
 Continual-learning features:
-  * experience replay buffer (mitigates catastrophic forgetting)
+  * experience replay buffer, PRIORITIZED by prediction error
   * AdaGrad per-weight adaptive learning rates
   * directional-accuracy tracking on held-out (pre-prediction) labels
   * drift-triggered learning-rate boost
+  * online per-feature input standardization (Welford)
+
+Uncertainty features (Phase 3):
+  * QUANTILE heads (P10/P90) trained with pinball loss on top of the shared
+    hidden layer → an ALEATORIC uncertainty band around each prediction.
+  * A COMMITTEE of differently-seeded members whose disagreement gives an
+    EPISTEMIC uncertainty. Both feed the live sizer so the book bets small when
+    the model is unsure and only presses size when the heads agree.
 """
 import math, random
 from collections import deque
 
 N_IN = 17
 N_HID = 16
+
+# quantile levels for the aleatoric band (P10 / P90)
+QUANTILES = (0.10, 0.90)
 
 FEAT_NAMES = ["rsi", "macd", "macd_delta", "mom_1h", "mom_4h", "vol_ratio",
               "imbalance", "spread", "asset_sent", "market_sent",
@@ -60,18 +71,60 @@ class TinyMLP:
         self.b1 = [0.0] * n_hid
         self.W2 = [rnd.gauss(0, s2) for _ in range(n_hid)]
         self.b2 = 0.0
+        # QUANTILE heads (P10/P90): one linear head per quantile on top of the
+        # SHARED hidden layer, trained with pinball loss. Initialised near the
+        # median head so the band starts tight and widens as data disagrees.
+        self.quantiles = list(QUANTILES)
+        self.qW = [[rnd.gauss(0, s2) for _ in range(n_hid)]
+                   for _ in self.quantiles]
+        self.qb = [0.0 for _ in self.quantiles]
         # AdaGrad accumulators
         self.gW1 = [[1e-8] * n_in for _ in range(n_hid)]
         self.gb1 = [1e-8] * n_hid
         self.gW2 = [1e-8] * n_hid
         self.gb2 = 1e-8
+        self.gqW = [[1e-8] * n_hid for _ in self.quantiles]
+        self.gqb = [1e-8 for _ in self.quantiles]
         self.lr = lr
         self.lr_boost = 1.0          # raised temporarily on drift
         self.l2 = l2
         self.n_updates = 0
-        self.replay = deque(maxlen=4000)
+        # prioritized experience replay: parallel deques of samples and their
+        # last-seen squared error (sampling weight). High-error, informative
+        # samples get replayed more often than easy ones -> better sample
+        # efficiency than uniform replay.
+        self.replay = deque(maxlen=4000)          # (x, target)
+        self.replay_pr = deque(maxlen=4000)       # priority (last sq-error + eps)
         self.acc_window = deque(maxlen=300)   # directional accuracy
         self.loss_window = deque(maxlen=300)
+        # online input standardization (Welford running mean/var per feature),
+        # so feature scaling self-calibrates as the universe/regime changes
+        # instead of relying on hand-tuned constants in build_x.
+        self.feat_n = 0
+        self.feat_mean = [0.0] * n_in
+        self.feat_M2 = [0.0] * n_in
+
+    # ---------- online input standardization ----------
+    def _observe_features(self, x):
+        """Update running per-feature mean/var (Welford) from a raw input."""
+        self.feat_n += 1
+        for i, xi in enumerate(x):
+            d = xi - self.feat_mean[i]
+            self.feat_mean[i] += d / self.feat_n
+            self.feat_M2[i] += d * (xi - self.feat_mean[i])
+
+    def _standardize(self, x):
+        """Center/scale a raw input by the running stats. Falls back to the raw
+        (already roughly-scaled) value until we have enough samples to trust the
+        estimate, and clips to keep tanh units sane."""
+        if self.feat_n < 30:
+            return list(x)
+        out = []
+        for i, xi in enumerate(x):
+            var = self.feat_M2[i] / (self.feat_n - 1) if self.feat_n > 1 else 1.0
+            sd = math.sqrt(var) if var > 1e-12 else 1.0
+            out.append(_clip((xi - self.feat_mean[i]) / sd))
+        return out
 
     # ---------- forward ----------
     def _fwd(self, x):
@@ -80,11 +133,26 @@ class TinyMLP:
         y = math.tanh(sum(w * hi for w, hi in zip(self.W2, h)) + self.b2)
         return h, y
 
+    def _quantiles_from_h(self, h):
+        """Quantile-head outputs (same tanh-bounded scale as the median)."""
+        return [math.tanh(sum(w * hi for w, hi in zip(qw, h)) + qb)
+                for qw, qb in zip(self.qW, self.qb)]
+
     def predict(self, x):
-        return self._fwd(x)[1]
+        return self._fwd(self._standardize(x))[1]
+
+    def predict_quantiles(self, x):
+        """Return (p_lo, median, p_hi) on the model's scaled-return scale.
+        The band is sorted so p_lo <= median <= p_hi even before the heads have
+        fully separated. Width = ALEATORIC (irreducible) uncertainty."""
+        h, y = self._fwd(self._standardize(x))
+        q = self._quantiles_from_h(h)
+        lo, hi = min(q), max(q)
+        return (min(lo, y), y, max(hi, y))
 
     # ---------- backward (single sample SGD) ----------
-    def _sgd(self, x, target):
+    def _sgd(self, x_raw, target):
+        x = self._standardize(x_raw)
         h, y = self._fwd(x)
         err = y - target
         self.loss_window.append(err * err)
@@ -98,9 +166,28 @@ class TinyMLP:
         gb = dy
         self.gb2 += gb * gb
         self.b2 -= lr / math.sqrt(self.gb2) * gb
-        # hidden layer
+        # ---- QUANTILE heads: pinball (quantile) loss on the shared hidden ----
+        # For quantile tau, gradient of pinball loss wrt the head output is
+        # -(tau)      when target > q   (under-estimate -> push q up)
+        # +(1 - tau)  when target <= q  (over-estimate  -> push q down)
+        # Each head backprops into its own weights AND into the hidden layer so
+        # the band shape can specialise. dq accumulates the hidden-layer signal.
+        dq_hidden = [0.0] * len(h)
+        for qi, tau in enumerate(self.quantiles):
+            qz = sum(w * hi for w, hi in zip(self.qW[qi], h)) + self.qb[qi]
+            qy = math.tanh(qz)
+            grad = -tau if target > qy else (1 - tau)     # d pinball / d qy
+            dqz = grad * (1 - qy * qy)                     # through tanh
+            for j in range(len(self.qW[qi])):
+                g = dqz * h[j] + self.l2 * self.qW[qi][j]
+                self.gqW[qi][j] += g * g
+                self.qW[qi][j] -= lr / math.sqrt(self.gqW[qi][j]) * g
+                dq_hidden[j] += dqz * self.qW[qi][j]
+            self.gqb[qi] += dqz * dqz
+            self.qb[qi] -= lr / math.sqrt(self.gqb[qi]) * dqz
+        # hidden layer (median head + quantile heads share these weights)
         for j in range(len(self.W1)):
-            dh = dy * self.W2[j] * (1 - h[j] * h[j])
+            dh = (dy * self.W2[j] + dq_hidden[j]) * (1 - h[j] * h[j])
             row, grow = self.W1[j], self.gW1[j]
             for i in range(len(row)):
                 g = dh * x[i] + self.l2 * row[i]
@@ -108,18 +195,39 @@ class TinyMLP:
                 row[i] -= lr / math.sqrt(grow[i]) * g
             self.gb1[j] += dh * dh
             self.b1[j] -= lr / math.sqrt(self.gb1[j]) * dh
+        return err * err
+
+    def _sample_replay_idx(self):
+        """Priority-proportional sample from the replay buffer (roulette wheel).
+        Falls back to uniform if priorities aren't populated."""
+        total = sum(self.replay_pr)
+        if total <= 0:
+            return random.randrange(len(self.replay))
+        r = random.random() * total
+        acc = 0.0
+        for i, p in enumerate(self.replay_pr):
+            acc += p
+            if acc >= r:
+                return i
+        return len(self.replay) - 1
 
     def update(self, x, fwd_return, pred_at_record=None):
-        """Learn from a labeled sample; also replays random past samples."""
+        """Learn from a labeled sample; also replays PRIORITIZED past samples."""
         target = _clip(fwd_return / 0.004, -1, 1)     # ±0.4% move = full signal
         if pred_at_record is not None and abs(target) > 0.15:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)
-        self._sgd(x, target)
+        # update running feature stats from the raw input, then train
+        self._observe_features(x)
+        se = self._sgd(x, target)
         self.replay.append((x, target))
-        # experience replay: 6 random past samples per new sample
+        self.replay_pr.append(se + 1e-4)              # priority = recent error
+        # prioritized experience replay: 6 samples per new one, biased toward
+        # high-error (informative) memories; refresh their priority as we go.
         for _ in range(min(6, len(self.replay) - 1)):
-            rx, rt = random.choice(self.replay)
-            self._sgd(rx, rt)
+            idx = self._sample_replay_idx()
+            rx, rt = self.replay[idx]
+            new_se = self._sgd(rx, rt)
+            self.replay_pr[idx] = new_se + 1e-4
         self.n_updates += 1
         if self.lr_boost > 1.0:                       # decay drift boost
             self.lr_boost = max(1.0, self.lr_boost * 0.995)
@@ -140,4 +248,91 @@ class TinyMLP:
         }
 
 
-model = TinyMLP()
+class Committee:
+    """A small ENSEMBLE of independently-seeded TinyMLPs.
+
+    Two complementary uncertainties come out of this:
+      * EPISTEMIC — how much the members DISAGREE about the median. High when
+        the model is in unfamiliar territory / hasn't learned the pattern yet.
+        Shrinks as they all converge on the same answer with more data.
+      * ALEATORIC — the average P10..P90 quantile-band width across members.
+        The irreducible noise of the target itself.
+    The live sizer uses the combined uncertainty to bet small when unsure and
+    only press size when the members agree AND their bands are tight.
+
+    members[0] is the "primary" and keeps the exact persistence schema of the
+    old single model, so existing snapshots load unchanged.
+    """
+
+    def __init__(self, n_members=3, base_seed=7, **kw):
+        self.members = [TinyMLP(seed=base_seed + 101 * i, **kw)
+                        for i in range(max(1, n_members))]
+
+    @property
+    def primary(self):
+        return self.members[0]
+
+    # proxy the scalar bits loop.py / engine.py read off the old `model`
+    @property
+    def n_updates(self):
+        return self.primary.n_updates
+
+    @property
+    def lr_boost(self):
+        return self.primary.lr_boost
+
+    @lr_boost.setter
+    def lr_boost(self, v):
+        for m in self.members:
+            m.lr_boost = v
+
+    def predict(self, x):
+        """Committee mean of the median heads."""
+        return sum(m.predict(x) for m in self.members) / len(self.members)
+
+    def update(self, x, fwd_return, pred_at_record=None):
+        """Train every member. Members differ only by init seed + replay
+        sampling, which is enough to keep their errors partially decorrelated."""
+        for m in self.members:
+            m.update(x, fwd_return, pred_at_record=pred_at_record)
+
+    def predict_with_uncertainty(self, x):
+        """Return a dict:
+          mean       committee mean of member medians
+          epistemic  stdev of member medians (disagreement)
+          aleatoric  mean member P10..P90 band half-width
+          lo, hi     combined predictive band (mean ± total uncertainty)
+          confidence in [0,1]: high when BOTH uncertainties are small.
+        """
+        meds, halfwidths = [], []
+        for m in self.members:
+            lo, med, hi = m.predict_quantiles(x)
+            meds.append(med)
+            halfwidths.append((hi - lo) / 2)
+        mean = sum(meds) / len(meds)
+        if len(meds) > 1:
+            var = sum((v - mean) ** 2 for v in meds) / (len(meds) - 1)
+            epistemic = math.sqrt(var)
+        else:
+            epistemic = 0.0
+        aleatoric = sum(halfwidths) / len(halfwidths)
+        total = math.sqrt(epistemic ** 2 + aleatoric ** 2)
+        # map total predictive uncertainty (on the ±1 scaled-return axis) to a
+        # confidence multiplier: ~0 unc -> 1.0, growing unc -> toward 0.
+        confidence = 1.0 / (1.0 + 4.0 * total)
+        return {"mean": mean, "epistemic": epistemic, "aleatoric": aleatoric,
+                "lo": mean - total, "hi": mean + total,
+                "confidence": max(0.0, min(1.0, confidence))}
+
+    def stats(self):
+        st = dict(self.primary.stats())
+        # disagreement across members on the last replayed samples is expensive;
+        # expose a cheap structural summary instead.
+        st["committee_members"] = len(self.members)
+        return st
+
+
+# `committee` is the live ensemble; `model` aliases its primary member so the
+# existing persistence schema and any direct references keep working unchanged.
+committee = Committee(n_members=3)
+model = committee.primary

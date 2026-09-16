@@ -1,0 +1,127 @@
+"""Phase 2 evolution deep-dive:
+  * NSGA-II multi-objective selection (Pareto sort + crowding)
+  * purged walk-forward validation
+  * champion PORTFOLIO (top-k) averaged in the live vote
+  * train/live SIZING PARITY (backtest sizes like the risk manager)
+"""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.learn import evolution as ev
+
+
+def _synth_candles(n=700, seed=1):
+    import random
+    r = random.Random(seed)
+    out, px = [], 100.0
+    for i in range(n):
+        drift = 0.0015 if (i // 60) % 2 == 0 else -0.0010   # alternating regimes
+        px *= 1 + drift + r.gauss(0, 0.004)
+        px = max(1.0, px)
+        hi, lo = px * (1 + abs(r.gauss(0, 0.003))), px * (1 - abs(r.gauss(0, 0.003)))
+        out.append([i * 300, lo, hi, px, px, 1000.0])
+    return out
+
+
+# ---------- NSGA-II primitives ----------
+def test_domination_and_front():
+    objs = [(1.0, 1.0, 1.0),    # 0 dominates 1 and 2
+            (0.5, 0.5, 0.5),    # 1
+            (0.9, 0.2, 0.2),    # 2 (non-dominated vs 3 on obj0)
+            (0.1, 0.9, 0.1)]    # 3
+    assert ev._dominates(objs[0], objs[1])
+    assert not ev._dominates(objs[2], objs[3])
+    fronts = ev._fast_non_dominated_sort(objs)
+    assert 0 in fronts[0]                       # the dominator is on the top front
+    # every index appears in exactly one front
+    flat = [i for f in fronts for i in f]
+    assert sorted(flat) == list(range(len(objs)))
+
+
+def test_crowding_gives_boundaries_infinite_distance():
+    front = [0, 1, 2]
+    objs = [(0.0, 1.0), (0.5, 0.5), (1.0, 0.0)]
+    cd = ev._crowding_distance(front, objs)
+    assert cd[0] == float("inf") and cd[2] == float("inf")
+    assert cd[1] < float("inf")
+
+
+def test_nsga2_select_prefers_pareto_front():
+    pop = ["a", "b", "c", "d"]
+    objs = [(1.0, 1.0), (0.9, 0.9), (0.2, 0.2), (0.1, 0.1)]
+    chosen, fronts = ev._nsga2_select(pop, objs, 2, __import__("random").Random(0))
+    assert set(chosen) == {"a", "b"}           # the two dominant genomes
+
+
+# ---------- walk-forward ----------
+def test_walk_forward_reports_multiple_windows():
+    g = {"ema_fast": 8, "ema_slow": 30, "rsi_buy": 30, "rsi_sell": 70,
+         "breakout_n": 20, "stop_atr": 2.0, "take_atr": 4.0,
+         "mom_w": 0.4, "short_w": 0.0}
+    wf = ev.walk_forward_eval(g, _synth_candles(), n_windows=5, embargo=70)
+    assert wf["n_windows"] == 5
+    assert 0.0 <= wf["frac_positive"] <= 1.0
+    assert "worst_drawdown" in wf and "pooled_sharpe" in wf
+
+
+# ---------- sizing parity ----------
+def test_risk_sizing_deploys_far_less_than_fullcash():
+    g = {"ema_fast": 8, "ema_slow": 30, "rsi_buy": 35, "rsi_sell": 70,
+         "breakout_n": 15, "stop_atr": 2.0, "take_atr": 4.0,
+         "mom_w": 0.0, "short_w": 0.0}
+    candles = _synth_candles()
+    r_risk = ev.simulate(g, candles, sizing="risk")
+    r_full = ev.simulate(g, candles, sizing="fullcash")
+    # both run the same rules; risk-based sizing must move equity far less per
+    # trade, so its magnitude of return is much smaller than 95%-of-cash.
+    assert abs(r_risk["total_return"]) < abs(r_full["total_return"]) + 1e-9
+    assert r_risk["n_trades"] >= 1
+
+
+def test_default_sizing_is_risk_parity():
+    g = {"ema_fast": 8, "ema_slow": 30, "rsi_buy": 35, "rsi_sell": 70,
+         "breakout_n": 15, "stop_atr": 2.0, "take_atr": 4.0,
+         "mom_w": 0.0, "short_w": 0.0}
+    candles = _synth_candles()
+    assert ev.simulate(g, candles) == ev.simulate(g, candles, sizing="risk")
+
+
+# ---------- champion portfolio + live averaging ----------
+def test_portfolio_for_falls_back_to_single_champion():
+    e = ev.Evolution(pop_size=8, generations=1, seed=3)
+    champ = {"ema_fast": 8, "ema_slow": 30, "rsi_buy": 30, "rsi_sell": 70,
+             "breakout_n": 20, "stop_atr": 2.0, "take_atr": 4.0,
+             "mom_w": 0.6, "short_w": 0.0}
+    e.champions["BTC-USD"] = champ
+    assert e.portfolio_for("BTC-USD") == [champ]         # 1-element fallback
+
+
+def test_evolve_promotes_portfolio_and_reports_walk_forward():
+    e = ev.Evolution(pop_size=16, generations=4, seed=7)
+    rep = e.evolve(_synth_candles(n=800, seed=2), product="BTC-USD")
+    assert "walk_forward" in rep and "portfolio_size" in rep
+    if rep["promoted"]:
+        assert 1 <= rep["portfolio_size"] <= 3
+        assert e.portfolio_for("BTC-USD") == e.champion_portfolios["BTC-USD"]
+        assert rep["walk_forward"]["n_windows"] == 5
+
+
+def test_evolved_vote_averages_portfolio(monkeypatch):
+    import app.signals.engine as eng
+    # two genomes that score differently; the live vote must be their mean.
+    g_bull = {"ema_fast": 8, "ema_slow": 30, "rsi_buy": 40, "rsi_sell": 70,
+              "breakout_n": 20, "stop_atr": 2.0, "take_atr": 4.0,
+              "mom_w": 0.0, "short_w": 0.0}
+    g_flat = dict(g_bull, rsi_buy=20)         # harder to trigger dip-buy
+    feats = {"ema12": 110, "ema26": 100, "hi20": 115, "lo20": 90, "price": 114,
+             "rsi": 35, "mom_1h": 1.0}
+    v_bull = eng._evolved_vote(g_bull, feats)
+    v_flat = eng._evolved_vote(g_flat, feats)
+
+    class FakeEvo:
+        def portfolio_for(self, p):
+            return [g_bull, g_flat]
+    monkeypatch.setattr(eng, "_cur_product", lambda: "BTC-USD")
+    import app.learn.evolution as evo_mod
+    monkeypatch.setattr(evo_mod, "evolution", FakeEvo())
+    out = eng.strat_evolved(feats, (0.0,), "bull")
+    assert abs(out - max(-1, min(1, (v_bull + v_flat) / 2))) < 1e-9

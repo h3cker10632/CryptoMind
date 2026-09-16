@@ -68,6 +68,9 @@ TUNABLES = {
     "explore_size_factor": T(0.4, 0.05, 1.0, 0.05, "signals", "Probe size factor",
                            "Probe size as a fraction of a normal position"),
     # ---- learning ----
+    "bandit_decay_gamma": T(0.995, 0.90, 1.0, 0.001, "learning", "Bandit forgetting γ",
+                           "Per-cycle decay on bandit evidence (1.0 = never forget; "
+                           "0.995 ≈ 7h half-life). Lower = adapts faster to regime change"),
     "evolve_every_sec":  T(1200, 120, 21600, 60, "learning", "GA cadence (s)",
                            "Seconds between genetic-evolution runs (universe rotates)", True),
     "trade_weight":      T(2.0, 0.5, 10.0, 0.5, "learning", "Trade-vs-signal weight",

@@ -231,10 +231,13 @@ def test_close_all_flattens_everything():
 def test_brains_reports_learning_state():
     out = alerts.handle_command("/brains")
     assert "learning state" in out.lower()
-    # the four learning subsystems + durable store are all surfaced
-    for section in ("Bandit", "Online model", "RL risk", "GA evolution",
-                    "Durable history"):
+    # the learning subsystems + durable store are all surfaced, including the
+    # Phase 1/2 additions (concept-drift + GA portfolios).
+    for section in ("Bandit", "Online model", "RL risk", "Concept drift",
+                    "GA evolution", "Durable history"):
         assert section in out, section
+    assert "Page-Hinkley" in out
+    assert "committee" in out.lower() and "Members:" in out
     # tells the operator WHERE it's stored
     assert "cryptomind.db" in out and "state.json" in out
 

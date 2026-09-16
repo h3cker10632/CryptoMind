@@ -40,13 +40,59 @@ def _load_q(d):
     return out
 
 
+def _dump_mlp(m):
+    """Full serialization of one TinyMLP member, incl. quantile heads and the
+    online feature-standardization stats."""
+    return {
+        "W1": m.W1, "b1": m.b1, "W2": m.W2, "b2": m.b2,
+        "gW1": m.gW1, "gb1": m.gb1, "gW2": m.gW2, "gb2": m.gb2,
+        "qW": m.qW, "qb": m.qb, "gqW": m.gqW, "gqb": m.gqb,
+        "n_updates": m.n_updates, "lr_boost": m.lr_boost,
+        "replay": [[x, t] for x, t in list(m.replay)[-1500:]],
+        "replay_pr": list(m.replay_pr)[-1500:],
+        "acc_window": list(m.acc_window),
+        "loss_window": list(m.loss_window),
+        "feat_n": m.feat_n, "feat_mean": m.feat_mean, "feat_M2": m.feat_M2,
+    }
+
+
+def _load_mlp(m, d):
+    """Restore one TinyMLP member from a dict; only if feature dims match.
+    Tolerates snapshots written before quantile heads existed (keeps fresh
+    heads in that case)."""
+    if not d.get("W1") or len(d["W1"][0]) != len(m.W1[0]):
+        return False
+    m.W1, m.b1 = d["W1"], d["b1"]
+    m.W2, m.b2 = d["W2"], d["b2"]
+    m.gW1, m.gb1 = d["gW1"], d["gb1"]
+    m.gW2, m.gb2 = d["gW2"], d["gb2"]
+    if d.get("qW") and len(d["qW"]) == len(m.qW):
+        m.qW, m.qb = d["qW"], d["qb"]
+        m.gqW, m.gqb = d.get("gqW", m.gqW), d.get("gqb", m.gqb)
+    m.n_updates = d.get("n_updates", 0)
+    m.lr_boost = d.get("lr_boost", 1.0)
+    m.replay = deque([(x, t) for x, t in d.get("replay", [])],
+                     maxlen=m.replay.maxlen)
+    pr = d.get("replay_pr", [])
+    if len(pr) != len(m.replay):
+        pr = [1e-2] * len(m.replay)
+    m.replay_pr = deque(pr, maxlen=m.replay_pr.maxlen)
+    m.acc_window = deque(d.get("acc_window", []), maxlen=m.acc_window.maxlen)
+    m.loss_window = deque(d.get("loss_window", []), maxlen=m.loss_window.maxlen)
+    if len(d.get("feat_mean", [])) == len(m.feat_mean):
+        m.feat_n = d.get("feat_n", 0)
+        m.feat_mean = d.get("feat_mean", m.feat_mean)
+        m.feat_M2 = d.get("feat_M2", m.feat_M2)
+    return True
+
+
 # ---------------- capture ----------------
 
 def capture():
     from .execution.paper import broker
     from .risk.manager import risk
     from .learn.loop import learner
-    from .learn.online_model import model
+    from .learn.online_model import model, committee
     from .learn.rl_risk import agent as rl_agent
     from .learn.evolution import evolution
     from .data.universe import universe
@@ -82,15 +128,11 @@ def capture():
                 {k: list(v) for k, v in learner.bandit.arms.items()}),
             "trade_attributions": learner.trade_attributions,
         },
-        "model": {
-            "W1": model.W1, "b1": model.b1, "W2": model.W2, "b2": model.b2,
-            "gW1": model.gW1, "gb1": model.gb1, "gW2": model.gW2, "gb2": model.gb2,
-            "n_updates": model.n_updates,
-            "lr_boost": model.lr_boost,
-            "replay": [[x, t] for x, t in list(model.replay)[-1500:]],
-            "acc_window": list(model.acc_window),
-            "loss_window": list(model.loss_window),
-        },
+        # `model` = the committee's PRIMARY member, kept under the same key/
+        # schema (now incl. quantile heads) so old snapshots keep loading.
+        "model": _dump_mlp(model),
+        # `committee` = every member (primary included) for the full ensemble.
+        "committee": [_dump_mlp(m) for m in committee.members],
         "rl": {
             "q": _save_dict_tupkeys(rl_agent.q),
             "eps": rl_agent.eps,
@@ -99,6 +141,7 @@ def capture():
         "hedge": _capture_hedge(),
         "evolution": {
             "champions": evolution.champions,
+            "champion_portfolios": evolution.champion_portfolios,
             "champion_reports": evolution.champion_reports,
             "last_attempt": evolution.last_attempt,
         },
@@ -182,7 +225,7 @@ def load():
     from .execution.paper import broker, Position
     from .risk.manager import risk
     from .learn.loop import learner
-    from .learn.online_model import model
+    from .learn.online_model import model, committee
     from .learn.rl_risk import agent as rl_agent
     from .learn.evolution import evolution
     from .data.universe import universe
@@ -235,24 +278,32 @@ def load():
         learner.trade_attributions = l.get("trade_attributions",
                                            learner.trade_attributions)
 
+        # ---- online model / committee ----
+        # Prefer the full committee snapshot; fall back to the legacy single
+        # "model" dict (restored into the primary member) for old snapshots.
+        comm = s.get("committee")
         m = s.get("model", {})
-        if m.get("W1") and len(m["W1"][0]) == len(model.W1[0]):
-            # only restore if feature dimensionality matches current build
-            model.W1, model.b1 = m["W1"], m["b1"]
-            model.W2, model.b2 = m["W2"], m["b2"]
-            model.gW1, model.gb1 = m["gW1"], m["gb1"]
-            model.gW2, model.gb2 = m["gW2"], m["gb2"]
-            model.n_updates = m.get("n_updates", 0)
-            model.lr_boost = m.get("lr_boost", 1.0)
-            model.replay = deque([(x, t) for x, t in m.get("replay", [])],
-                                 maxlen=model.replay.maxlen)
-            model.acc_window = deque(m.get("acc_window", []),
-                                     maxlen=model.acc_window.maxlen)
-            model.loss_window = deque(m.get("loss_window", []),
-                                      maxlen=model.loss_window.maxlen)
+        if comm:
+            restored = 0
+            for i, member in enumerate(committee.members):
+                if i < len(comm) and _load_mlp(member, comm[i]):
+                    restored += 1
+            if restored:
+                # keep any extra live members warm-started from the primary so a
+                # grown committee doesn't leave fresh members far behind.
+                for member in committee.members[len(comm):]:
+                    _load_mlp(member, comm[0])
+            elif m.get("W1"):
+                db.log_event("learn", "Online model NOT restored: feature "
+                                      "dimension changed — starting fresh")
         elif m.get("W1"):
-            db.log_event("learn", "Online model NOT restored: feature "
-                                  "dimension changed — starting fresh")
+            if not _load_mlp(model, m):
+                db.log_event("learn", "Online model NOT restored: feature "
+                                      "dimension changed — starting fresh")
+            else:
+                # legacy snapshot had one net: seed the other members off it.
+                for member in committee.members[1:]:
+                    _load_mlp(member, m)
 
         q = s.get("rl", {})
         rl_agent.q = _load_q(q.get("q", {}))
@@ -271,6 +322,7 @@ def load():
 
         e = s.get("evolution", {})
         evolution.champions = e.get("champions", {}) or {}
+        evolution.champion_portfolios = e.get("champion_portfolios", {}) or {}
         evolution.champion_reports = e.get("champion_reports", {}) or {}
         evolution.last_attempt = e.get("last_attempt", {}) or {}
         # migrate old single-champion format
@@ -278,6 +330,9 @@ def load():
             evolution.champions["BTC-USD"] = e["champion"]
             if e.get("champion_report"):
                 evolution.champion_reports["BTC-USD"] = e["champion_report"]
+        # back-fill portfolios for champions saved before portfolios existed
+        for prod, g in evolution.champions.items():
+            evolution.champion_portfolios.setdefault(prod, [g])
 
         u = s.get("universe", {})
         universe.mention_heat = u.get("mention_heat", {})

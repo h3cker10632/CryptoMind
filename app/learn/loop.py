@@ -20,9 +20,9 @@ from collections import deque
 from ..config import ALLOC_LOOKBACK, SIGNAL_EVAL_HORIZON_SEC, ALLOC_TEMPERATURE
 from .. import db
 from ..signals.engine import STRATEGIES
-from .online_model import model, build_x, FEAT_NAMES
+from .online_model import model, committee, build_x, FEAT_NAMES
 from .bandit import RegimeBandit
-from .drift import detector
+from .drift import detector, page_hinkley
 from .rl_risk import agent as rl_agent
 from .evolution import evolution
 
@@ -101,7 +101,17 @@ class Learner:
             p0 = self._price_at(p, ts, market)
             p1 = self._price_at(p, ts + ML_HORIZON_SEC, market) or market.price(p)
             if p0 and p1 and trained < 40:            # cap per cycle
-                model.update(x, p1 / p0 - 1, pred_at_record=pred)
+                fwd = p1 / p0 - 1
+                # concept-drift signal: how wrong was the recorded prediction vs
+                # the realized (scaled) return? Page-Hinkley watches this error
+                # stream for a creeping breakdown of the input→return relation.
+                if pred is not None:
+                    target = max(-1.0, min(1.0, fwd / 0.004))
+                    if page_hinkley.add(abs(pred - target)) and model.lr_boost <= 1.05:
+                        committee.lr_boost = 2.0
+                        db.log_event("learn", "CONCEPT DRIFT (Page-Hinkley): model "
+                                     "error broke trend — LR boosted x2 to re-adapt")
+                committee.update(x, fwd, pred_at_record=pred)
                 trained += 1
         return trained
 
@@ -118,7 +128,7 @@ class Learner:
             st = model.stats()
             acc = st["directional_accuracy"]
             if acc is not None and acc > 0.50 and model.n_updates >= 40:
-                model.lr_boost = 3.0                   # fast re-adaptation
+                committee.lr_boost = 3.0               # fast re-adaptation (all members)
                 db.log_event("learn", f"DRIFT on '{worst_f}' (PSI={psi:.3f}) "
                                       f"— LR boosted x3 (model acc {acc:.1%})")
             else:
@@ -274,6 +284,12 @@ class Learner:
                                "hit_rate": None}
         self.strategy_stats = stats
 
+        # 2b. forget old evidence — decay bandit posteriors once per cycle so a
+        # strategy that stopped working sheds its stale reputation (markets are
+        # non-stationary; a 3-week-old win should not weigh like an hour-old one).
+        from ..tunables import tv as _tv
+        n_pruned = self.bandit.decay(gamma=_tv("bandit_decay_gamma"))
+
         # 3. Thompson-sampled weights (EMA-smoothed), exploration floor.
         # The 0.04 floor keeps healthy-but-unlucky sleeves alive for exploration
         # — but it must NOT prop up a sleeve we have positive evidence is broken.
@@ -318,7 +334,7 @@ class Learner:
             "strategy_stats": self.strategy_stats,
             "bandit_posteriors": self.bandit.table(self.current_regime_label),
             "online_model": model.stats(),
-            "drift": {**self.drift_state, **detector.stats()},
+            "drift": {**self.drift_state, **detector.stats(), **page_hinkley.stats()},
             "rl_risk": rl_agent.stats(),
             "trade_attributions": self.trade_attributions,
             "evolution": evolution.stats(),

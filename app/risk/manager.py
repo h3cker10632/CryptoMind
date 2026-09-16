@@ -199,15 +199,23 @@ class RiskManager:
         return True, "ok"
 
     def size(self, equity, price, atr, confidence, risk_status, direction=1,
-             product=None):
+             product=None, ml_confidence=1.0):
         """Volatility-adjusted sizing: risk a fixed fraction of equity to the stop.
         Includes a cost-viability gate: the take-profit distance must clear
         round-trip fees+slippage by a healthy multiple, otherwise the trade
-        is structurally unprofitable and is rejected (notional=0)."""
+        is structurally unprofitable and is rejected (notional=0).
+
+        ml_confidence in [0,1] is the online committee's predictive confidence
+        (1.0 = certain / not participating). It scales risk DOWN when the model
+        is uncertain — wide quantile bands or members disagreeing — so an
+        unsure model bets small instead of full size. Bounded below so it damps,
+        never zeroes, a trade the rest of the stack still wants."""
         from .stance import stance
         st = stance.current()
         scale = risk_status["effective_risk_scale"] * st["risk_mult"]
-        risk_dollars = equity * tv("risk_per_trade") * scale * (0.5 + confidence / 2)
+        ml_mult = 0.4 + 0.6 * max(0.0, min(1.0, ml_confidence))   # 0.4x .. 1.0x
+        risk_dollars = (equity * tv("risk_per_trade") * scale
+                        * (0.5 + confidence / 2) * ml_mult)
         # ---- honest ATR-based stop & target ----
         # Size from the REAL volatility horizon, never a fee-floor-inflated one.
         stop_dist = tv("stop_atr_mult") * atr
