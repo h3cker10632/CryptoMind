@@ -83,6 +83,28 @@ def save_conf(changes: dict):
     return status()
 
 
+def persist():
+    """Flush the current alert/bot config (incl. the Telegram token) to disk.
+
+    Called on startup (after loading) and on every shutdown/restart/stop path so
+    the bot credentials ALWAYS survive, regardless of how they were set (env
+    var, dashboard, or the bot itself) or how the process ends. Idempotent and
+    exception-safe: it must never break shutdown.
+    """
+    try:
+        return save_conf({})
+    except Exception:
+        return None
+
+
+def load_conf():
+    """Public entry point to reconcile config from disk. Safe to call at
+    startup BEFORE the worker tasks run, so the dashboard/API and the very
+    first alert see the persisted token immediately (not a blank _state)."""
+    _load_conf()
+    return status()
+
+
 def status():
     return {
         "telegram_configured": bool(_state["telegram_bot_token"] and

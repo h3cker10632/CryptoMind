@@ -47,6 +47,14 @@ async def startup():
     restored = persistence.load()
     if not restored:
         db.log_event("system", "No saved state found — starting fresh ($100k paper account)")
+    # Reconcile the alert/bot config (Telegram token, chat id, webhook) from
+    # alerts.json BEFORE the worker tasks start, so the dashboard, /api/alerts
+    # and the first outgoing alert all see the persisted credentials right away
+    # (not a blank state until a worker happens to run _load_conf). This also
+    # re-persists any env-seeded creds so they outlive the env var.
+    alerts.load_conf()
+    if alerts.status()["telegram_configured"]:
+        db.log_event("system", "Telegram bot config restored from alerts.json")
     asyncio.create_task(market.run())
     asyncio.create_task(ws_market.run())
     asyncio.create_task(research.run())
@@ -66,6 +74,7 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     persistence.save()
+    alerts.persist()               # keep the Telegram bot config across restarts
     db.log_event("system", "State saved on shutdown")
     db.flush()
 
@@ -304,6 +313,7 @@ def shutdown_server():
         note = (f"{len(broker.positions)} open position(s) KEPT — they will "
                 f"be restored and re-managed on restart.")
     persistence.save()
+    alerts.persist()               # keep the Telegram bot config across restarts
     # marker tells the supervisor loop (run.sh) to NOT relaunch
     open(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".shutdown"), "w").close()
     db.log_event("system", f"SERVER SHUTDOWN by operator — "
@@ -393,6 +403,7 @@ def restart_server():
     if os.path.exists(marker):
         os.remove(marker)
     persistence.save()
+    alerts.persist()               # keep the Telegram bot config across restarts
     spawned = _spawn_successor()
     db.log_event("system", "RESTART requested by operator — state saved, "
                            + ("successor spawned" if spawned
