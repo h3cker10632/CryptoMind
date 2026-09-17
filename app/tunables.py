@@ -69,12 +69,15 @@ TUNABLES = {
                            "Probe size as a fraction of a normal position"),
     # ---- learning ----
     "bandit_decay_gamma": T(0.995, 0.90, 1.0, 0.001, "learning", "Bandit forgetting γ",
-                           "Per-cycle decay on bandit evidence (1.0 = never forget; "
-                           "0.995 ≈ 7h half-life). Lower = adapts faster to regime change"),
+                           "Per-cycle decay on bandit n, variance, AND mean (idle "
+                           "edge forgets toward 0; 1.0 = never forget; 0.995 ≈ 7h "
+                           "half-life). Lower = adapts faster to regime change"),
     "evolve_every_sec":  T(1200, 120, 21600, 60, "learning", "GA cadence (s)",
                            "Seconds between genetic-evolution runs (universe rotates)", True),
-    "trade_weight":      T(2.0, 0.5, 10.0, 0.5, "learning", "Trade-vs-signal weight",
-                           "How much a real closed trade outweighs a scored signal"),
+    "trade_weight":      T(2.0, 0.5, 10.0, 0.5, "learning", "Trade attribution weight",
+                           "Scale on closed-trade net PnL fed to the bandit "
+                           "(1h signal labels are dashboard-only and no longer "
+                           "update posteriors)"),
     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
     # ---- stance presets ----

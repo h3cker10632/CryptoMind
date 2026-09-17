@@ -233,6 +233,29 @@ class TinyMLP:
             self.lr_boost = max(1.0, self.lr_boost * 0.995)
 
     # ---------- introspection ----------
+    def reset(self, seed=7):
+        """Re-init weights and wipe online stats. Used when directional
+        accuracy is stuck at/below a coin flip so we stop fitting the
+        wrong mapping (47k updates at 26% acc does not 'warm up' — it
+        digs in)."""
+        fresh = TinyMLP(n_in=len(self.feat_mean), n_hid=len(self.W1),
+                        lr=self.lr, l2=self.l2, seed=seed)
+        self.W1, self.b1 = fresh.W1, fresh.b1
+        self.W2, self.b2 = fresh.W2, fresh.b2
+        self.gW1, self.gb1 = fresh.gW1, fresh.gb1
+        self.gW2, self.gb2 = fresh.gW2, fresh.gb2
+        self.qW, self.qb = fresh.qW, fresh.qb
+        self.gqW, self.gqb = fresh.gqW, fresh.gqb
+        self.lr_boost = 1.0
+        self.n_updates = 0
+        self.replay = deque(maxlen=self.replay.maxlen)
+        self.replay_pr = deque(maxlen=self.replay_pr.maxlen)
+        self.acc_window = deque(maxlen=self.acc_window.maxlen)
+        self.loss_window = deque(maxlen=self.loss_window.maxlen)
+        self.feat_n = 0
+        self.feat_mean = list(fresh.feat_mean)
+        self.feat_M2 = list(fresh.feat_M2)
+
     def stats(self):
         acc = (sum(self.acc_window) / len(self.acc_window)
                if self.acc_window else None)
@@ -295,6 +318,10 @@ class Committee:
         sampling, which is enough to keep their errors partially decorrelated."""
         for m in self.members:
             m.update(x, fwd_return, pred_at_record=pred_at_record)
+
+    def reset(self, base_seed=7):
+        for i, m in enumerate(self.members):
+            m.reset(seed=base_seed + 101 * i)
 
     def predict_with_uncertainty(self, x):
         """Return a dict:

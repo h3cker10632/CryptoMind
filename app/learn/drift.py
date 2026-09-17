@@ -96,6 +96,14 @@ class PageHinkley:
             self.min_cum = 0.0
         return detected
 
+    def reset_running(self):
+        """Clear the running error stream (keep lifetime event count)."""
+        self.mean = 0.0
+        self.n = 0
+        self.cum = 0.0
+        self.min_cum = 0.0
+        self.drifting = False
+
     def stats(self):
         return {"concept_drifting": self.drifting,
                 "concept_drift_events": self.n_events,

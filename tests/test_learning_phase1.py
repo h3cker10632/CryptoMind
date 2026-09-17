@@ -19,7 +19,10 @@ def test_bandit_decay_shrinks_evidence():
     b.decay(gamma=0.9)
     n_after, mean_after, _ = b.arms[("bull", "trend")]
     assert n_after < n_before                      # evidence shrank
-    assert abs(mean_after - mean_before) < 1e-9    # but the mean is preserved
+    # idle mean forgets toward 0 (same gamma) — a stale +edge must not
+    # coast forever just because n is decaying slowly
+    assert abs(mean_after) < abs(mean_before)
+    assert mean_after * mean_before > 0            # sign preserved
 
 
 def test_bandit_decay_prunes_idle_arms():
@@ -45,6 +48,33 @@ def test_recent_evidence_outweighs_stale_after_decay():
     na = b.arms[("bull", "a")][0]
     nb = b.arms[("bull", "b")][0]
     assert nb > na, "stale winner did not lose effective weight to the recent one"
+
+
+def test_idle_mean_shrinks_each_decay_cycle():
+    """Each learning cycle must move an idle posterior toward 0, not keep a
+    frozen +8bps mean while n slowly decays (the ghost-evolved bug)."""
+    from app.learn.bandit import RegimeBandit
+    b = RegimeBandit(["evolved"])
+    for _ in range(80):
+        b.update("sideways", "evolved", 0.000855)   # leftover +8.55 bps
+    abs_means = []
+    for _ in range(8):
+        b.decay(gamma=0.9)
+        abs_means.append(abs(b.arms[("sideways", "evolved")][1]))
+    assert all(abs_means[i] > abs_means[i + 1] for i in range(len(abs_means) - 1))
+    assert abs_means[-1] < 0.5 * abs_means[0]
+
+
+def test_drop_strategy_clears_every_regime():
+    from app.learn.bandit import RegimeBandit
+    b = RegimeBandit(["evolved", "trend"])
+    b.update("bull", "evolved", 0.002)
+    b.update("bear", "evolved", -0.001)
+    b.update("bull", "trend", 0.001)
+    n = b.drop_strategy("evolved")
+    assert n == 2
+    assert all(s != "evolved" for (_, s) in b.arms)
+    assert ("bull", "trend") in b.arms
 
 
 # ---------------- online model ----------------

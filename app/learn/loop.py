@@ -2,18 +2,21 @@
 
 Layers
   1. Signal scoring      : every strategy signal labeled with realized 1h
-                           forward return (aligned to direction).
-  2. Thompson bandit     : regime-conditioned Bayesian allocation over the
-                           strategy ensemble (exploration/exploitation).
-  3. Online neural model : TinyMLP trained continually on live features vs
-                           forward returns (experience replay, AdaGrad).
+                           GROSS forward return (dashboard only). The bandit
+                           is NOT fed these labels — 1h net-of-taker is an
+                           exam no 5m sleeve can pass, and it drowned fills.
+  2. Thompson bandit     : regime-conditioned Bayesian allocation. Updates
+                           come from closed-trade net PnL (on_trade_closed).
+                           Idle means decay toward 0; silent sleeves (no
+                           evolved champion, ML ≤ coin-flip) get weight 0.
+  3. Online neural model : TinyMLP committee; a head stuck ≤ coin-flip is
+                           RESET rather than kept fitting the wrong mapping.
   4. Drift detection     : PSI over the feature stream; drift boosts the
-                           model learning rate for fast re-adaptation.
+                           model learning rate only if the head is working.
   5. RL risk controller  : Q-learning agent adapting global risk scale
                            (queried by the risk manager each tick).
-  6. Genetic evolution   : background GA evolving rule parameters on real
-                           history; validated champions join the ensemble
-                           as the 'evolved' strategy.
+  6. Genetic evolution   : background GA; only a walk-forward champion
+                           votes live. An empty champion book is not an arm.
 """
 import time, threading, asyncio
 from collections import deque
@@ -45,6 +48,8 @@ class Learner:
         self.drift_state = {"drifting": False, "worst_feature": None, "psi": 0.0}
         self.current_regime_label = "unknown"
         self.trade_attributions = 0
+        self.last_cycle = {}
+        self._ml_resets = 0
 
     # ------------------------------------------------ price memory
     def observe_prices(self, market):
@@ -105,12 +110,19 @@ class Learner:
                 # concept-drift signal: how wrong was the recorded prediction vs
                 # the realized (scaled) return? Page-Hinkley watches this error
                 # stream for a creeping breakdown of the input→return relation.
+                # Never boost a head that's already at/below a coin flip.
                 if pred is not None:
                     target = max(-1.0, min(1.0, fwd / 0.004))
-                    if page_hinkley.add(abs(pred - target)) and model.lr_boost <= 1.05:
+                    ph_hit = page_hinkley.add(abs(pred - target))
+                    acc = model.stats()["directional_accuracy"]
+                    working = (acc is not None and acc > 0.50 and model.n_updates >= 40)
+                    if ph_hit and model.lr_boost <= 1.05 and working:
                         committee.lr_boost = 2.0
                         db.log_event("learn", "CONCEPT DRIFT (Page-Hinkley): model "
                                      "error broke trend — LR boosted x2 to re-adapt")
+                # run() resets a broken head BEFORE this, so samples land on a
+                # fresh net. Direct callers (tests) still train — freezing is
+                # the reset, not a silent skip that would drain the queue.
                 committee.update(x, fwd, pred_at_record=pred)
                 trained += 1
         return trained
@@ -233,13 +245,104 @@ class Learner:
                      f"{', '.join(f'{k}({v:+.2f})' for k, v in votes.items())} "
                      f"[regime={regime}]")
 
+    def _evolved_live(self):
+        """True only when a walk-forward champion (or portfolio) is actually
+        voting. An empty book is not an arm — leftover +bps from a dead genome
+        must not keep 50% of the allocation."""
+        if evolution.champions:
+            return True
+        return any(evolution.champion_portfolios.values())
+
+    def _ml_is_broken(self):
+        """Measured directional accuracy at/below a coin flip after warmup.
+        Unmeasured (acc is None) is silent for allocation but not a reset —
+        we still need samples to get a reading."""
+        acc = model.stats()["directional_accuracy"]
+        return model.n_updates >= 40 and acc is not None and acc <= 0.50
+
+    def _silent_sleeves(self):
+        silent = set()
+        if not self._evolved_live():
+            silent.add("evolved")
+        # ml votes 0 until acc > 50%; don't give it a 4% floor in the meantime
+        acc = model.stats()["directional_accuracy"]
+        if acc is None or acc <= 0.50:
+            silent.add("ml")
+        return silent
+
+    def _maybe_reset_broken_ml(self):
+        """A head stuck at/below a coin flip is not 'warmed up' — it has fitted
+        the wrong mapping. Reset the committee so the next samples train a
+        fresh net instead of digging 26% accuracy in further. After reset,
+        n=0 so we don't thrash until the new head is measured again."""
+        if not self._ml_is_broken():
+            return False
+        n_before = model.n_updates
+        acc_before = model.stats()["directional_accuracy"]
+        committee.reset()
+        page_hinkley.reset_running()
+        self.bandit.drop_strategy("ml")
+        self._ml_resets += 1
+        db.log_event("learn",
+                     f"ML committee RESET (was n={n_before}, "
+                     f"dir-acc={'n/a' if acc_before is None else format(acc_before, '.1%')} "
+                     f"≤ coin flip; not fitting a broken head) "
+                     f"[resets={self._ml_resets}]")
+        return True
+
+    def _allocate(self, regime_label, silent):
+        """Thompson mix with a hard-zero on silent sleeves (no 4% floor, no
+        EMA carry from last cycle's ghost weight). Confirmed in-regime losers
+        among LIVE sleeves also lose the exploration floor."""
+        for k in silent:
+            self.bandit.drop_strategy(k)
+        draw = self.bandit.sample_weights(regime_label, temperature=ALLOC_TEMPERATURE)
+        base_floor = 0.04
+        mixed = {}
+        for k in STRATEGIES:
+            if k in silent:
+                mixed[k] = 0.0
+                continue
+            w = (WEIGHT_SMOOTH * draw.get(k, 0)
+                 + (1 - WEIGHT_SMOOTH) * self.weights.get(k, 0))
+            floored = not self.bandit._net_edge_ok(regime_label, k)
+            mixed[k] = max(0.0, w) if floored else max(base_floor, w)
+        z = sum(mixed.values()) or 1.0
+        return {k: round(v / z, 4) for k, v in mixed.items()}
+
+    def _cycle_quality(self, regime_label, silent):
+        """Per-cycle snapshot so we can see idle |mean| shrink (decay toward 0)
+        and ghost weight leave the book. Improving = live |mean_bps| falling
+        while idle, and silent sleeves staying at weight 0."""
+        table = self.bandit.table(regime_label)
+        live_abs = [abs(v["mean_bps"]) for k, v in table.items()
+                    if k not in silent and v.get("mean_bps") is not None]
+        mean_abs = round(sum(live_abs) / len(live_abs), 2) if live_abs else None
+        prev = self.last_cycle or {}
+        delta = None
+        if mean_abs is not None and prev.get("mean_abs_bps") is not None:
+            delta = round(mean_abs - prev["mean_abs_bps"], 2)
+        return {
+            "silent": sorted(silent),
+            "mean_abs_bps": mean_abs,
+            "mean_abs_bps_delta": delta,
+            "max_abs_bps": round(max(live_abs), 2) if live_abs else None,
+            "ghost_weight": round(sum(self.weights.get(k, 0) for k in silent), 4),
+            "trade_attributions": self.trade_attributions,
+            "ml_resets": self._ml_resets,
+        }
+
     # ------------------------------------------------ main learning cycle
     def run(self, market, regime=None):
         now = time.time()
         regime_label = (regime or {}).get("label", "unknown")
         self.current_regime_label = regime_label
 
-        # 1. score matured strategy signals → bandit + stats
+        # 1. score matured strategy signals for the DASHBOARD only.
+        # Do NOT feed 1h net-of-taker into the bandit: that exam subtracts ~120bps
+        # from every vote, so every 5m sleeve prints as a confirmed loser and
+        # drowns the 8 real fill attributions. Closed-trade PnL (on_trade_closed)
+        # is the only bandit teacher.
         matured = db.unscored_signals(now - SIGNAL_EVAL_HORIZON_SEC)
         n_scored, n_retry, n_abandon = 0, 0, 0
         for s in matured:
@@ -249,16 +352,6 @@ class Learner:
             if p0 and p1:
                 fwd = (p1 / p0 - 1) * s["direction"]
                 db.score_signal(s["rowid"], fwd)   # store GROSS fwd for the UI
-                arm_regime = s.get("regime") or regime_label
-                # Feed the bandit the NET edge — the same exam the cost gate and
-                # real fills face. A signal that's directionally right but can't
-                # clear round-trip fees+slippage is NOT a winning arm; scoring it
-                # gross is how a structurally-unprofitable sleeve keeps weight.
-                from ..tunables import tv
-                round_trip = 2 * tv("fee_rate") + 2 * tv("slippage_bps") / 1e4
-                net = fwd - round_trip
-                self.bandit.update(arm_regime, s["strategy"],
-                                   net * s["confidence"])
                 n_scored += 1
             elif now - s["ts"] > LOOKUP_GIVE_UP_SEC:
                 db.abandon_signal(s["rowid"])
@@ -287,32 +380,19 @@ class Learner:
                                "hit_rate": None}
         self.strategy_stats = stats
 
-        # 2b. forget old evidence — decay bandit posteriors once per cycle so a
-        # strategy that stopped working sheds its stale reputation (markets are
-        # non-stationary; a 3-week-old win should not weigh like an hour-old one).
+        # 2b. forget old evidence — n, variance, AND mean decay toward 0 so a
+        # silent sleeve cannot keep a frozen +8bps reputation at decaying n.
         from ..tunables import tv as _tv
         n_pruned = self.bandit.decay(gamma=_tv("bandit_decay_gamma"))
 
-        # 3. Thompson-sampled weights (EMA-smoothed), exploration floor.
-        # The 0.04 floor keeps healthy-but-unlucky sleeves alive for exploration
-        # — but it must NOT prop up a sleeve we have positive evidence is broken.
-        # A confirmed in-regime loser (bandit net-edge gate) or an ML head still
-        # at/below a coin flip gets NO floor, so its weight can decay to ~0
-        # instead of being pinned in the book at 4%.
-        draw = self.bandit.sample_weights(regime_label, temperature=ALLOC_TEMPERATURE)
-        base_floor = 0.04
-        model_acc = model.stats()["directional_accuracy"]
-        ml_broken = (model.n_updates >= 40 and
-                     (model_acc is None or model_acc <= 0.50))
-        mixed = {}
-        for k in STRATEGIES:
-            w = WEIGHT_SMOOTH * draw.get(k, 0) + (1 - WEIGHT_SMOOTH) * self.weights.get(k, 0)
-            floored = not self.bandit._net_edge_ok(regime_label, k)
-            if k == "ml" and ml_broken:
-                floored = True
-            mixed[k] = max(0.0, w) if floored else max(base_floor, w)
-        z = sum(mixed.values()) or 1.0
-        self.weights = {k: round(v / z, 4) for k, v in mixed.items()}
+        # 2c. a broken ML head is RESET before we mix weights or train, so this
+        # cycle's samples hit a fresh net instead of 47k updates at 26% acc.
+        ml_reset = self._maybe_reset_broken_ml()
+        silent = self._silent_sleeves()
+
+        # 3. Thompson-sampled weights. Silent sleeves (no evolved champion, ML
+        # ≤ coin-flip) are hard-zeroed — not floored at 4%, not EMA-carried.
+        self.weights = self._allocate(regime_label, silent)
 
         # 4. online model training + drift check
         n_trained = self._train_online_model(market)
@@ -321,10 +401,21 @@ class Learner:
         # 5. background genetic evolution
         self.maybe_evolve()
 
+        quality = self._cycle_quality(regime_label, silent)
+        quality.update({"n_scored": n_scored, "n_pruned": n_pruned,
+                        "n_trained": n_trained, "ml_reset": ml_reset})
+        self.last_cycle = quality
+
         self.last_run = now
+        delta = quality.get("mean_abs_bps_delta")
         db.log_event("learn",
-                     f"Learning cycle: {n_scored} scored, {n_retry} retry, "
+                     f"Learning cycle: {n_scored} scored (UI), {n_retry} retry, "
                      f"{n_abandon} abandon, {n_trained} ML updates, "
+                     f"pruned={n_pruned}, silent={quality['silent'] or 'none'}, "
+                     f"ghost_w={quality['ghost_weight']}, "
+                     f"|mean|={quality['mean_abs_bps']} bps "
+                     f"(Δ {delta if delta is not None else 'n/a'}), "
+                     f"ml_reset={ml_reset}, fills={self.trade_attributions}, "
                      f"regime={regime_label}",
                      self.weights)
         return self.weights
@@ -342,6 +433,7 @@ class Learner:
             "trade_attributions": self.trade_attributions,
             "evolution": evolution.stats(),
             "last_run": self.last_run,
+            "last_cycle": self.last_cycle,
         }
 
 
