@@ -77,3 +77,21 @@ def test_stats_shape():
     a.set_lean("BTC-USD", 0.3)
     st = a.stats()
     assert set(["enabled", "configured", "cached_leans", "calls"]) <= set(st)
+
+
+def test_telegram_llm_command_toggles_setting(monkeypatch):
+    import app.alerts as alerts
+    monkeypatch.delenv("CRYPTOMIND_LLM_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings.update({"llm_advisor_enabled": False})
+    # usage/status when no arg
+    assert "Usage: /llm" in alerts._cmd_llm("")
+    # turning on with no key warns it's inert but flips the setting
+    msg = alerts._cmd_llm("on")
+    assert settings.get("llm_advisor_enabled") is True
+    assert "no API key" in msg
+    # off again
+    alerts._cmd_llm("off")
+    assert settings.get("llm_advisor_enabled") is False
+    # reachable through the dispatcher too
+    assert "LLM advisor" in alerts.handle_command("/llm")

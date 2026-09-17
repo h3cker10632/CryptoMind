@@ -418,6 +418,7 @@ HELP_TEXT = (
     "/kill — 🛑 flatten all & stop (kill switch)\n"
     "/resetkill — ♻️ clear the kill switch + daily halt\n"
     "/shorts on|off — allow/deny short positions\n"
+    "/llm on|off — optional LLM advisor vote (needs API key)\n"
     "/mode passive|auto|aggressive — trading stance\n"
     "/set <tunable> <value> — change a risk/cost knob\n"
     "/get <tunable> — read a tunable\n"
@@ -892,6 +893,22 @@ def _cmd_shorts(arg):
     return f"Shorts {'ENABLED' if arg == 'on' else 'DISABLED'}."
 
 
+def _cmd_llm(arg):
+    from . import settings as app_settings
+    from .learn.llm_advisor import advisor
+    if arg not in ("on", "off"):
+        st = advisor.stats()
+        return (f"LLM advisor: {'ON' if st['enabled'] else 'off'}"
+                f"{'' if st['configured'] else ' (no API key — inert)'}\n"
+                "Usage: /llm on|off")
+    app_settings.update({"llm_advisor_enabled": arg == "on"})
+    if arg == "on" and not advisor.configured():
+        return ("LLM advisor ENABLED — but no API key is set, so it stays "
+                "inert. Set CRYPTOMIND_LLM_KEY (or OPENAI_API_KEY) in the "
+                "environment to activate it.")
+    return f"LLM advisor {'ENABLED' if arg == 'on' else 'DISABLED'}."
+
+
 def _cmd_mode(arg):
     from . import settings as app_settings
     if arg not in ("passive", "auto", "aggressive"):
@@ -993,6 +1010,8 @@ def handle_command(text):
             return _cmd_resetkill()
         if cmd == "shorts":
             return _cmd_shorts(args[0] if args else "")
+        if cmd == "llm":
+            return _cmd_llm(args[0] if args else "")
         if cmd == "mode":
             return _cmd_mode(args[0] if args else "")
         if cmd == "notify":
