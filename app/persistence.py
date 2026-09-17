@@ -158,6 +158,9 @@ def capture():
             "products": list(PRODUCTS),
             "mention_heat": universe.mention_heat,
             "name_to_sym": universe.name_to_sym,
+            # sets aren't JSON-serializable → store source tags as sorted lists
+            "sources": {k: sorted(v) for k, v in universe.sources.items()},
+            "oi_growth": universe.oi_growth,
         },
         "research": _capture_research(),
         "calendar": _capture_calendar(),
@@ -357,6 +360,8 @@ def load():
         u = s.get("universe", {})
         universe.mention_heat = u.get("mention_heat", {})
         universe.name_to_sym = u.get("name_to_sym", {})
+        universe.sources = {k: set(v) for k, v in (u.get("sources") or {}).items()}
+        universe.oi_growth = u.get("oi_growth", {}) or {}
         # restore discovered universe (mutate PRODUCTS in place)
         saved_products = u.get("products", [])
         for pid in saved_products:

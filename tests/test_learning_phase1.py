@@ -79,9 +79,9 @@ def test_drop_strategy_clears_every_regime():
 
 # ---------------- online model ----------------
 def test_prioritized_replay_populates_priorities():
-    from app.learn.online_model import TinyMLP
+    from app.learn.online_model import TinyMLP, N_IN
     m = TinyMLP()
-    x = [0.1] * 17
+    x = [0.1] * N_IN
     for _ in range(20):
         m.update(x, 0.01, pred_at_record=0.0)
     assert len(m.replay) == len(m.replay_pr)
@@ -89,15 +89,15 @@ def test_prioritized_replay_populates_priorities():
 
 
 def test_online_standardization_tracks_feature_stats():
-    from app.learn.online_model import TinyMLP
+    from app.learn.online_model import TinyMLP, N_IN
     m = TinyMLP()
     # feed a feature with a strong offset; running mean should move toward it
     for _ in range(60):
-        x = [5.0] + [0.0] * 16
+        x = [5.0] + [0.0] * (N_IN - 1)
         m.update(x, 0.0)
     assert abs(m.feat_mean[0] - 5.0) < 0.5
     # standardized value of the mean input is ~0
-    z = m._standardize([5.0] + [0.0] * 16)
+    z = m._standardize([5.0] + [0.0] * (N_IN - 1))
     assert abs(z[0]) < 0.5
 
 

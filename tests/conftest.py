@@ -18,3 +18,9 @@ _db.init()
 import app.tunables as _tunables
 _tunables.PATH = os.path.join(_tmp, "tunables.json")
 _tunables._overrides = None
+
+# likewise isolate operator settings so tests that flip settings (e.g. the LLM
+# advisor toggle) never touch the real settings.json at the repo root.
+import app.settings as _settings
+_settings.SETTINGS_PATH = os.path.join(_tmp, "settings.json")
+_settings._settings = None

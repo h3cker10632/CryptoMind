@@ -21,6 +21,11 @@ DEFAULTS = {
     # Market-neutral pair hedging (2.7-sigma relative-strength divergence,
     # long the laggard / short the leader in equal notional).
     "hedge_enabled": True,
+    # Optional LLM advisor sleeve. When True (and an API key is set via
+    # CRYPTOMIND_LLM_KEY / OPENAI_API_KEY) the advisor contributes ONE
+    # directional vote that the bandit weights like any other strategy — it is
+    # never the driver. Off by default: no key, no cost, no effect.
+    "llm_advisor_enabled": False,
 }
 
 STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}

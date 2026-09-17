@@ -67,6 +67,22 @@ class Orchestrator:
                 alert("critical", "Decision loop STALLED",
                       f"No tick for {int(stalled)}s (expected every {TICK_SEC}s).")
 
+    async def llm_advisor_loop(self):
+        """Refresh the optional LLM advisor's lean cache OFF the hot decision
+        path. No-ops entirely (and cheaply) unless the advisor is enabled and a
+        key is configured; a failure here can never affect trading."""
+        from .learn.llm_advisor import advisor
+        from .data.research import research
+        from .config import PRODUCTS
+        await asyncio.sleep(30)
+        while True:
+            try:
+                if advisor.configured():
+                    await advisor.refresh(market, nlp, list(PRODUCTS))
+            except Exception as e:
+                db.log_event("warn", f"LLM advisor loop error: {e}")
+            await asyncio.sleep(30)
+
     async def reconcile_loop(self):
         """Periodically reconcile the shadow OMS against its venue (source of
         truth) and prune the equity table. Runs off the hot decision path."""

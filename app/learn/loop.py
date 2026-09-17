@@ -432,9 +432,18 @@ class Learner:
             "rl_risk": rl_agent.stats(),
             "trade_attributions": self.trade_attributions,
             "evolution": evolution.stats(),
+            "llm_advisor": self._llm_advisor_stats(),
             "last_run": self.last_run,
             "last_cycle": self.last_cycle,
         }
+
+    @staticmethod
+    def _llm_advisor_stats():
+        try:
+            from .llm_advisor import advisor
+            return advisor.stats()
+        except Exception:
+            return {"enabled": False}
 
 
 learner = Learner()

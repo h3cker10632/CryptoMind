@@ -56,6 +56,7 @@ async def startup():
     asyncio.create_task(orch.decision_loop())
     asyncio.create_task(orch.watchdog())
     asyncio.create_task(orch.reconcile_loop())
+    asyncio.create_task(orch.llm_advisor_loop())
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     alerts.alert("info", "System started",

@@ -99,12 +99,22 @@ TUNABLES = {
                            "half-life). Lower = adapts faster to regime change"),
     "evolve_every_sec":  T(1200, 120, 21600, 60, "learning", "GA cadence (s)",
                            "Seconds between genetic-evolution runs (universe rotates)", True),
+    "oi_growth_threshold": T(0.15, 0.02, 1.0, 0.01, "learning", "OI-growth discovery",
+                           "24h open-interest growth (as a fraction) that flags a "
+                           "coin as a capital-flow discovery candidate and boosts "
+                           "its universe heat"),
     "trade_weight":      T(2.0, 0.5, 10.0, 0.5, "learning", "Trade attribution weight",
                            "Scale on closed-trade net PnL fed to the bandit "
                            "(1h signal labels are dashboard-only and no longer "
                            "update posteriors)"),
     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
+    "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
+                           "Seconds between LLM-advisor lean refreshes (only when "
+                           "the advisor is enabled + a key is configured)", True),
+    "llm_lean_ttl_sec":  T(3600, 300, 21600, 60, "learning", "LLM lean TTL (s)",
+                           "A cached LLM lean expires (→ no vote) after this long, "
+                           "so a stale opinion can't dominate the ensemble", True),
     # ---- stance presets ----
     "stance_passive_risk": T(0.5, 0.1, 1.0, 0.05, "stance", "Passive risk mult",
                            "Position-size multiplier at full passive"),

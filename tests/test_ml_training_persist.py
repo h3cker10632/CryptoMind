@@ -9,6 +9,7 @@ persisted, every sample is wiped before it matures and the model NEVER trains
 import os, sys, time, tempfile
 from collections import deque
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.learn.online_model import N_IN as _N_IN
 
 
 def test_pending_ml_and_price_history_survive_snapshot(tmp_path, monkeypatch):
@@ -18,7 +19,7 @@ def test_pending_ml_and_price_history_survive_snapshot(tmp_path, monkeypatch):
 
     now = time.time()
     ts0 = now - 1900
-    x = [0.1] * 17
+    x = [0.1] * _N_IN
     learner.pending_ml = deque([(ts0, "BTC-USD", x, 0.0)], maxlen=2000)
     learner.price_history = {"BTC-USD": [(ts0, 100.0), (now, 101.0)]}
 
@@ -46,7 +47,7 @@ def test_matured_sample_trains_model_after_restart(tmp_path, monkeypatch):
 
     now = time.time()
     ts0 = now - 1900                      # already past the 30-min horizon
-    learner.pending_ml = deque([(ts0, "BTC-USD", [0.1] * 17, 0.0)], maxlen=2000)
+    learner.pending_ml = deque([(ts0, "BTC-USD", [0.1] * _N_IN, 0.0)], maxlen=2000)
     learner.price_history = {"BTC-USD": [(ts0, 100.0), (now, 101.2)]}
 
     snap = tmp_path / "state.json"

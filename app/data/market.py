@@ -140,6 +140,13 @@ class MarketData:
         vol_ratio = vols[-1] / (sum(vols[-20:]) / 20) if sum(vols[-20:]) else 1.0
         book = self.books.get(p, {})
 
+        # MULTI-TIMEFRAME context (Tier-2): aggregate the native 5m bars into
+        # 15m / 1h / 4h bars and read the trend + RSI on each. A trade with
+        # several timeframes aligned is a far cleaner signal than one 5m read;
+        # `mtf_align` in [-1,1] is the mean trend agreement across timeframes,
+        # exposed both to the strategies (trend confirmation) and the ML model.
+        mtf = self._mtf(highs, lows, closes)
+
         return {
             "price": price, "rsi": rsi, "atr": atr, "atr_swing": atr_swing,
             "sma20": sma(closes, 20), "sma50": sma(closes, 50),
@@ -151,7 +158,70 @@ class MarketData:
             "mom_4h": price / closes[-49] - 1 if len(closes) >= 49 else 0,
             "imbalance": book.get("imbalance", 0.0),
             "spread_bps": book.get("spread_bps", 0.0),
+            "mtf_align": mtf["align"], "mtf_trend_15m": mtf["t15"],
+            "mtf_trend_1h": mtf["t1h"], "mtf_trend_4h": mtf["t4h"],
+            "mtf_rsi_1h": mtf["rsi_1h"],
         }
+
+    @staticmethod
+    def _mtf(highs, lows, closes):
+        """Multi-timeframe trend/RSI from aggregated 5m bars.
+
+        For each timeframe (15m=3, 1h=12, 4h=48 native 5m bars) we fold the
+        trailing bars into higher-TF closes, then read the trend as the sign of
+        a fast-vs-slow EMA cross on that series. `align` is the mean of the
+        per-timeframe trend signs, in [-1, 1]: +1 = every timeframe bullish,
+        -1 = every timeframe bearish, ~0 = conflicted. Degrades gracefully to
+        whatever timeframes there is history for.
+        """
+        def fold_closes(n):
+            # one higher-TF close per group of n native bars (group's last close)
+            if n <= 1:
+                return list(closes)
+            out = []
+            # align groups to the most recent bar
+            total = len(closes)
+            start = total % n
+            i = start
+            while i + n <= total:
+                out.append(closes[i + n - 1])
+                i += n
+            return out
+
+        def ema(xs, n):
+            if len(xs) < n:
+                return None
+            k = 2 / (n + 1); e = xs[-n]
+            for x in xs[-n + 1:]:
+                e = x * k + e * (1 - k)
+            return e
+
+        def trend_sign(n, fast=5, slow=12):
+            cs = fold_closes(n)
+            ef, es = ema(cs, fast), ema(cs, slow)
+            if ef is None or es is None:
+                return 0.0
+            if ef > es * 1.001:
+                return 1.0
+            if ef < es * 0.999:
+                return -1.0
+            return 0.0
+
+        def rsi_tf(n, period=14):
+            cs = fold_closes(n)
+            if len(cs) < period + 1:
+                return 50.0
+            gains = losses = 0.0
+            for a, b in zip(cs[-period - 1:-1], cs[-period:]):
+                d = b - a
+                gains += max(d, 0.0); losses += max(-d, 0.0)
+            ag, al = gains / period, losses / period
+            return 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+
+        t15, t1h, t4h = trend_sign(3), trend_sign(12), trend_sign(48)
+        align = (t15 + t1h + t4h) / 3.0
+        return {"t15": t15, "t1h": t1h, "t4h": t4h, "align": align,
+                "rsi_1h": rsi_tf(12)}
 
     @staticmethod
     def _swing_atr(highs, lows, closes, period=14):
