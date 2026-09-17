@@ -32,11 +32,22 @@ def _clip(x, lo=-1.0, hi=1.0):
 # ---------------- individual strategies ----------------
 
 def strat_trend(f, sent, regime):
-    """Trend-following: EMA cross + MACD momentum."""
+    """Trend-following: EMA cross + MACD momentum, confirmed across timeframes.
+
+    Multi-timeframe alignment (`mtf_align`, mean of 15m/1h/4h trend signs) both
+    ADDS conviction when the higher timeframes agree with the 5m read and DAMPS
+    the score when they conflict — a 5m EMA cross fighting the 1h/4h trend is
+    exactly the kind of chop this filter is meant to avoid.
+    """
     score = 0.0
-    score += 0.45 if f["ema12"] > f["ema26"] else -0.45
+    base = 0.45 if f["ema12"] > f["ema26"] else -0.45
+    score += base
     score += _clip(f["macd_delta"] / (f["atr"] * 0.25 + 1e-9)) * 0.3
     score += _clip(f["mom_4h"] / 0.02) * 0.25
+    align = f.get("mtf_align", 0.0)
+    score += _clip(align) * 0.2                       # HTF confirmation vote
+    if base * align < 0:                              # 5m fights the HTF trend
+        score *= 0.6
     return score
 
 
@@ -130,6 +141,17 @@ def strat_ml(f, sent, regime):
     return _clip(u["mean"] * 1.3) * trust * u["confidence"]
 
 
+def strat_llm(f, sent, regime):
+    """Optional LLM advisor vote — ONE opinion among many, weighted by the
+    bandit like every other sleeve (NOT the driver). Returns the cached
+    directional lean in [-1, 1], or 0.0 when the advisor is disabled /
+    unconfigured / its opinion has expired — in which case the engine's
+    active-strategy renorm simply excludes it. The (latency- and cost-heavy)
+    model call happens out of band; this hot path only reads the cache."""
+    from ..learn.llm_advisor import advisor
+    return _clip(advisor.lean(_cur_product()))
+
+
 def _evolved_vote(g, f):
     """Score a single evolved genome's rule set on the current features."""
     score = 0.0
@@ -187,6 +209,7 @@ STRATEGIES = {
     "derivatives": strat_derivatives,
     "ml": strat_ml,
     "evolved": strat_evolved,
+    "llm": strat_llm,
 }
 
 

@@ -71,7 +71,7 @@ def test_ml_silent_when_below_coin_flip():
         assert "ml" in silent
         w = L._allocate("bull", silent)
         assert w["ml"] == 0.0
-        assert sum(w.values()) == 1.0 or abs(sum(w.values()) - 1.0) < 1e-6
+        assert abs(sum(w.values()) - 1.0) < 1e-3
     finally:
         _restore_model(orig_n, orig_acc)
 

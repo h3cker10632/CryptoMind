@@ -262,3 +262,42 @@ def test_env_seeded_credentials_persist_to_disk(tmp_path, monkeypatch):
     saved = json.loads(conf.read_text())
     assert saved.get("telegram_bot_token") == "111:ENVTOKEN"
     assert saved.get("telegram_chat_id") == "777"
+
+
+def test_token_survives_configure_then_restart(tmp_path, monkeypatch):
+    """Full round-trip: token set via the dashboard/API (save_conf) must be
+    reloaded by a FRESH process on startup (load_conf), with NO env var set —
+    the 'remember the Telegram bot token after restart and stop' fix."""
+    import json
+    conf = tmp_path / "alerts.json"
+    monkeypatch.setattr(alerts, "CONF_PATH", str(conf), raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    # 1) operator configures via POST /api/alerts/config → save_conf
+    alerts.save_conf({"telegram_bot_token": "222:SAVED", "telegram_chat_id": "888"})
+    assert conf.exists()
+
+    # 2) simulate a RESTART: blank the in-memory state as a fresh process would
+    monkeypatch.setitem(alerts._state, "telegram_bot_token", "")
+    monkeypatch.setitem(alerts._state, "telegram_chat_id", "")
+
+    # 3) startup calls load_conf() BEFORE the workers — token must come back
+    st = alerts.load_conf()
+    assert alerts._state["telegram_bot_token"] == "222:SAVED"
+    assert alerts._state["telegram_chat_id"] == "888"
+    assert st["telegram_configured"] is True
+
+
+def test_persist_flushes_current_state_on_stop(tmp_path, monkeypatch):
+    """persist() (called on shutdown/restart/stop) writes the live config so a
+    token set by the running bot is never lost on the way down."""
+    import json
+    conf = tmp_path / "alerts.json"
+    monkeypatch.setattr(alerts, "CONF_PATH", str(conf), raising=False)
+    monkeypatch.setitem(alerts._state, "telegram_bot_token", "333:LIVE")
+    monkeypatch.setitem(alerts._state, "telegram_chat_id", "999")
+    alerts.persist()
+    saved = json.loads(conf.read_text())
+    assert saved["telegram_bot_token"] == "333:LIVE"
+    assert saved["telegram_chat_id"] == "999"

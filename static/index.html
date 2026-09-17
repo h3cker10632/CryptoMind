@@ -116,6 +116,10 @@
     <div class="sw"></div>
     <span>pair hedge: <b id="tg-hedge-label">on</b></span>
   </div>
+  <div class="toggle" id="tg-llm" title="Optional LLM advisor: adds ONE directional vote the bandit weights like any other strategy (never the driver). Uses Gemini (gemini-2.5-flash). Needs a key in llm_key.txt or CRYPTOMIND_LLM_KEY / GEMINI_API_KEY — without a key it stays inert.">
+    <div class="sw"></div>
+    <span>LLM advisor: <b id="tg-llm-label">off</b></span>
+  </div>
   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
     <span style="color:var(--dim)">stance:</span>
     <button data-mode="passive">🛡 passive</button>
@@ -755,6 +759,8 @@ function renderToggles(){
     b.classList.toggle('active', b.dataset.mode===s.trade_mode));
   $('#tg-hedge').classList.toggle('on', s.hedge_enabled);
   $('#tg-hedge-label').textContent=s.hedge_enabled?'on':'off';
+  $('#tg-llm').classList.toggle('on', s.llm_advisor_enabled);
+  $('#tg-llm-label').textContent=s.llm_advisor_enabled?'on (needs API key)':'off';
 }
 async function loadSettings(){
   try{window._settings=await j('/api/settings');renderToggles();}catch(e){}
@@ -770,6 +776,7 @@ $('#tg-shorts').onclick=()=>setSetting('allow_shorts',!(window._settings||{}).al
 document.querySelectorAll('#seg-mode button').forEach(b=>
   b.onclick=()=>setSetting('trade_mode', b.dataset.mode));
 $('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).hedge_enabled);
+$('#tg-llm').onclick=()=>setSetting('llm_advisor_enabled',!(window._settings||{}).llm_advisor_enabled);
 loadSettings();
 
 // ===== alerts =====

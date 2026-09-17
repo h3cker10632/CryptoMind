@@ -41,6 +41,31 @@ TUNABLES = {
                            "Daily loss that halts new entries until tomorrow"),
     "cooldown_sec":      T(900, 0, 7200, 60, "risk", "Re-entry cooldown (s)",
                            "Seconds before re-entering a product after an exit", True),
+    "min_hold_sec":      T(300, 0, 14400, 30, "risk", "Minimum hold (s)",
+                           "A position younger than this is exempt from signal-flip "
+                           "and trailing-giveback exits (its hard stop/target still "
+                           "apply) — stops same-tick churn", True),
+    "max_entries_per_hour": T(12, 0, 120, 1, "risk", "Max entries / hour",
+                           "Hard cap on NEW position opens per rolling hour "
+                           "(0 = unlimited); anti-overtrading circuit", True),
+    "trail_giveback_pct": T(0.35, 0.0, 0.90, 0.05, "risk", "Peak-giveback exit",
+                           "Close a WINNING position once it gives back this "
+                           "fraction of its peak unrealized gain (price-basis). "
+                           "0 = disabled. Arms only after a real move (see arm %)."),
+    "trail_giveback_arm_pct": T(0.010, 0.0, 0.10, 0.001, "risk", "Giveback arm move",
+                           "Peak unrealized gain (as a fraction of entry price) "
+                           "required before the peak-giveback exit can trigger — "
+                           "prevents arming on noise"),
+    # ---- decider-health guardian (safe mode / preflight) ----
+    "safe_mode_fail_threshold": T(4, 1, 20, 1, "risk", "Safe-mode fail threshold",
+                           "Consecutive decision-loop failures that engage safe "
+                           "mode (new entries suspended, open risk still managed)", True),
+    "safe_mode_recover_sec": T(120, 0, 3600, 10, "risk", "Safe-mode recover dwell (s)",
+                           "How long health must hold before safe mode clears "
+                           "itself (anti-flap)", True),
+    "data_stale_sec":    T(180, 30, 3600, 10, "risk", "Data-stale threshold (s)",
+                           "Market feed older than this counts as unhealthy and "
+                           "engages safe mode", True),
     "min_notional":      T(50, 10, 5000, 10, "risk", "Min trade notional ($)",
                            "Trades smaller than this are skipped", True),
     "funding_extreme":   T(0.0008, 0.0001, 0.005, 0.0001, "risk", "Funding-rate block",
@@ -74,12 +99,22 @@ TUNABLES = {
                            "half-life). Lower = adapts faster to regime change"),
     "evolve_every_sec":  T(1200, 120, 21600, 60, "learning", "GA cadence (s)",
                            "Seconds between genetic-evolution runs (universe rotates)", True),
+    "oi_growth_threshold": T(0.15, 0.02, 1.0, 0.01, "learning", "OI-growth discovery",
+                           "24h open-interest growth (as a fraction) that flags a "
+                           "coin as a capital-flow discovery candidate and boosts "
+                           "its universe heat"),
     "trade_weight":      T(2.0, 0.5, 10.0, 0.5, "learning", "Trade attribution weight",
                            "Scale on closed-trade net PnL fed to the bandit "
                            "(1h signal labels are dashboard-only and no longer "
                            "update posteriors)"),
     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
+    "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
+                           "Seconds between LLM-advisor lean refreshes (only when "
+                           "the advisor is enabled + a key is configured)", True),
+    "llm_lean_ttl_sec":  T(3600, 300, 21600, 60, "learning", "LLM lean TTL (s)",
+                           "A cached LLM lean expires (→ no vote) after this long, "
+                           "so a stale opinion can't dominate the ensemble", True),
     # ---- stance presets ----
     "stance_passive_risk": T(0.5, 0.1, 1.0, 0.05, "stance", "Passive risk mult",
                            "Position-size multiplier at full passive"),

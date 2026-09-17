@@ -83,6 +83,28 @@ def save_conf(changes: dict):
     return status()
 
 
+def persist():
+    """Flush the current alert/bot config (incl. the Telegram token) to disk.
+
+    Called on startup (after loading) and on every shutdown/restart/stop path so
+    the bot credentials ALWAYS survive, regardless of how they were set (env
+    var, dashboard, or the bot itself) or how the process ends. Idempotent and
+    exception-safe: it must never break shutdown.
+    """
+    try:
+        return save_conf({})
+    except Exception:
+        return None
+
+
+def load_conf():
+    """Public entry point to reconcile config from disk. Safe to call at
+    startup BEFORE the worker tasks run, so the dashboard/API and the very
+    first alert see the persisted token immediately (not a blank _state)."""
+    _load_conf()
+    return status()
+
+
 def status():
     return {
         "telegram_configured": bool(_state["telegram_bot_token"] and
@@ -408,6 +430,7 @@ HELP_TEXT = (
     "/brains — how much the system has learned (models/DB)\n"
     "/signals — current actionable signals\n"
     "/diag — per-coin: why each isn't trading (or would)\n"
+    "/decisions [n] — recent decision audit trail (paper trail)\n"
     "/chart [tf] — equity chart image (tf: 1h,1d,1w,1m; default 1d)\n"
     "/risk — drawdown, daily loss, kill/halt state\n"
     "/why — why trading is killed/halted (if it is)\n"
@@ -417,6 +440,7 @@ HELP_TEXT = (
     "/kill — 🛑 flatten all & stop (kill switch)\n"
     "/resetkill — ♻️ clear the kill switch + daily halt\n"
     "/shorts on|off — allow/deny short positions\n"
+    "/llm on|off — optional LLM advisor vote (needs API key)\n"
     "/mode passive|auto|aggressive — trading stance\n"
     "/set <tunable> <value> — change a risk/cost knob\n"
     "/get <tunable> — read a tunable\n"
@@ -717,6 +741,36 @@ def tv_pct(key):
     return f"{tv(key)*100:.0f}%"
 
 
+def _cmd_decisions(n=6):
+    """Recent decision-audit rows — the cycle-level paper trail: what each
+    candidate's composite/confidence was, the action taken, and why."""
+    from . import db
+    from .guardian import guardian
+    rows = db.recent_decisions(min(n, 15))
+    g = guardian.snapshot()
+    head = "*Recent decisions*"
+    if g.get("safe_mode"):
+        head += f"\n🟡 SAFE MODE: {g.get('safe_reason', '')}"
+    head += (f"\nEntries last hour: {g.get('entries_last_hour', 0)}"
+             f"/{g.get('max_entries_per_hour', 0)}")
+    if not rows:
+        return head + "\n_(no decisions recorded yet — feeds still warming)_"
+    icon = {"enter": "✅", "explore": "🔬", "skip": "⏭", "reject": "⛔"}
+    lines = [head]
+    for r in rows:
+        sym = r["product"].split("-")[0]
+        d = "long" if r["direction"] > 0 else "short"
+        i = icon.get(r["action"], "•")
+        line = (f"{i} {sym} {d} conf={r['confidence']:.2f} "
+                f"cmp={r['composite']:+.2f} — {r['action']}")
+        if r.get("reason"):
+            line += f" ({r['reason']})"
+        if r.get("size_post"):
+            line += f" ${r['size_post']:,.0f}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _cmd_why():
     from .risk.manager import risk
     if risk.killed:
@@ -860,6 +914,22 @@ def _cmd_shorts(arg):
     return f"Shorts {'ENABLED' if arg == 'on' else 'DISABLED'}."
 
 
+def _cmd_llm(arg):
+    from . import settings as app_settings
+    from .learn.llm_advisor import advisor
+    if arg not in ("on", "off"):
+        st = advisor.stats()
+        return (f"LLM advisor: {'ON' if st['enabled'] else 'off'}"
+                f"{'' if st['configured'] else ' (no API key — inert)'}\n"
+                "Usage: /llm on|off")
+    app_settings.update({"llm_advisor_enabled": arg == "on"})
+    if arg == "on" and not advisor.configured():
+        return ("LLM advisor ENABLED — but no API key is set, so it stays "
+                "inert. Put a Gemini key in llm_key.txt, or set "
+                "CRYPTOMIND_LLM_KEY / GEMINI_API_KEY.")
+    return f"LLM advisor {'ENABLED' if arg == 'on' else 'DISABLED'}."
+
+
 def _cmd_mode(arg):
     from . import settings as app_settings
     if arg not in ("passive", "auto", "aggressive"):
@@ -937,6 +1007,9 @@ def handle_command(text):
             return _cmd_signals()
         if cmd in ("diag", "diagnose", "why_not"):
             return _cmd_diag()
+        if cmd in ("decisions", "audit", "trail"):
+            n = int(args[0]) if args and args[0].isdigit() else 6
+            return _cmd_decisions(n)
         if cmd == "chart":
             # handled asynchronously in command_worker (image send); this path
             # is only hit if called synchronously — return a hint.
@@ -958,6 +1031,8 @@ def handle_command(text):
             return _cmd_resetkill()
         if cmd == "shorts":
             return _cmd_shorts(args[0] if args else "")
+        if cmd == "llm":
+            return _cmd_llm(args[0] if args else "")
         if cmd == "mode":
             return _cmd_mode(args[0] if args else "")
         if cmd == "notify":

@@ -7,6 +7,7 @@ settings.json
 tunables.json
 alerts.json
 api_token.txt
+llm_key.txt
 .shutdown
 relaunch.log
 

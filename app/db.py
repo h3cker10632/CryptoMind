@@ -43,9 +43,15 @@ def init():
             ts REAL, intent_id TEXT, client_order_id TEXT, product TEXT,
             side TEXT, event TEXT, qty REAL, price REAL, status TEXT,
             venue TEXT, data TEXT);
+        CREATE TABLE IF NOT EXISTS decisions(
+            ts REAL, cycle INTEGER, product TEXT, direction REAL,
+            composite REAL, confidence REAL, ml_confidence REAL,
+            action TEXT, reason TEXT, size_pre REAL, size_post REAL,
+            regime TEXT, votes TEXT);
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity(ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_orderev_intent ON order_events(intent_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts)")
         cols = {r[1] for r in c.execute("PRAGMA table_info(signal_scores)")}
         if "regime" not in cols:
             c.execute("ALTER TABLE signal_scores ADD COLUMN regime TEXT")
@@ -123,6 +129,53 @@ def log_order_event(intent_id, client_order_id, product, side, event,
               qty, price, status, venue, json.dumps(data or {})))
 
 
+def log_decision(cycle, product, direction, composite, confidence, ml_confidence,
+                 action, reason, size_pre=0.0, size_post=0.0, regime=None,
+                 votes=None):
+    """Append one CYCLE-LEVEL decision record — the "no position without a
+    paper trail" audit row (NOFX idea). Captures, per considered candidate:
+    the composite signal, confidence, the chosen action (enter/skip/exit/...),
+    a human reason (e.g. the gate that blocked it), and the notional BEFORE and
+    AFTER the risk cage clamped it. This is what lets the operator answer
+    "why did nothing trade / why was it sized so small" from history alone."""
+    _enqueue("INSERT INTO decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             (time.time(), cycle, product, direction, composite, confidence,
+              ml_confidence, action, reason, size_pre, size_post, regime,
+              json.dumps(votes or {})))
+
+
+def recent_decisions(limit=100, product=None, action=None):
+    """Most-recent decision-audit rows (optionally filtered by product/action)."""
+    q = "SELECT * FROM decisions"
+    where, params = [], []
+    if product:
+        where.append("product=?"); params.append(product)
+    if action:
+        where.append("action=?"); params.append(action)
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    q += " ORDER BY ts DESC LIMIT ?"
+    params.append(limit)
+    with _lock, _conn() as c:
+        rows = c.execute(q, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["votes"] = json.loads(d.get("votes") or "{}")
+            except Exception:
+                d["votes"] = {}
+            out.append(d)
+        return out
+
+
+def prune_decisions(retention_sec=14 * 86400):
+    """Keep ~2 weeks of decision audit rows (they accrue every cycle)."""
+    cutoff = time.time() - retention_sec
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM decisions WHERE ts < ?", (cutoff,))
+
+
 def record_signal(strategy, product, direction, confidence, regime=None):
     _enqueue("INSERT INTO signal_scores(ts,strategy,product,direction,confidence,fwd_return,scored,regime) "
              "VALUES(?,?,?,?,?,NULL,0,?)",
@@ -167,7 +220,8 @@ def learning_counts():
     the learning stack has actually accumulated in SQLite."""
     out = {}
     with _lock, _conn() as c:
-        for t in ("events", "trades", "equity", "signal_scores", "order_events"):
+        for t in ("events", "trades", "equity", "signal_scores", "order_events",
+                  "decisions"):
             try:
                 out[t] = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             except Exception:

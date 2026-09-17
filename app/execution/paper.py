@@ -155,6 +155,8 @@ class PaperBroker:
                     self.sell(p, px, "stop-loss/trail")
                 elif px >= pos["take"]:
                     self.sell(p, px, "take-profit")
+                elif self._giveback_hit(pos, px):
+                    self.sell(p, px, "peak-giveback")
             else:
                 pos["water"] = min(water, px)          # low-water for shorts
                 # ---- funding accrual (crowded shorts pay to stay short) ----
@@ -174,6 +176,40 @@ class PaperBroker:
                     self.sell(p, px, "stop-loss/trail")
                 elif px <= pos["take"]:
                     self.sell(p, px, "take-profit")
+                elif self._giveback_hit(pos, px):
+                    self.sell(p, px, "peak-giveback")
+
+    def _giveback_hit(self, pos, px):
+        """Peak-giveback trailing exit (NOFX idea): lock in a WINNER that hands
+        back too much of its best unrealized gain. Computed on a PRICE basis —
+        never a leverage/margin-multiplied basis (NOFX's live bug silently
+        halved the trigger distance) — so a short and a long behave identically.
+
+        Arms only after the position's peak gain has exceeded `trail_giveback_arm_pct`
+        of entry price, so noise around break-even can't trip it. Disabled when
+        `trail_giveback_pct` == 0. Hedge legs are exempt (managed as a pair).
+        """
+        if pos.get("hedge"):
+            return False
+        gb = tv("trail_giveback_pct")
+        if gb <= 0:
+            return False
+        # min-hold: give a fresh position room to work before giveback can fire
+        if time.time() - pos.get("opened", 0) < tv("min_hold_sec"):
+            return False
+        entry = pos["entry"]
+        side = pos.get("side", 1)
+        water = pos.get("water", entry)
+        # peak & current gain per unit, price-basis, positive = in profit
+        peak_gain = (water - entry) if side > 0 else (entry - water)
+        cur_gain = (px - entry) * side
+        if peak_gain <= 0:
+            return False
+        if peak_gain / entry < tv("trail_giveback_arm_pct"):
+            return False                       # not a big enough move yet
+        if cur_gain <= 0:
+            return False                       # never give-back exit into a loss
+        return (peak_gain - cur_gain) >= gb * peak_gain
 
     def _accrue_funding(self, product, pos, px):
         """Charge/credit perp funding on a short's notional (8h rate, prorated

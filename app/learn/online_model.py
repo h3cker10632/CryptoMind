@@ -18,7 +18,7 @@ Uncertainty features (Phase 3):
 import math, random
 from collections import deque
 
-N_IN = 17
+N_IN = 18
 N_HID = 16
 
 # quantile levels for the aleatoric band (P10 / P90)
@@ -27,7 +27,8 @@ QUANTILES = (0.10, 0.90)
 FEAT_NAMES = ["rsi", "macd", "macd_delta", "mom_1h", "mom_4h", "vol_ratio",
               "imbalance", "spread", "asset_sent", "market_sent",
               "price_vs_sma20", "sma20_vs_sma50", "volatility",
-              "funding", "oi_change", "ls_crowding", "taker_aggression"]
+              "funding", "oi_change", "ls_crowding", "taker_aggression",
+              "mtf_align"]
 
 
 def _clip(x, lo=-3.0, hi=3.0):
@@ -57,6 +58,9 @@ def build_x(f, asset_sent, market_sent, deriv=None):
         d.get("oi_change_norm", 0.0),
         d.get("ls_crowding", 0.0),
         d.get("taker_aggression", 0.0),
+        # multi-timeframe trend alignment in [-1,1] (mean of 15m/1h/4h trend
+        # signs) — a cross-timeframe confirmation feature for the model.
+        _clip(f.get("mtf_align", 0.0), -1, 1),
     ]
 
 
@@ -65,6 +69,10 @@ class TinyMLP:
 
     def __init__(self, n_in=N_IN, n_hid=N_HID, lr=0.03, l2=1e-5, seed=7):
         rnd = random.Random(seed)
+        # dedicated RNG for replay sampling so training is deterministic and
+        # independent of global random state / test execution order (the shared
+        # `random` module made committee uncertainty flaky across suite runs).
+        self._rng = random.Random(seed * 2 + 1)
         s1 = (2.0 / n_in) ** 0.5
         s2 = (2.0 / n_hid) ** 0.5
         self.W1 = [[rnd.gauss(0, s1) for _ in range(n_in)] for _ in range(n_hid)]
@@ -139,6 +147,8 @@ class TinyMLP:
                 for qw, qb in zip(self.qW, self.qb)]
 
     def predict(self, x):
+        if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
+            return 0.0
         return self._fwd(self._standardize(x))[1]
 
     def predict_quantiles(self, x):
@@ -200,10 +210,13 @@ class TinyMLP:
     def _sample_replay_idx(self):
         """Priority-proportional sample from the replay buffer (roulette wheel).
         Falls back to uniform if priorities aren't populated."""
+        rng = getattr(self, "_rng", None)
+        if rng is None:
+            rng = self._rng = random.Random(12345)
         total = sum(self.replay_pr)
         if total <= 0:
-            return random.randrange(len(self.replay))
-        r = random.random() * total
+            return rng.randrange(len(self.replay))
+        r = rng.random() * total
         acc = 0.0
         for i, p in enumerate(self.replay_pr):
             acc += p
@@ -213,6 +226,8 @@ class TinyMLP:
 
     def update(self, x, fwd_return, pred_at_record=None):
         """Learn from a labeled sample; also replays PRIORITIZED past samples."""
+        if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
+            return
         target = _clip(fwd_return / 0.004, -1, 1)     # ±0.4% move = full signal
         if pred_at_record is not None and abs(target) > 0.15:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)

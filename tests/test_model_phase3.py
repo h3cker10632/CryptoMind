@@ -6,14 +6,14 @@
 """
 import os, sys, random
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.learn.online_model import TinyMLP, Committee
+from app.learn.online_model import TinyMLP, Committee, N_IN
 
 
 def _train(net_or_committee, n=500, seed=0):
     r = random.Random(seed)
     for _ in range(n):
         f0 = r.gauss(0, 1)
-        x = [f0] + [r.gauss(0, 1) for _ in range(16)]
+        x = [f0] + [r.gauss(0, 1) for _ in range(N_IN - 1)]
         fwd = 0.002 * f0 + r.gauss(0, 0.0004)
         net_or_committee.update(x, fwd)
     return r
@@ -23,7 +23,7 @@ def _train(net_or_committee, n=500, seed=0):
 def test_predict_quantiles_ordered():
     m = TinyMLP()
     _train(m)
-    lo, med, hi = m.predict_quantiles([1.5] + [0.0] * 16)
+    lo, med, hi = m.predict_quantiles([1.5] + [0.0] * (N_IN - 1))
     assert lo <= med <= hi                      # band is always ordered
     assert hi - lo >= 0
 
@@ -32,7 +32,7 @@ def test_quantile_band_has_width_after_training_on_noise():
     m = TinyMLP()
     _train(m, n=600)
     # noisy target => the P10/P90 heads should separate (non-degenerate band)
-    widths = [m.predict_quantiles([random.gauss(0, 1)] + [0.0] * 16)
+    widths = [m.predict_quantiles([random.gauss(0, 1)] + [0.0] * (N_IN - 1))
               for _ in range(20)]
     avg_w = sum(hi - lo for lo, _, hi in widths) / len(widths)
     assert avg_w > 0.01
@@ -48,7 +48,7 @@ def test_committee_members_are_distinct():
 def test_committee_mean_matches_member_average():
     c = Committee(n_members=3)
     _train(c, n=200)
-    x = [1.0] + [0.0] * 16
+    x = [1.0] + [0.0] * (N_IN - 1)
     expect = sum(m.predict(x) for m in c.members) / 3
     assert abs(c.predict(x) - expect) < 1e-9
 
@@ -56,8 +56,8 @@ def test_committee_mean_matches_member_average():
 def test_uncertainty_higher_out_of_distribution():
     c = Committee(n_members=3, base_seed=3)
     _train(c, n=600)
-    u_in = c.predict_with_uncertainty([1.0] + [0.0] * 16)
-    u_ood = c.predict_with_uncertainty([9.0] * 17)      # far from training data
+    u_in = c.predict_with_uncertainty([1.0] + [0.0] * (N_IN - 1))
+    u_ood = c.predict_with_uncertainty([9.0] * N_IN)      # far from training data
     # members disagree more on unfamiliar inputs -> lower confidence there
     assert u_ood["epistemic"] > u_in["epistemic"]
     assert u_ood["confidence"] <= u_in["confidence"]
@@ -90,7 +90,7 @@ def test_persistence_roundtrips_committee(tmp_path, monkeypatch):
     from app.learn import online_model as om
     from app import settings
     _train(om.committee, n=120, seed=2)
-    x = [1.3] + [0.0] * 16
+    x = [1.3] + [0.0] * (N_IN - 1)
     before = om.committee.predict(x)
     q_before = om.committee.members[-1].predict_quantiles(x)
 

@@ -23,7 +23,7 @@ CB = "https://api.exchange.coinbase.com"
 CG_TRENDING = "https://api.coingecko.com/api/v3/search/trending"
 
 CORE = list(PRODUCTS)              # original 6 — never removed
-MAX_UNIVERSE = 12                  # core + up to 6 discovered
+MAX_UNIVERSE = 14                  # core + up to 8 discovered
 MIN_DOLLAR_VOL_24H = 3_000_000     # liquidity floor for discovered coins
 REFRESH_SEC = 900                  # discovery cycle every 15 min
 
@@ -47,6 +47,8 @@ class Universe:
         self.discovered = []       # currently-added discovered product ids
         self.rejected = {}         # SYM -> reason (for dashboard transparency)
         self.name_to_sym = {}      # lowercase coin name -> SYM
+        self.oi_growth = {}        # SYM -> 24h OI % change (capital-flow source)
+        self.sources = {}          # SYM -> set of source tags that surfaced it
         self.last_update = 0.0
 
     # -------------------- reference data --------------------
@@ -89,8 +91,56 @@ class Universe:
                     if name:
                         self.name_to_sym[name] = sym
                     self.mention_heat[sym] = self.mention_heat.get(sym, 0) + 3.0
+                    self.sources.setdefault(sym, set()).add("trending")
         except Exception as e:
             db.log_event("warn", f"CoinGecko trending failed: {e}")
+
+    async def _fetch_oi_growth(self, client):
+        """Capital-flow discovery source (NOFX 'OI-growth' idea): rank coins by
+        24h open-interest change on OKX perps. A coin whose OI is expanding fast
+        is attracting fresh capital — a candidate worth looking at even before
+        it trends in the news. Bounded to a candidate set (core + trending +
+        current discovered) so we don't hammer the rate-limited rubik endpoints.
+        Symbols above the growth threshold get a heat boost AND an 'oi_growth'
+        source tag; a coin surfaced by TWO independent sources (narrative +
+        capital flow) is a stronger prior than either alone.
+        """
+        from ..tunables import tv
+        core_syms = {p.split("-")[0] for p in CORE}
+        scan = list(core_syms | set(self.trending) | {
+            p.split("-")[0] for p in self.discovered})
+        thresh = tv("oi_growth_threshold")
+        self.oi_growth = {}
+        for ccy in scan[:20]:                      # cap the scan breadth
+            try:
+                d = await self._get_oi_history(client, ccy)
+            except Exception:
+                continue
+            if not d:
+                continue
+            g = d
+            self.oi_growth[ccy] = round(g, 4)
+            if g >= thresh:
+                # boost proportional to how far past the threshold it is
+                boost = 2.0 + min(4.0, (g - thresh) / max(thresh, 1e-6))
+                self.mention_heat[ccy] = self.mention_heat.get(ccy, 0) + boost
+                self.sources.setdefault(ccy, set()).add("oi_growth")
+
+    async def _get_oi_history(self, client, ccy):
+        """24h OI % change for one coin from OKX rubik (newest-first rows)."""
+        r = await client.get(
+            f"https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume",
+            params={"ccy": ccy, "period": "1H"}, timeout=15)
+        j = r.json()
+        if j.get("code") not in ("0", 0):
+            return None
+        rows = j.get("data") or []
+        if len(rows) < 2:
+            return None
+        oi_now = float(rows[0][1])
+        older = rows[min(24, len(rows) - 1)]
+        oi_then = float(older[1])
+        return (oi_now / oi_then - 1) if oi_then else None
 
     def ingest_documents(self, documents):
         """Extract coin mentions from research documents → mention heat."""
@@ -109,17 +159,31 @@ class Universe:
             for s in syms:
                 if s not in TICKER_BLACKLIST:
                     self.mention_heat[s] = self.mention_heat.get(s, 0) + 1.0
+                    self.sources.setdefault(s, set()).add("news")
 
     # -------------------- universe update --------------------
     async def refresh(self, client):
         await self._load_coinbase_products(client)
         await self._fetch_trending(client)
+        # capital-flow source (OI growth) — best-effort; never blocks discovery
+        try:
+            await self._fetch_oi_growth(client)
+        except Exception as e:
+            db.log_event("warn", f"OI-growth discovery failed: {e}")
 
         # decay heat so stale narratives fade
         for s in list(self.mention_heat):
             self.mention_heat[s] *= 0.85
             if self.mention_heat[s] < 0.2:
                 del self.mention_heat[s]
+                self.sources.pop(s, None)
+        # MULTI-SOURCE confirmation: a coin surfaced by two+ independent sources
+        # (e.g. narrative heat AND capital inflow) gets a small extra prior —
+        # exactly NOFX's "mixed" universe tagging. Applied after decay so it's a
+        # standing bonus for corroborated names, not a runaway compounding boost.
+        for s, tags in self.sources.items():
+            if len(tags) >= 2 and s in self.mention_heat:
+                self.mention_heat[s] += 0.5 * (len(tags) - 1)
 
         core_syms = {p.split("-")[0] for p in CORE}
         candidates = sorted(
@@ -160,10 +224,13 @@ class Universe:
         self.discovered = [p for p in PRODUCTS if p not in CORE]
 
         if added:
+            def _tag(pid):
+                sym = pid.split("-")[0]
+                srcs = "+".join(sorted(self.sources.get(sym, {"news"})))
+                return f"{sym}={self.mention_heat.get(sym, 0):.1f}[{srcs}]"
             db.log_event("discovery",
                          f"🔭 Universe expanded: +{', '.join(added)} "
-                         f"(narrative heat: "
-                         f"{', '.join(f'{p.split(chr(45))[0]}={self.mention_heat.get(p.split(chr(45))[0], 0):.1f}' for p in added)})")
+                         f"(heat/source: {', '.join(_tag(p) for p in added)})")
         if removed:
             db.log_event("discovery", f"Universe pruned: -{', '.join(removed)} (heat faded)")
         self.last_update = time.time()
@@ -186,6 +253,9 @@ class Universe:
             "trending_coingecko": self.trending[:15],
             "mention_heat": {k: round(v, 2) for k, v in
                              sorted(self.mention_heat.items(), key=lambda kv: -kv[1])[:20]},
+            "oi_growth": {k: v for k, v in
+                          sorted(self.oi_growth.items(), key=lambda kv: -kv[1])[:15]},
+            "sources": {k: sorted(v) for k, v in self.sources.items()},
             "rejected": self.rejected,
             "coinbase_listed": len(self.cb_products),
             "max_universe": MAX_UNIVERSE,
