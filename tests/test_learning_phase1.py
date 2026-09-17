@@ -139,3 +139,19 @@ def test_ga_warm_starts_from_champion(monkeypatch):
         candles.append([i * 300, px * 0.99, px * 1.01, px, px, 1000.0])
     e.evolve(candles, product="BTC-USD")
     assert seen["has_champ"], "GA did not seed the population with the champion"
+
+
+def test_decayed_sample_counts_render_cleanly():
+    """After decay(), the effective sample size `n` is a float; the table (which
+    feeds the dashboard + /brains) must round it, not emit a 14-digit fraction."""
+    from app.learn.bandit import RegimeBandit
+    b = RegimeBandit(["trend", "evolved"])
+    for _ in range(50):
+        b.update("sideways", "trend", -0.006)
+    for _ in range(40):
+        b.decay(gamma=0.995)
+    row = b.table("sideways")["trend"]
+    for key in ("n", "n_pool"):
+        v = row[key]
+        assert isinstance(v, float)
+        assert round(v, 1) == v, f"{key}={v!r} was not rounded for display"

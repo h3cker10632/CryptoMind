@@ -540,7 +540,8 @@ def _cmd_brains():
 
     arms = learner.bandit.arms
     regimes_seen = len({r for (r, _s) in arms})
-    total_obs = sum(v[0] for v in arms.values())          # v = (n, mean, M2)
+    # v = (n, mean, M2); n is a decayed EFFECTIVE sample size (float), so round.
+    total_obs = round(sum(v[0] for v in arms.values()), 1)
     mst = committee.stats()
     rst = rl_agent.stats()
     champs = evolution.champions or {}

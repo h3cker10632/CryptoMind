@@ -152,8 +152,12 @@ class RegimeBandit:
             n_all, _, _ = self._strategy_pool(s)
             mu, sd, _ = self._posterior(regime, s)
             out[s] = {
-                "n": n,
-                "n_pool": n_all,
+                # `n`/`n_pool` are EFFECTIVE sample sizes: decay() multiplies
+                # them by gamma each cycle to forget stale evidence, so they are
+                # floats, not integer counts. Round for display/serialization —
+                # 14-digit fractions are meaningless to a human and bloat state.
+                "n": round(n, 1),
+                "n_pool": round(n_all, 1),
                 "mean_bps": round(mu * 1e4, 2) if n_all else None,
                 "std_bps": round(sd * 1e4, 2) if n_all else None,
                 "raw_mean_bps": round(mean * 1e4, 2) if n else None,
