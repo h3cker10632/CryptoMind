@@ -408,6 +408,7 @@ HELP_TEXT = (
     "/brains — how much the system has learned (models/DB)\n"
     "/signals — current actionable signals\n"
     "/diag — per-coin: why each isn't trading (or would)\n"
+    "/decisions [n] — recent decision audit trail (paper trail)\n"
     "/chart [tf] — equity chart image (tf: 1h,1d,1w,1m; default 1d)\n"
     "/risk — drawdown, daily loss, kill/halt state\n"
     "/why — why trading is killed/halted (if it is)\n"
@@ -718,6 +719,36 @@ def tv_pct(key):
     return f"{tv(key)*100:.0f}%"
 
 
+def _cmd_decisions(n=6):
+    """Recent decision-audit rows — the cycle-level paper trail: what each
+    candidate's composite/confidence was, the action taken, and why."""
+    from . import db
+    from .guardian import guardian
+    rows = db.recent_decisions(min(n, 15))
+    g = guardian.snapshot()
+    head = "*Recent decisions*"
+    if g.get("safe_mode"):
+        head += f"\n🟡 SAFE MODE: {g.get('safe_reason', '')}"
+    head += (f"\nEntries last hour: {g.get('entries_last_hour', 0)}"
+             f"/{g.get('max_entries_per_hour', 0)}")
+    if not rows:
+        return head + "\n_(no decisions recorded yet — feeds still warming)_"
+    icon = {"enter": "✅", "explore": "🔬", "skip": "⏭", "reject": "⛔"}
+    lines = [head]
+    for r in rows:
+        sym = r["product"].split("-")[0]
+        d = "long" if r["direction"] > 0 else "short"
+        i = icon.get(r["action"], "•")
+        line = (f"{i} {sym} {d} conf={r['confidence']:.2f} "
+                f"cmp={r['composite']:+.2f} — {r['action']}")
+        if r.get("reason"):
+            line += f" ({r['reason']})"
+        if r.get("size_post"):
+            line += f" ${r['size_post']:,.0f}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _cmd_why():
     from .risk.manager import risk
     if risk.killed:
@@ -938,6 +969,9 @@ def handle_command(text):
             return _cmd_signals()
         if cmd in ("diag", "diagnose", "why_not"):
             return _cmd_diag()
+        if cmd in ("decisions", "audit", "trail"):
+            n = int(args[0]) if args and args[0].isdigit() else 6
+            return _cmd_decisions(n)
         if cmd == "chart":
             # handled asynchronously in command_worker (image send); this path
             # is only hit if called synchronously — return a hint.

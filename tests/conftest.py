@@ -12,3 +12,9 @@ _config.DB_PATH = os.path.join(_tmp, "test.db")
 import app.db as _db
 _db.DB_PATH = _config.DB_PATH
 _db.init()
+
+# isolate the tunables override file so tests that call tunables.update() never
+# clobber the operator's real tunables.json (it lives at the repo root).
+import app.tunables as _tunables
+_tunables.PATH = os.path.join(_tmp, "tunables.json")
+_tunables._overrides = None

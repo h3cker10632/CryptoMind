@@ -13,6 +13,7 @@ from .risk.manager import risk
 from .learn.loop import learner
 from .risk.stance import stance
 from .strategies.hedge import hedger
+from .guardian import guardian
 
 
 def _calendar_stats():
@@ -31,15 +32,24 @@ class Orchestrator:
 
     async def decision_loop(self):
         await asyncio.sleep(10)  # let feeds warm up
+        # LAUNCH PREFLIGHT — verify preconditions before the loop is trusted to
+        # open positions. A non-pass keeps the guardian in safe mode (entries
+        # held, open risk still managed) until health is genuinely restored.
+        try:
+            guardian.preflight()
+        except Exception as e:
+            db.log_event("error", f"Preflight failed to run: {e}")
         consecutive_failures = 0
         while True:
             try:
                 self.tick()
                 self.last_tick_ts = time.time()
                 consecutive_failures = 0
+                guardian.on_cycle(True, market=market)
             except Exception as e:
                 consecutive_failures += 1
                 db.log_event("error", f"Orchestrator tick failed: {e}")
+                guardian.on_cycle(False, market=market, error=str(e))
                 if consecutive_failures == 5:
                     from .alerts import alert
                     alert("critical", "Decision loop failing",
@@ -69,9 +79,24 @@ class Orchestrator:
                 n += 1
                 if n % 30 == 0:          # ~ every 30 min: retention on equity
                     await asyncio.to_thread(db.prune_equity)
+                    await asyncio.to_thread(db.prune_decisions)
             except Exception as e:
                 db.log_event("error", f"reconcile loop failed: {e}")
             await asyncio.sleep(60)
+
+    def _audit(self, sig, action, reason, size_pre=0.0, size_post=0.0):
+        """Write one decision-audit row (NOFX "no position without a paper
+        trail"). Never let a logging failure break the decision loop."""
+        try:
+            db.log_decision(
+                self.tick_count, sig["product"], sig["direction"],
+                sig.get("composite", 0.0), sig.get("confidence", 0.0),
+                sig.get("ml_confidence", 1.0), action, reason,
+                size_pre=size_pre, size_post=size_post,
+                regime=sig.get("regime"),
+                votes=engine.per_strategy.get(sig["product"], {}))
+        except Exception:
+            pass
 
     def tick(self):
         self.tick_count += 1
@@ -149,6 +174,11 @@ class Orchestrator:
             if broker.positions[p].get("hedge"):
                 continue
             side = broker.positions[p].get("side", 1)
+            # MIN-HOLD: don't let a signal flip churn a position out on the same
+            # (or next) tick it opened — its hard stop/target still protect it.
+            age = time.time() - broker.positions[p].get("opened", 0)
+            if age < tv("min_hold_sec"):
+                continue
             if sig["direction"] * side < 0 and sig["confidence"] > 0.5:
                 t = broker.sell(p, market.price(p), "signal flip")
                 if t:
@@ -161,17 +191,29 @@ class Orchestrator:
                             key=lambda s: -s["confidence"])
             for sig in ranked:
                 p = sig["product"]
+                # GUARDIAN gate — safe mode + per-hour entry cap, checked BEFORE
+                # per-product risk gates. A deterministic "no new risk" veto
+                # independent of the learner (NOFX "runtime disposes").
+                gok, gwhy = guardian.can_enter()
+                if not gok:
+                    self._audit(sig, "skip", gwhy)
+                    continue
                 ok, why = risk.can_open(p, broker, market, market.healthy)
                 if not ok:
+                    self._audit(sig, "skip", why)
                     continue
                 ok, why = risk.funding_gate(p, sig["direction"])
                 if not ok:
+                    self._audit(sig, "skip", why)
                     continue
                 notional, stop, take = risk.size(
                     equity, sig["price"], sig["atr"], sig["confidence"],
                     self.last_risk_status, direction=sig["direction"], product=p,
                     ml_confidence=sig.get("ml_confidence", 1.0))
                 if notional < tv("min_notional"):
+                    self._audit(sig, "skip",
+                                f"notional ${notional:,.0f} below min "
+                                f"${tv('min_notional')}", size_pre=notional)
                     continue
                 # A cost-viable conviction candidate cleared the gate — this
                 # interval WAS a real chance to trade, whether or not the fill
@@ -183,7 +225,12 @@ class Orchestrator:
                                   f"composite={sig['composite']} regime={sig['regime']}",
                                   votes=engine.per_strategy.get(p, {}),
                                   regime_at_entry=sig["regime"])
+                self._audit(sig, "enter" if pos is not None else "reject",
+                            "opened" if pos is not None else "broker rejected fill",
+                            size_pre=notional,
+                            size_post=(pos["qty"] * pos["entry"]) if pos else 0.0)
                 if pos is not None:
+                    guardian.note_entry()
                     # rich open notification (Telegram/webhook) with full detail
                     try:
                         from .alerts import notify_trade_open
@@ -210,6 +257,9 @@ class Orchestrator:
                     key=lambda s: -s["confidence"])
                 for sig in explorable[:1]:            # at most one probe/tick
                     p = sig["product"]
+                    gok, gwhy = guardian.can_enter()
+                    if not gok:
+                        continue
                     ok, why = risk.can_open(p, broker, market, market.healthy)
                     if not ok:
                         continue
@@ -230,7 +280,12 @@ class Orchestrator:
                                       f"regime={sig['regime']}",
                                       votes=engine.per_strategy.get(p, {}),
                                       regime_at_entry=sig["regime"])
+                    self._audit(sig, "explore" if pos is not None else "reject",
+                                "probe opened" if pos is not None else "broker rejected probe",
+                                size_pre=notional,
+                                size_post=(pos["qty"] * pos["entry"]) if pos else 0.0)
                     if pos is not None:
+                        guardian.note_entry()
                         try:
                             from .alerts import notify_trade_open
                             notify_trade_open(pos)
@@ -280,6 +335,7 @@ class Orchestrator:
                 * pos["qty"] for p, pos in broker.positions.items()), 2),
             "risk": self.last_risk_status,
             "stance": stance.current(),
+            "guardian": guardian.snapshot(),
             "hedge": hedger.snapshot(),
             "macro_blackout": _calendar_stats(),
             "regime": market.regime(),

@@ -17,6 +17,7 @@ from .execution.shadow import ShadowBroker
 from .risk.manager import risk
 from .learn.loop import learner
 from .orchestrator import orch
+from .guardian import guardian
 from .backtest.engine import full_report
 from .backtest.composite import composite_report
 from . import persistence
@@ -105,6 +106,17 @@ def oms_data():
     """Order-management state + append-only order/fill audit trail."""
     return {"stats": shadow.oms.stats(),
             "recent_order_events": db.order_events(limit=60)}
+
+
+@app.get("/api/decisions")
+def decisions_data(limit: int = 100, product: str = None, action: str = None):
+    """Cycle-level decision audit trail — every candidate considered, its
+    composite/confidence, the chosen action, the reason (e.g. the gate that
+    blocked it) and the notional BEFORE and AFTER the risk cage clamped it.
+    This is the "no position without a paper trail" record: it answers
+    'why did nothing trade / why was it sized so small' from history."""
+    return {"decisions": db.recent_decisions(min(limit, 500), product, action),
+            "guardian": guardian.snapshot()}
 
 
 @app.get("/api/security")
