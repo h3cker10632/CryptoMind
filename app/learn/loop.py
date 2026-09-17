@@ -210,6 +210,14 @@ class Learner:
         under the regime at entry. Losses directly demote the strategies
         that caused them — including trades that were directionally right
         but net-negative after costs."""
+        # DIRECTION LEARNER: always learn the realized (regime, direction) edge,
+        # even for trades with no vote record (e.g. hedge legs) — this is what
+        # teaches the system which SIDE has actually paid per regime.
+        try:
+            from .direction import direction_learner
+            direction_learner.on_trade_closed(trade)
+        except Exception:
+            pass
         votes = trade.get("votes") or {}
         if not votes:
             return
@@ -433,9 +441,27 @@ class Learner:
             "trade_attributions": self.trade_attributions,
             "evolution": evolution.stats(),
             "llm_advisor": self._llm_advisor_stats(),
+            "exit_advisor": self._exit_advisor_stats(),
+            "direction": self._direction_stats(),
             "last_run": self.last_run,
             "last_cycle": self.last_cycle,
         }
+
+    @staticmethod
+    def _exit_advisor_stats():
+        try:
+            from .exit_advisor import exit_advisor
+            return exit_advisor.stats()
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _direction_stats():
+        try:
+            from .direction import direction_learner
+            return direction_learner.stats()
+        except Exception:
+            return {}
 
     @staticmethod
     def _llm_advisor_stats():

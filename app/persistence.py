@@ -154,6 +154,8 @@ def capture():
             "champion_reports": evolution.champion_reports,
             "last_attempt": evolution.last_attempt,
         },
+        "exit_advisor": _capture_exit_advisor(),
+        "direction": _capture_direction(),
         "universe": {
             "products": list(PRODUCTS),
             "mention_heat": universe.mention_heat,
@@ -165,6 +167,16 @@ def capture():
         "research": _capture_research(),
         "calendar": _capture_calendar(),
     }
+
+
+def _capture_exit_advisor():
+    from .learn.exit_advisor import exit_advisor
+    return exit_advisor.capture()
+
+
+def _capture_direction():
+    from .learn.direction import direction_learner
+    return direction_learner.capture()
 
 
 def _capture_hedge():
@@ -356,6 +368,18 @@ def load():
         # back-fill portfolios for champions saved before portfolios existed
         for prod, g in evolution.champions.items():
             evolution.champion_portfolios.setdefault(prod, [g])
+
+        # exit advisor + direction learner (new self-learning subsystems)
+        try:
+            from .learn.exit_advisor import exit_advisor
+            exit_advisor.restore(s.get("exit_advisor"))
+        except Exception:
+            pass
+        try:
+            from .learn.direction import direction_learner
+            direction_learner.restore(s.get("direction"))
+        except Exception:
+            pass
 
         u = s.get("universe", {})
         universe.mention_heat = u.get("mention_heat", {})

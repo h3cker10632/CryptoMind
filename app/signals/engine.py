@@ -261,6 +261,19 @@ class SignalEngine:
                 confidence = min(1.0, abs(composite) * (0.4 + 0.6 * agree) * (0.6 + 0.4 * breadth))
             else:
                 composite, confidence = 0.0, 0.0
+            # DIRECTION LEARNER: nudge the composite toward whichever side has
+            # actually paid in this regime (learned from realized net PnL), so a
+            # regime where shorts keep losing stops producing marginal shorts.
+            # A bias can flip only a marginal call; strong signal still wins.
+            from ..learn.direction import direction_learner
+            mtf_align = f.get("mtf_align", 0.0)
+            adj_composite, dir_flipped = direction_learner.adjust(
+                regime.get("label", "unknown"), composite, mtf_align)
+            composite = adj_composite
+            if confidence == 0.0 and composite != 0.0:
+                # bias created a lean from a dead-flat composite; give it a small
+                # floor confidence so it can be evaluated by the gate normally.
+                confidence = min(1.0, abs(composite) * 0.5)
             direction = 1 if composite > 0 else -1
             # MODEL-UNCERTAINTY sizing hint (Phase 3): when the online committee
             # voted, expose its confidence so the risk manager can shrink the
@@ -273,12 +286,19 @@ class SignalEngine:
             from ..risk.stance import stance
             shorts_ok = app_settings.get("allow_shorts")
             dir_ok = direction > 0 or shorts_ok
+            # MULTI-TIMEFRAME VETO: never open AGAINST a strongly-aligned higher-
+            # timeframe trend (the "should have been a long" mistake). Vetoed
+            # signals are made non-actionable rather than flipped.
+            vetoed, veto_why = direction_learner.veto(direction, mtf_align)
+            if vetoed:
+                dir_ok = False
             gate = stance.current()["conf_gate"]     # stance-adjusted MIN_CONFIDENCE
             out[p] = Signal(
                 product=p, direction=direction, confidence=round(confidence, 3),
                 composite=round(composite, 3),
                 ml_confidence=round(ml_conf, 3),
                 edge_bps=round(composite * 25, 1),
+                dir_flipped=dir_flipped, mtf_veto=veto_why,
                 actionable=confidence >= gate and dir_ok,
                 explorable=(tv("explore_min_confidence") <= confidence < gate
                             and dir_ok),

@@ -178,6 +178,15 @@ class Orchestrator:
                 except Exception as e:
                     db.log_event("error", f"shadow close mirror failed: {e}")
 
+        # 5b. PREDICTIVE LOSS-CUT — after the hard stops/targets, ask the exit
+        # advisor whether any losing position is expected to keep going against
+        # us; if so, cut it early. This runs AFTER broker.manage so the hard
+        # stop/take-profit/liquidation always take precedence.
+        try:
+            self._manage_exit_advisor(market, regime, signals)
+        except Exception as e:
+            db.log_event("error", f"exit advisor failed: {e}")
+
         # 6. exits on signal flip (direction-aware: close a long on a
         # confident bearish signal, close a short on a confident bullish one)
         for p in list(broker.positions.keys()):
@@ -315,6 +324,15 @@ class Orchestrator:
 
         # 8. equity log + periodic self-improvement
         db.log_equity(equity, broker.cash, broker.exposure(market))
+        # score the exit advisor's matured hold-vs-cut decisions against what
+        # price actually did next (counterfactual learning), using the learner's
+        # price history as the lookup.
+        try:
+            from .learn.exit_advisor import exit_advisor
+            exit_advisor.score_pending(
+                lambda prod, ts: learner._price_at(prod, ts, market))
+        except Exception as e:
+            db.log_event("error", f"exit advisor scoring failed: {e}")
         if self.tick_count % 9 == 0:    # every ~3 min
             learner.run(market, regime)
 
@@ -326,6 +344,81 @@ class Orchestrator:
                 asyncio.get_running_loop().run_in_executor(None, persistence.save)
             except RuntimeError:
                 persistence.save()
+
+    def _manage_exit_advisor(self, market, regime, signals):
+        """Consult the self-learning exit advisor for every open (non-hedge)
+        position and cut losers it confidently expects to keep bleeding.
+
+        The advisor learns from the counterfactual next-horizon move, so each
+        consultation is also RECORDED for scoring later. Nothing here overrides
+        the hard stop/target (already applied in broker.manage above)."""
+        from .learn.exit_advisor import exit_advisor
+        from .learn.online_model import model, committee, build_x
+        from .data.derivatives import derivatives
+        from .nlp.sentiment import nlp
+        if not exit_advisor._enabled():
+            return
+        for p in list(broker.positions.keys()):
+            pos = broker.positions[p]
+            if pos.get("hedge"):
+                continue
+            # respect the same min-hold that governs signal-flip exits
+            if time.time() - pos.get("opened", 0) < tv("min_hold_sec"):
+                continue
+            px = market.price(p)
+            f = market.features(p)
+            if px is None or not f:
+                continue
+            side = pos.get("side", 1)
+            entry = pos["entry"]
+            unrealized_pct = side * (px / entry - 1)
+            atr_pct = (f.get("atr_swing") or f.get("atr") or 0.0) / px if px else 0.0
+            # model forward view, rotated into the POSITION frame
+            ml_pos = 0.0
+            if model.n_updates >= 40:
+                acc = model.stats().get("directional_accuracy")
+                if acc is not None and acc > 0.50:
+                    asset_sent, _ = nlp.asset_score(p)
+                    x = build_x(f, asset_sent, nlp.market_sentiment,
+                                derivatives.features(p))
+                    raw = committee.predict(x)
+                    ml_pos = side * raw * 0.004      # scale units -> ~return
+            # record context for counterfactual learning, then decide (both use
+            # the SAME position-frame ml view so the learned state matches)
+            exit_advisor.record(p, side, px, unrealized_pct, ml_pos,
+                                regime, atr_pct)
+            action, reason, _ = exit_advisor.decide(
+                p, side, unrealized_pct, ml_pos, regime, atr_pct)
+            if action == "cut":
+                t = broker.sell(p, px, f"exit-advisor cut: {reason}")
+                if t:
+                    exit_advisor.note_cut()
+                    risk.on_trade_closed(t)
+                    learner.on_trade_closed(t)
+                    db.log_event("learn", f"✂️ Loss-cut {p} ({reason})")
+                    try:
+                        db.log_decision(
+                            self.tick_count, p, side, 0.0, 0.0, 1.0,
+                            "loss_cut", reason,
+                            size_pre=pos["qty"] * entry, size_post=0.0,
+                            regime=regime.get("label"))
+                    except Exception:
+                        pass
+                    if self.shadow is not None and p in self.shadow.positions:
+                        try:
+                            self.shadow.mirror_close(p, px)
+                        except Exception:
+                            pass
+
+    @staticmethod
+    def _exit_advisor_snapshot():
+        try:
+            from .learn.exit_advisor import exit_advisor
+            s = exit_advisor.stats()
+            return {"enabled": s.get("enabled"), "cuts": s.get("cuts"),
+                    "states_learned": s.get("states_learned")}
+        except Exception:
+            return {}
 
     def snapshot(self):
         eq = broker.equity(market)
@@ -352,6 +445,7 @@ class Orchestrator:
             "risk": self.last_risk_status,
             "stance": stance.current(),
             "guardian": guardian.snapshot(),
+            "exit_advisor": self._exit_advisor_snapshot(),
             "hedge": hedger.snapshot(),
             "macro_blackout": _calendar_stats(),
             "regime": market.regime(),

@@ -109,6 +109,30 @@ TUNABLES = {
                            "update posteriors)"),
     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
+    # ---- predictive loss-cut exit advisor ----
+    "exit_cut_threshold": T(0.004, 0.001, 0.05, 0.001, "learning", "Loss-cut threshold",
+                           "Cut a losing position when its blended expected next-"
+                           "horizon return (model + learned state value) is more "
+                           "adverse than this fraction"),
+    "exit_min_loss_pct": T(0.003, 0.0, 0.05, 0.001, "learning", "Loss-cut min loss",
+                           "Only the predictive loss-cut can fire once a position "
+                           "is at least this far underwater (buffer vs noise)"),
+    "exit_ml_weight":    T(1.0, 0.0, 3.0, 0.1, "learning", "Loss-cut model weight",
+                           "How strongly the ML forward view counts vs the learned "
+                           "state value in the cut decision"),
+    "exit_horizon_sec":  T(1800, 300, 14400, 60, "learning", "Loss-cut learn horizon (s)",
+                           "Forward window used to score hold-vs-cut decisions "
+                           "against what price actually did next", True),
+    # ---- direction (long vs short) learner ----
+    "direction_bias_gain": T(8.0, 0.0, 30.0, 0.5, "learning", "Direction bias gain",
+                           "How strongly the learned per-regime directional edge "
+                           "nudges the composite toward the side that has paid"),
+    "direction_bias_cap": T(0.25, 0.0, 0.8, 0.05, "learning", "Direction bias cap",
+                           "Maximum absolute nudge the direction learner may add "
+                           "to a composite (keeps it a tie-breaker, not an override)"),
+    "mtf_veto_align":    T(0.75, 0.34, 1.0, 0.01, "learning", "HTF direction veto",
+                           "Block entries that fight the higher-timeframe trend when "
+                           "|mtf_align| is at least this (1.0 disables the veto)"),
     "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
                            "Seconds between LLM-advisor lean refreshes (only when "
                            "the advisor is enabled + a key is configured)", True),

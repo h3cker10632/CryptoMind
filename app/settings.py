@@ -26,6 +26,10 @@ DEFAULTS = {
     # directional vote that the bandit weights like any other strategy — it is
     # never the driver. Off by default: no key, no cost, no effect.
     "llm_advisor_enabled": False,
+    # Predictive, self-learning early loss-cut. When True, a losing position the
+    # system confidently expects to keep moving against it is cut before the
+    # hard stop. Learns hold-vs-cut per market state from realized outcomes.
+    "exit_advisor_enabled": True,
 }
 
 STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}

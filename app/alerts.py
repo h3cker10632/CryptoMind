@@ -595,6 +595,33 @@ def _cmd_brains():
     out.append(f"• Feature drift (PSI): {'yes' if learner.drift_state.get('drifting') else 'no'}"
                f"   error drift (Page-Hinkley): {ph.get('concept_drift_events', 0)} events")
     out.append("")
+    out.append("*Loss-cut exit advisor*")
+    try:
+        est = learner._exit_advisor_stats()
+        out.append(f"• States learned: {est.get('states_learned', 0)}   "
+                   f"cuts made: {est.get('cuts', 0)}   "
+                   f"updates: {est.get('updates', 0)}")
+        worst = est.get("worst_hold_states") or []
+        if worst:
+            w = worst[0]
+            out.append(f"• Worst hold state: {w['state']} "
+                       f"(next {w['mean_next_return']*100:+.2f}%, n={w['n']})")
+    except Exception:
+        out.append("• (initialising)")
+    out.append("")
+    out.append("*Direction learner (long vs short)*")
+    try:
+        dst = learner._direction_stats()
+        out.append(f"• Flips: {dst.get('flips', 0)}   "
+                   f"HTF vetoes: {dst.get('vetoes', 0)}   "
+                   f"updates: {dst.get('updates', 0)}")
+        for reg, sides in list((dst.get("regime_edge") or {}).items())[:3]:
+            parts = [f"{k} {v['mean_net']*100:+.2f}%(n{v['n']})"
+                     for k, v in sides.items()]
+            out.append(f"• {reg}: " + ", ".join(parts))
+    except Exception:
+        out.append("• (initialising)")
+    out.append("")
     out.append("*GA evolution*")
     ports = evolution.champion_portfolios or {}
     if champs:
