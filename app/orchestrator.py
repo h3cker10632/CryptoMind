@@ -14,6 +14,7 @@ from .learn.loop import learner
 from .risk.stance import stance
 from .strategies.hedge import hedger
 from .guardian import guardian
+from .guardian import guardian
 
 
 def _calendar_stats():
@@ -39,12 +40,20 @@ class Orchestrator:
             guardian.preflight()
         except Exception as e:
             db.log_event("error", f"Preflight failed to run: {e}")
+        # LAUNCH PREFLIGHT — verify preconditions before the loop is trusted to
+        # open positions. A non-pass keeps the guardian in safe mode (entries
+        # held, open risk still managed) until health is genuinely restored.
+        try:
+            guardian.preflight()
+        except Exception as e:
+            db.log_event("error", f"Preflight failed to run: {e}")
         consecutive_failures = 0
         while True:
             try:
                 self.tick()
                 self.last_tick_ts = time.time()
                 consecutive_failures = 0
+                guardian.on_cycle(True, market=market)
                 guardian.on_cycle(True, market=market)
             except Exception as e:
                 consecutive_failures += 1
@@ -86,6 +95,22 @@ class Orchestrator:
                 db.log_event("warn", f"LLM advisor loop error: {e}")
             await asyncio.sleep(30)
 
+    async def llm_advisor_loop(self):
+        """Refresh the optional LLM advisor's lean cache OFF the hot decision
+        path. No-ops entirely (and cheaply) unless the advisor is enabled and a
+        key is configured; a failure here can never affect trading."""
+        from .learn.llm_advisor import advisor
+        from .data.research import research
+        from .config import PRODUCTS
+        await asyncio.sleep(30)
+        while True:
+            try:
+                if advisor.configured():
+                    await advisor.refresh(market, nlp, list(PRODUCTS))
+            except Exception as e:
+                db.log_event("warn", f"LLM advisor loop error: {e}")
+            await asyncio.sleep(30)
+
     async def reconcile_loop(self):
         """Periodically reconcile the shadow OMS against its venue (source of
         truth) and prune the equity table. Runs off the hot decision path."""
@@ -99,9 +124,24 @@ class Orchestrator:
                 if n % 30 == 0:          # ~ every 30 min: retention on equity
                     await asyncio.to_thread(db.prune_equity)
                     await asyncio.to_thread(db.prune_decisions)
+                    await asyncio.to_thread(db.prune_decisions)
             except Exception as e:
                 db.log_event("error", f"reconcile loop failed: {e}")
             await asyncio.sleep(60)
+
+    def _audit(self, sig, action, reason, size_pre=0.0, size_post=0.0):
+        """Write one decision-audit row (NOFX "no position without a paper
+        trail"). Never let a logging failure break the decision loop."""
+        try:
+            db.log_decision(
+                self.tick_count, sig["product"], sig["direction"],
+                sig.get("composite", 0.0), sig.get("confidence", 0.0),
+                sig.get("ml_confidence", 1.0), action, reason,
+                size_pre=size_pre, size_post=size_post,
+                regime=sig.get("regime"),
+                votes=engine.per_strategy.get(sig["product"], {}))
+        except Exception:
+            pass
 
     def _audit(self, sig, action, reason, size_pre=0.0, size_post=0.0):
         """Write one decision-audit row (NOFX "no position without a paper
@@ -198,6 +238,11 @@ class Orchestrator:
             age = time.time() - broker.positions[p].get("opened", 0)
             if age < tv("min_hold_sec"):
                 continue
+            # MIN-HOLD: don't let a signal flip churn a position out on the same
+            # (or next) tick it opened — its hard stop/target still protect it.
+            age = time.time() - broker.positions[p].get("opened", 0)
+            if age < tv("min_hold_sec"):
+                continue
             if sig["direction"] * side < 0 and sig["confidence"] > 0.5:
                 t = broker.sell(p, market.price(p), "signal flip")
                 if t:
@@ -217,12 +262,21 @@ class Orchestrator:
                 if not gok:
                     self._audit(sig, "skip", gwhy)
                     continue
+                # GUARDIAN gate — safe mode + per-hour entry cap, checked BEFORE
+                # per-product risk gates. A deterministic "no new risk" veto
+                # independent of the learner (NOFX "runtime disposes").
+                gok, gwhy = guardian.can_enter()
+                if not gok:
+                    self._audit(sig, "skip", gwhy)
+                    continue
                 ok, why = risk.can_open(p, broker, market, market.healthy)
                 if not ok:
+                    self._audit(sig, "skip", why)
                     self._audit(sig, "skip", why)
                     continue
                 ok, why = risk.funding_gate(p, sig["direction"])
                 if not ok:
+                    self._audit(sig, "skip", why)
                     self._audit(sig, "skip", why)
                     continue
                 notional, stop, take = risk.size(
@@ -230,6 +284,9 @@ class Orchestrator:
                     self.last_risk_status, direction=sig["direction"], product=p,
                     ml_confidence=sig.get("ml_confidence", 1.0))
                 if notional < tv("min_notional"):
+                    self._audit(sig, "skip",
+                                f"notional ${notional:,.0f} below min "
+                                f"${tv('min_notional')}", size_pre=notional)
                     self._audit(sig, "skip",
                                 f"notional ${notional:,.0f} below min "
                                 f"${tv('min_notional')}", size_pre=notional)
@@ -248,7 +305,12 @@ class Orchestrator:
                             "opened" if pos is not None else "broker rejected fill",
                             size_pre=notional,
                             size_post=(pos["qty"] * pos["entry"]) if pos else 0.0)
+                self._audit(sig, "enter" if pos is not None else "reject",
+                            "opened" if pos is not None else "broker rejected fill",
+                            size_pre=notional,
+                            size_post=(pos["qty"] * pos["entry"]) if pos else 0.0)
                 if pos is not None:
+                    guardian.note_entry()
                     guardian.note_entry()
                     # rich open notification (Telegram/webhook) with full detail
                     try:
@@ -279,6 +341,9 @@ class Orchestrator:
                     gok, gwhy = guardian.can_enter()
                     if not gok:
                         continue
+                    gok, gwhy = guardian.can_enter()
+                    if not gok:
+                        continue
                     ok, why = risk.can_open(p, broker, market, market.healthy)
                     if not ok:
                         continue
@@ -303,7 +368,12 @@ class Orchestrator:
                                 "probe opened" if pos is not None else "broker rejected probe",
                                 size_pre=notional,
                                 size_post=(pos["qty"] * pos["entry"]) if pos else 0.0)
+                    self._audit(sig, "explore" if pos is not None else "reject",
+                                "probe opened" if pos is not None else "broker rejected probe",
+                                size_pre=notional,
+                                size_post=(pos["qty"] * pos["entry"]) if pos else 0.0)
                     if pos is not None:
+                        guardian.note_entry()
                         guardian.note_entry()
                         try:
                             from .alerts import notify_trade_open
@@ -354,6 +424,7 @@ class Orchestrator:
                 * pos["qty"] for p, pos in broker.positions.items()), 2),
             "risk": self.last_risk_status,
             "stance": stance.current(),
+            "guardian": guardian.snapshot(),
             "guardian": guardian.snapshot(),
             "hedge": hedger.snapshot(),
             "macro_blackout": _calendar_stats(),

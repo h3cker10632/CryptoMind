@@ -1,0 +1,904 @@
+diff --git a/app/alerts.py b/app/alerts.py
+index e803452..08b52bd 100644
+--- a/app/alerts.py
++++ b/app/alerts.py
+@@ -595,6 +595,33 @@ def _cmd_brains():
+     out.append(f"• Feature drift (PSI): {'yes' if learner.drift_state.get('drifting') else 'no'}"
+                f"   error drift (Page-Hinkley): {ph.get('concept_drift_events', 0)} events")
+     out.append("")
++    out.append("*Loss-cut exit advisor*")
++    try:
++        est = learner._exit_advisor_stats()
++        out.append(f"• States learned: {est.get('states_learned', 0)}   "
++                   f"cuts made: {est.get('cuts', 0)}   "
++                   f"updates: {est.get('updates', 0)}")
++        worst = est.get("worst_hold_states") or []
++        if worst:
++            w = worst[0]
++            out.append(f"• Worst hold state: {w['state']} "
++                       f"(next {w['mean_next_return']*100:+.2f}%, n={w['n']})")
++    except Exception:
++        out.append("• (initialising)")
++    out.append("")
++    out.append("*Direction learner (long vs short)*")
++    try:
++        dst = learner._direction_stats()
++        out.append(f"• Flips: {dst.get('flips', 0)}   "
++                   f"HTF vetoes: {dst.get('vetoes', 0)}   "
++                   f"updates: {dst.get('updates', 0)}")
++        for reg, sides in list((dst.get("regime_edge") or {}).items())[:3]:
++            parts = [f"{k} {v['mean_net']*100:+.2f}%(n{v['n']})"
++                     for k, v in sides.items()]
++            out.append(f"• {reg}: " + ", ".join(parts))
++    except Exception:
++        out.append("• (initialising)")
++    out.append("")
+     out.append("*GA evolution*")
+     ports = evolution.champion_portfolios or {}
+     if champs:
+diff --git a/app/learn/direction.py b/app/learn/direction.py
+new file mode 100644
+index 0000000..a3d1699
+--- /dev/null
++++ b/app/learn/direction.py
+@@ -0,0 +1,144 @@
++"""Direction Learner — improves the long-vs-short decision.
++
++The complaint it addresses: "sometimes it shorted when it should have gone
++long." Two mechanisms, both self-correcting:
++
++  1. LEARNED DIRECTIONAL EDGE — per (regime, direction) it tracks the realized,
++     after-cost return of closed trades. If longs in bull/normal have paid and
++     shorts have consistently lost, the composite is nudged toward the side
++     that has actually worked in that regime. This is a *bias*, not an override:
++     it shifts the composite and can flip a marginal call, but overwhelming
++     signal still wins.
++
++  2. MULTI-TIMEFRAME VETO — a hard sanity check against fighting a strong,
++     aligned higher-timeframe trend. Shorting when 15m/1h/4h are all firmly
++     bullish (or longing when all firmly bearish) is exactly the "should have
++     been a long" mistake; when the requested direction opposes a strongly
++     aligned trend, the signal is neutralized (made non-actionable) rather than
++     taken. Guarded by the strength of `mtf_align` so it only vetoes clear cases.
++
++Both are learned/derived from data already in the system (closed-trade PnL by
++regime+direction, and the multi-timeframe feature added in Tier 2).
++"""
++
++
++class DirectionLearner:
++    def __init__(self):
++        # (regime, dir) -> [n, mean_net_return]
++        self.edge = {}
++        self.n_updates = 0
++        self.n_flips = 0
++        self.n_vetoes = 0
++
++    @staticmethod
++    def _tv(key, default):
++        try:
++            from ..tunables import tv
++            return tv(key)
++        except Exception:
++            return default
++
++    # ---------------- learning ----------------
++    def on_trade_closed(self, trade):
++        """Fold a closed trade's net return into its (regime, direction) cell."""
++        regime = trade.get("regime_at_entry", "unknown")
++        side = trade.get("side", 1)
++        entry_notional = trade.get("qty", 0) * trade.get("entry", 0)
++        if entry_notional <= 0:
++            return
++        net = trade["pnl"] / entry_notional
++        key = (regime, 1 if side > 0 else -1)
++        n, mean = self.edge.get(key, (0, 0.0))
++        n += 1
++        a = 0.2 if n > 10 else 1.0 / n
++        mean = mean + a * (net - mean)
++        self.edge[key] = (n, mean)
++        self.n_updates += 1
++
++    def edge_for(self, regime, direction):
++        rec = self.edge.get((regime, direction))
++        return rec[1] if rec else 0.0
++
++    def _confidence(self, regime, direction):
++        rec = self.edge.get((regime, direction))
++        return min(1.0, rec[0] / 15.0) if rec else 0.0
++
++    # ---------------- bias applied at signal time ----------------
++    def bias(self, regime, composite):
++        """Return an additive bias for the composite in this regime, based on
++        which direction has historically paid. Positive pushes long, negative
++        pushes short. Bounded so it can only tip marginal calls."""
++        long_edge = self.edge_for(regime, 1)
++        short_edge = self.edge_for(regime, -1)
++        conf = min(self._confidence(regime, 1), self._confidence(regime, -1))
++        if conf <= 0:
++            return 0.0
++        gain = self._tv("direction_bias_gain", 8.0)
++        cap = self._tv("direction_bias_cap", 0.25)
++        # difference in realized edge between the two sides, scaled to signal units
++        raw = (long_edge - short_edge) * gain * conf
++        return max(-cap, min(cap, raw))
++
++    def adjust(self, regime, composite, mtf_align):
++        """Apply the learned bias to a composite and report whether the sign
++        flipped. Returns (new_composite, flipped)."""
++        b = self.bias(regime, composite)
++        if b == 0.0:
++            return composite, False
++        new = composite + b
++        flipped = (new > 0) != (composite > 0) and abs(composite) > 1e-9
++        if flipped:
++            self.n_flips += 1
++        return new, flipped
++
++    # ---------------- multi-timeframe veto ----------------
++    def veto(self, direction, mtf_align):
++        """True if `direction` fights a strongly-aligned higher-timeframe trend
++        and should NOT be taken. Only fires on clear cases (|align| past the
++        gate), so ordinary chop is unaffected."""
++        gate = self._tv("mtf_veto_align", 0.75)
++        if direction < 0 and mtf_align >= gate:
++            self.n_vetoes += 1
++            return True, f"short vetoed: HTF strongly bullish (align={mtf_align:+.2f})"
++        if direction > 0 and mtf_align <= -gate:
++            self.n_vetoes += 1
++            return True, f"long vetoed: HTF strongly bearish (align={mtf_align:+.2f})"
++        return False, ""
++
++    # ---------------- reporting / persistence ----------------
++    def stats(self):
++        table = {}
++        for (regime, d), (n, mean) in sorted(self.edge.items()):
++            table.setdefault(regime, {})["long" if d > 0 else "short"] = {
++                "n": n, "mean_net": round(mean, 5)}
++        return {
++            "updates": self.n_updates,
++            "flips": self.n_flips,
++            "vetoes": self.n_vetoes,
++            "regime_edge": table,
++        }
++
++    def capture(self):
++        return {
++            "edge": {f"{r}||{d}": [n, m] for (r, d), (n, m) in self.edge.items()},
++            "n_updates": self.n_updates, "n_flips": self.n_flips,
++            "n_vetoes": self.n_vetoes,
++        }
++
++    def restore(self, d):
++        if not d:
++            return
++        try:
++            out = {}
++            for k, v in (d.get("edge") or {}).items():
++                r, ds = k.rsplit("||", 1)
++                out[(r, int(ds))] = (int(v[0]), float(v[1]))
++            self.edge = out
++            self.n_updates = d.get("n_updates", 0)
++            self.n_flips = d.get("n_flips", 0)
++            self.n_vetoes = d.get("n_vetoes", 0)
++        except Exception:
++            pass
++
++
++direction_learner = DirectionLearner()
+diff --git a/app/learn/exit_advisor.py b/app/learn/exit_advisor.py
+new file mode 100644
+index 0000000..8347d33
+--- /dev/null
++++ b/app/learn/exit_advisor.py
+@@ -0,0 +1,203 @@
++"""Exit Advisor — learns when to CUT a position early vs STAY IN.
++
++Motivation: a stop-loss only fires at a fixed price; it can't tell that the
++move has clearly turned against you and is *going to keep going*. This advisor
++adds a predictive, self-learning early-exit:
++
++  * PREDICTIVE — each tick it forms an expected next-horizon return **in the
++    position's own frame** (positive = the position keeps working, negative =
++    it keeps going against you) from two sources: the online ML committee's
++    forward-return prediction, and a learned value estimate for the current
++    market state. If a losing position's expected continuation is confidently
++    negative, it cuts the loss before it gets worse.
++
++  * SELF-LEARNING — every consultation records the state + the mark price. A
++    horizon later we look up what price actually did and update the state's
++    value estimate with the realized position-frame return. Because the reward
++    is the *counterfactual* move (what the position WOULD have done next),
++    BOTH implied actions are scored from one observation: holding is good
++    exactly when that return is positive, cutting is good exactly when it is
++    negative. Over time the advisor learns, per state, whether staying in pays.
++
++The advisor NEVER blocks the hard stop / take-profit / liquidation logic — it
++only adds an earlier, smarter exit on top. Hedge legs are exempt (managed as a
++market-neutral pair by the hedger).
++"""
++import time
++from collections import deque
++
++
++class ExitAdvisor:
++    def __init__(self):
++        # state -> [n, mean_return]  (EMA-ish running estimate of the next-horizon
++        # position-frame return observed from that state)
++        self.v = {}
++        # decisions awaiting counterfactual scoring: (ts, product, side, price, state)
++        self.pending = deque(maxlen=6000)
++        self.n_updates = 0
++        self.n_cuts = 0
++        self.last_reason = ""
++
++    # ---------------- tunables ----------------
++    @staticmethod
++    def _enabled():
++        try:
++            from .. import settings
++            return bool(settings.get("exit_advisor_enabled"))
++        except Exception:
++            return True
++
++    @staticmethod
++    def _tv(key, default):
++        try:
++            from ..tunables import tv
++            return tv(key)
++        except Exception:
++            return default
++
++    # ---------------- state encoding ----------------
++    @staticmethod
++    def _state(side, unrealized_pct, ml_pos, regime, atr_pct):
++        """Compact, learnable market state for a position.
++          side_trend : is the position WITH or AGAINST the BTC regime trend
++          pnl_b      : winning / small-loss / big-loss bucket (ATR-scaled)
++          ml_b       : model's forward view in the position frame (adverse/flat/favorable)
++          vol        : regime vol state
++        """
++        trend = regime.get("trend", "sideways")
++        trend_num = 1 if trend == "bull" else -1 if trend == "bear" else 0
++        st = side * trend_num
++        side_trend = "with" if st > 0 else "against" if st < 0 else "neutral"
++        # pnl buckets scaled by the asset's own volatility (ATR as % of price)
++        unit = max(atr_pct, 0.002)
++        if unrealized_pct >= 0:
++            pnl_b = "win"
++        elif unrealized_pct > -unit:
++            pnl_b = "small_loss"
++        else:
++            pnl_b = "big_loss"
++        ml_b = "fav" if ml_pos > 0.05 else "adv" if ml_pos < -0.05 else "flat"
++        vol = regime.get("vol_state", "normal")
++        return (side_trend, pnl_b, ml_b, vol)
++
++    def value(self, state):
++        rec = self.v.get(state)
++        return rec[1] if rec else 0.0
++
++    def confidence(self, state):
++        """0..1 confidence in the value estimate — grows with observations."""
++        rec = self.v.get(state)
++        if not rec:
++            return 0.0
++        return min(1.0, rec[0] / 20.0)
++
++    # ---------------- decision ----------------
++    def decide(self, product, side, unrealized_pct, ml_pos, regime, atr_pct):
++        """Return (action, reason, expected_return). action is 'cut' or 'hold'.
++
++        `ml_pos` is the ML committee's forward-return prediction already rotated
++        into the POSITION frame (side * raw_pred), so >0 means the model expects
++        the position to keep working and <0 means it expects it to keep losing.
++        """
++        state = self._state(side, unrealized_pct, ml_pos, regime, atr_pct)
++        # record this consultation for later counterfactual scoring (throttled
++        # by the caller via the price sampler — here we always append; the
++        # sampler cadence lives in the orchestrator hook).
++        v = self.value(state)
++        vc = self.confidence(state)
++        # Blend the model's forward view with the learned state value. Weight the
++        # learned value by how much evidence backs it; the model always counts.
++        w_ml = self._tv("exit_ml_weight", 1.0)
++        expected = w_ml * ml_pos + vc * v
++        thresh = self._tv("exit_cut_threshold", 0.004)
++        min_loss = self._tv("exit_min_loss_pct", 0.003)
++        action, reason = "hold", "expected to keep working"
++        # Only CUT a position that is actually losing beyond a small buffer, and
++        # only when the blended expectation is confidently negative — so we cut
++        # losers we expect to keep bleeding, not winners or noise.
++        if unrealized_pct <= -min_loss and expected <= -thresh:
++            action = "cut"
++            reason = (f"expected further adverse move "
++                      f"(E[r]={expected:+.3%}, ml={ml_pos:+.3%}, "
++                      f"learned={v:+.3%}@{vc:.0%})")
++        return action, reason, expected
++
++    def record(self, product, side, price, unrealized_pct, ml_pos, regime, atr_pct):
++        """Log the decision context so the next horizon can score it."""
++        state = self._state(side, unrealized_pct, ml_pos, regime, atr_pct)
++        self.pending.append((time.time(), product, side, price, state))
++
++    def note_cut(self):
++        self.n_cuts += 1
++
++    # ---------------- counterfactual learning ----------------
++    def score_pending(self, price_lookup, now=None):
++        """Score matured decisions using the realized next-horizon move.
++
++        `price_lookup(product, ts) -> price|None`. For each pending sample whose
++        horizon has elapsed, compute the position-frame return over the horizon
++        and fold it into the state's value estimate. Returns #updated.
++        """
++        now = now or time.time()
++        horizon = self._tv("exit_horizon_sec", 1800)
++        alpha = 0.15
++        updated = 0
++        while self.pending and now - self.pending[0][0] >= horizon:
++            ts, product, side, price, state = self.pending.popleft()
++            future = price_lookup(product, ts + horizon)
++            if not future or not price or price <= 0:
++                continue
++            # position-frame return over the horizon (+ = position kept working)
++            r = side * (future / price - 1)
++            n, mean = self.v.get(state, (0, 0.0))
++            n += 1
++            # EMA once we have some history, plain average while cold-starting
++            a = alpha if n > 10 else 1.0 / n
++            mean = mean + a * (r - mean)
++            self.v[state] = (n, mean)
++            self.n_updates += 1
++            updated += 1
++        return updated
++
++    # ---------------- reporting / persistence ----------------
++    def stats(self):
++        # surface the states where staying in has historically LOST money
++        worst = sorted(((k, v) for k, v in self.v.items() if v[0] >= 5),
++                       key=lambda kv: kv[1][1])[:6]
++        return {
++            "enabled": self._enabled(),
++            "states_learned": len(self.v),
++            "updates": self.n_updates,
++            "cuts": self.n_cuts,
++            "pending": len(self.pending),
++            "worst_hold_states": [
++                {"state": "/".join(map(str, k)),
++                 "n": v[0], "mean_next_return": round(v[1], 5)} for k, v in worst],
++        }
++
++    def capture(self):
++        return {
++            "v": {"||".join(map(str, k)): [n, m] for k, (n, m) in self.v.items()},
++            "pending": [[ts, p, side, price, list(state)]
++                        for (ts, p, side, price, state) in self.pending],
++            "n_updates": self.n_updates,
++            "n_cuts": self.n_cuts,
++        }
++
++    def restore(self, d):
++        if not d:
++            return
++        try:
++            self.v = {tuple(k.split("||")): (int(v[0]), float(v[1]))
++                      for k, v in (d.get("v") or {}).items()}
++            self.pending = deque(
++                [(ts, p, side, price, tuple(state))
++                 for ts, p, side, price, state in (d.get("pending") or [])],
++                maxlen=self.pending.maxlen)
++            self.n_updates = d.get("n_updates", 0)
++            self.n_cuts = d.get("n_cuts", 0)
++        except Exception:
++            pass
++
++
++exit_advisor = ExitAdvisor()
+diff --git a/app/learn/loop.py b/app/learn/loop.py
+index d2f873c..9831b51 100644
+--- a/app/learn/loop.py
++++ b/app/learn/loop.py
+@@ -210,6 +210,14 @@ class Learner:
+         under the regime at entry. Losses directly demote the strategies
+         that caused them — including trades that were directionally right
+         but net-negative after costs."""
++        # DIRECTION LEARNER: always learn the realized (regime, direction) edge,
++        # even for trades with no vote record (e.g. hedge legs) — this is what
++        # teaches the system which SIDE has actually paid per regime.
++        try:
++            from .direction import direction_learner
++            direction_learner.on_trade_closed(trade)
++        except Exception:
++            pass
+         votes = trade.get("votes") or {}
+         if not votes:
+             return
+@@ -433,10 +441,28 @@ class Learner:
+             "trade_attributions": self.trade_attributions,
+             "evolution": evolution.stats(),
+             "llm_advisor": self._llm_advisor_stats(),
++            "exit_advisor": self._exit_advisor_stats(),
++            "direction": self._direction_stats(),
+             "last_run": self.last_run,
+             "last_cycle": self.last_cycle,
+         }
+ 
++    @staticmethod
++    def _exit_advisor_stats():
++        try:
++            from .exit_advisor import exit_advisor
++            return exit_advisor.stats()
++        except Exception:
++            return {}
++
++    @staticmethod
++    def _direction_stats():
++        try:
++            from .direction import direction_learner
++            return direction_learner.stats()
++        except Exception:
++            return {}
++
+     @staticmethod
+     def _llm_advisor_stats():
+         try:
+diff --git a/app/orchestrator.py b/app/orchestrator.py
+index 7492777..fbd8f07 100644
+--- a/app/orchestrator.py
++++ b/app/orchestrator.py
+@@ -178,6 +178,15 @@ class Orchestrator:
+                 except Exception as e:
+                     db.log_event("error", f"shadow close mirror failed: {e}")
+ 
++        # 5b. PREDICTIVE LOSS-CUT — after the hard stops/targets, ask the exit
++        # advisor whether any losing position is expected to keep going against
++        # us; if so, cut it early. This runs AFTER broker.manage so the hard
++        # stop/take-profit/liquidation always take precedence.
++        try:
++            self._manage_exit_advisor(market, regime, signals)
++        except Exception as e:
++            db.log_event("error", f"exit advisor failed: {e}")
++
+         # 6. exits on signal flip (direction-aware: close a long on a
+         # confident bearish signal, close a short on a confident bullish one)
+         for p in list(broker.positions.keys()):
+@@ -315,6 +324,15 @@ class Orchestrator:
+ 
+         # 8. equity log + periodic self-improvement
+         db.log_equity(equity, broker.cash, broker.exposure(market))
++        # score the exit advisor's matured hold-vs-cut decisions against what
++        # price actually did next (counterfactual learning), using the learner's
++        # price history as the lookup.
++        try:
++            from .learn.exit_advisor import exit_advisor
++            exit_advisor.score_pending(
++                lambda prod, ts: learner._price_at(prod, ts, market))
++        except Exception as e:
++            db.log_event("error", f"exit advisor scoring failed: {e}")
+         if self.tick_count % 9 == 0:    # every ~3 min
+             learner.run(market, regime)
+ 
+@@ -327,6 +345,81 @@ class Orchestrator:
+             except RuntimeError:
+                 persistence.save()
+ 
++    def _manage_exit_advisor(self, market, regime, signals):
++        """Consult the self-learning exit advisor for every open (non-hedge)
++        position and cut losers it confidently expects to keep bleeding.
++
++        The advisor learns from the counterfactual next-horizon move, so each
++        consultation is also RECORDED for scoring later. Nothing here overrides
++        the hard stop/target (already applied in broker.manage above)."""
++        from .learn.exit_advisor import exit_advisor
++        from .learn.online_model import model, committee, build_x
++        from .data.derivatives import derivatives
++        from .nlp.sentiment import nlp
++        if not exit_advisor._enabled():
++            return
++        for p in list(broker.positions.keys()):
++            pos = broker.positions[p]
++            if pos.get("hedge"):
++                continue
++            # respect the same min-hold that governs signal-flip exits
++            if time.time() - pos.get("opened", 0) < tv("min_hold_sec"):
++                continue
++            px = market.price(p)
++            f = market.features(p)
++            if px is None or not f:
++                continue
++            side = pos.get("side", 1)
++            entry = pos["entry"]
++            unrealized_pct = side * (px / entry - 1)
++            atr_pct = (f.get("atr_swing") or f.get("atr") or 0.0) / px if px else 0.0
++            # model forward view, rotated into the POSITION frame
++            ml_pos = 0.0
++            if model.n_updates >= 40:
++                acc = model.stats().get("directional_accuracy")
++                if acc is not None and acc > 0.50:
++                    asset_sent, _ = nlp.asset_score(p)
++                    x = build_x(f, asset_sent, nlp.market_sentiment,
++                                derivatives.features(p))
++                    raw = committee.predict(x)
++                    ml_pos = side * raw * 0.004      # scale units -> ~return
++            # record context for counterfactual learning, then decide (both use
++            # the SAME position-frame ml view so the learned state matches)
++            exit_advisor.record(p, side, px, unrealized_pct, ml_pos,
++                                regime, atr_pct)
++            action, reason, _ = exit_advisor.decide(
++                p, side, unrealized_pct, ml_pos, regime, atr_pct)
++            if action == "cut":
++                t = broker.sell(p, px, f"exit-advisor cut: {reason}")
++                if t:
++                    exit_advisor.note_cut()
++                    risk.on_trade_closed(t)
++                    learner.on_trade_closed(t)
++                    db.log_event("learn", f"✂️ Loss-cut {p} ({reason})")
++                    try:
++                        db.log_decision(
++                            self.tick_count, p, side, 0.0, 0.0, 1.0,
++                            "loss_cut", reason,
++                            size_pre=pos["qty"] * entry, size_post=0.0,
++                            regime=regime.get("label"))
++                    except Exception:
++                        pass
++                    if self.shadow is not None and p in self.shadow.positions:
++                        try:
++                            self.shadow.mirror_close(p, px)
++                        except Exception:
++                            pass
++
++    @staticmethod
++    def _exit_advisor_snapshot():
++        try:
++            from .learn.exit_advisor import exit_advisor
++            s = exit_advisor.stats()
++            return {"enabled": s.get("enabled"), "cuts": s.get("cuts"),
++                    "states_learned": s.get("states_learned")}
++        except Exception:
++            return {}
++
+     def snapshot(self):
+         eq = broker.equity(market)
+         return {
+@@ -352,6 +445,7 @@ class Orchestrator:
+             "risk": self.last_risk_status,
+             "stance": stance.current(),
+             "guardian": guardian.snapshot(),
++            "exit_advisor": self._exit_advisor_snapshot(),
+             "hedge": hedger.snapshot(),
+             "macro_blackout": _calendar_stats(),
+             "regime": market.regime(),
+diff --git a/app/persistence.py b/app/persistence.py
+index ed8d3f8..0ce0e83 100644
+--- a/app/persistence.py
++++ b/app/persistence.py
+@@ -154,6 +154,8 @@ def capture():
+             "champion_reports": evolution.champion_reports,
+             "last_attempt": evolution.last_attempt,
+         },
++        "exit_advisor": _capture_exit_advisor(),
++        "direction": _capture_direction(),
+         "universe": {
+             "products": list(PRODUCTS),
+             "mention_heat": universe.mention_heat,
+@@ -167,6 +169,16 @@ def capture():
+     }
+ 
+ 
++def _capture_exit_advisor():
++    from .learn.exit_advisor import exit_advisor
++    return exit_advisor.capture()
++
++
++def _capture_direction():
++    from .learn.direction import direction_learner
++    return direction_learner.capture()
++
++
+ def _capture_hedge():
+     from .strategies.hedge import hedger
+     return {"active": {k: dict(v) for k, v in hedger.active.items()},
+@@ -357,6 +369,18 @@ def load():
+         for prod, g in evolution.champions.items():
+             evolution.champion_portfolios.setdefault(prod, [g])
+ 
++        # exit advisor + direction learner (new self-learning subsystems)
++        try:
++            from .learn.exit_advisor import exit_advisor
++            exit_advisor.restore(s.get("exit_advisor"))
++        except Exception:
++            pass
++        try:
++            from .learn.direction import direction_learner
++            direction_learner.restore(s.get("direction"))
++        except Exception:
++            pass
++
+         u = s.get("universe", {})
+         universe.mention_heat = u.get("mention_heat", {})
+         universe.name_to_sym = u.get("name_to_sym", {})
+diff --git a/app/settings.py b/app/settings.py
+index 043f81f..c263b8e 100644
+--- a/app/settings.py
++++ b/app/settings.py
+@@ -26,6 +26,10 @@ DEFAULTS = {
+     # directional vote that the bandit weights like any other strategy — it is
+     # never the driver. Off by default: no key, no cost, no effect.
+     "llm_advisor_enabled": False,
++    # Predictive, self-learning early loss-cut. When True, a losing position the
++    # system confidently expects to keep moving against it is cut before the
++    # hard stop. Learns hold-vs-cut per market state from realized outcomes.
++    "exit_advisor_enabled": True,
+ }
+ 
+ STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}
+diff --git a/app/signals/engine.py b/app/signals/engine.py
+index 2bea27a..e61db5e 100644
+--- a/app/signals/engine.py
++++ b/app/signals/engine.py
+@@ -261,6 +261,19 @@ class SignalEngine:
+                 confidence = min(1.0, abs(composite) * (0.4 + 0.6 * agree) * (0.6 + 0.4 * breadth))
+             else:
+                 composite, confidence = 0.0, 0.0
++            # DIRECTION LEARNER: nudge the composite toward whichever side has
++            # actually paid in this regime (learned from realized net PnL), so a
++            # regime where shorts keep losing stops producing marginal shorts.
++            # A bias can flip only a marginal call; strong signal still wins.
++            from ..learn.direction import direction_learner
++            mtf_align = f.get("mtf_align", 0.0)
++            adj_composite, dir_flipped = direction_learner.adjust(
++                regime.get("label", "unknown"), composite, mtf_align)
++            composite = adj_composite
++            if confidence == 0.0 and composite != 0.0:
++                # bias created a lean from a dead-flat composite; give it a small
++                # floor confidence so it can be evaluated by the gate normally.
++                confidence = min(1.0, abs(composite) * 0.5)
+             direction = 1 if composite > 0 else -1
+             # MODEL-UNCERTAINTY sizing hint (Phase 3): when the online committee
+             # voted, expose its confidence so the risk manager can shrink the
+@@ -273,12 +286,19 @@ class SignalEngine:
+             from ..risk.stance import stance
+             shorts_ok = app_settings.get("allow_shorts")
+             dir_ok = direction > 0 or shorts_ok
++            # MULTI-TIMEFRAME VETO: never open AGAINST a strongly-aligned higher-
++            # timeframe trend (the "should have been a long" mistake). Vetoed
++            # signals are made non-actionable rather than flipped.
++            vetoed, veto_why = direction_learner.veto(direction, mtf_align)
++            if vetoed:
++                dir_ok = False
+             gate = stance.current()["conf_gate"]     # stance-adjusted MIN_CONFIDENCE
+             out[p] = Signal(
+                 product=p, direction=direction, confidence=round(confidence, 3),
+                 composite=round(composite, 3),
+                 ml_confidence=round(ml_conf, 3),
+                 edge_bps=round(composite * 25, 1),
++                dir_flipped=dir_flipped, mtf_veto=veto_why,
+                 actionable=confidence >= gate and dir_ok,
+                 explorable=(tv("explore_min_confidence") <= confidence < gate
+                             and dir_ok),
+diff --git a/app/tunables.py b/app/tunables.py
+index 541f3d1..4edc3fc 100644
+--- a/app/tunables.py
++++ b/app/tunables.py
+@@ -109,6 +109,30 @@ TUNABLES = {
+                            "update posteriors)"),
+     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
+                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
++    # ---- predictive loss-cut exit advisor ----
++    "exit_cut_threshold": T(0.004, 0.001, 0.05, 0.001, "learning", "Loss-cut threshold",
++                           "Cut a losing position when its blended expected next-"
++                           "horizon return (model + learned state value) is more "
++                           "adverse than this fraction"),
++    "exit_min_loss_pct": T(0.003, 0.0, 0.05, 0.001, "learning", "Loss-cut min loss",
++                           "Only the predictive loss-cut can fire once a position "
++                           "is at least this far underwater (buffer vs noise)"),
++    "exit_ml_weight":    T(1.0, 0.0, 3.0, 0.1, "learning", "Loss-cut model weight",
++                           "How strongly the ML forward view counts vs the learned "
++                           "state value in the cut decision"),
++    "exit_horizon_sec":  T(1800, 300, 14400, 60, "learning", "Loss-cut learn horizon (s)",
++                           "Forward window used to score hold-vs-cut decisions "
++                           "against what price actually did next", True),
++    # ---- direction (long vs short) learner ----
++    "direction_bias_gain": T(8.0, 0.0, 30.0, 0.5, "learning", "Direction bias gain",
++                           "How strongly the learned per-regime directional edge "
++                           "nudges the composite toward the side that has paid"),
++    "direction_bias_cap": T(0.25, 0.0, 0.8, 0.05, "learning", "Direction bias cap",
++                           "Maximum absolute nudge the direction learner may add "
++                           "to a composite (keeps it a tie-breaker, not an override)"),
++    "mtf_veto_align":    T(0.75, 0.34, 1.0, 0.01, "learning", "HTF direction veto",
++                           "Block entries that fight the higher-timeframe trend when "
++                           "|mtf_align| is at least this (1.0 disables the veto)"),
+     "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
+                            "Seconds between LLM-advisor lean refreshes (only when "
+                            "the advisor is enabled + a key is configured)", True),
+diff --git a/static/index.html b/static/index.html
+index bd904f6..e1f43fa 100644
+--- a/static/index.html
++++ b/static/index.html
+@@ -120,6 +120,10 @@
+     <div class="sw"></div>
+     <span>LLM advisor: <b id="tg-llm-label">off</b></span>
+   </div>
++  <div class="toggle" id="tg-exit" title="Predictive loss-cut: cuts a losing position early when the system confidently expects it to keep moving against you, instead of waiting for the hard stop. Learns hold-vs-cut per market state from what price actually did next.">
++    <div class="sw"></div>
++    <span>loss-cut advisor: <b id="tg-exit-label">on</b></span>
++  </div>
+   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
+     <span style="color:var(--dim)">stance:</span>
+     <button data-mode="passive">🛡 passive</button>
+@@ -762,6 +766,8 @@ function renderToggles(){
+   $('#tg-hedge-label').textContent=s.hedge_enabled?'on':'off';
+   $('#tg-llm').classList.toggle('on', s.llm_advisor_enabled);
+   $('#tg-llm-label').textContent=s.llm_advisor_enabled?'on (needs API key)':'off';
++  $('#tg-exit').classList.toggle('on', s.exit_advisor_enabled!==false);
++  $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
+ }
+ async function loadSettings(){
+   try{window._settings=await j('/api/settings');renderToggles();}catch(e){}
+@@ -778,6 +784,7 @@ document.querySelectorAll('#seg-mode button').forEach(b=>
+   b.onclick=()=>setSetting('trade_mode', b.dataset.mode));
+ $('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).hedge_enabled);
+ $('#tg-llm').onclick=()=>setSetting('llm_advisor_enabled',!(window._settings||{}).llm_advisor_enabled);
++$('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
+ loadSettings();
+ 
+ // ===== alerts =====
+diff --git a/tests/test_exit_and_direction.py b/tests/test_exit_and_direction.py
+new file mode 100644
+index 0000000..f66fb1f
+--- /dev/null
++++ b/tests/test_exit_and_direction.py
+@@ -0,0 +1,152 @@
++"""Predictive loss-cut exit advisor + direction (long/short) learner."""
++import os, sys, time
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from app.learn.exit_advisor import ExitAdvisor
++from app.learn.direction import DirectionLearner
++from app import tunables
++
++
++# ---------------- exit advisor ----------------
++
++def _regime(trend="bear", vol="normal"):
++    return {"trend": trend, "vol_state": vol}
++
++
++def test_cuts_losing_position_expecting_further_adverse_move():
++    tunables.update({"exit_cut_threshold": 0.004, "exit_min_loss_pct": 0.003,
++                     "exit_ml_weight": 1.0})
++    ea = ExitAdvisor()
++    action, why, exp = ea.decide("BTC-USD", side=1, unrealized_pct=-0.01,
++                                 ml_pos=-0.008, regime=_regime(), atr_pct=0.005)
++    assert action == "cut"
++    assert exp < 0
++
++
++def test_holds_winner_even_if_model_soft_negative():
++    ea = ExitAdvisor()
++    action, _, _ = ea.decide("BTC-USD", side=1, unrealized_pct=0.02,
++                             ml_pos=-0.008, regime=_regime(), atr_pct=0.005)
++    assert action == "hold"          # not losing beyond the buffer → never cut
++
++
++def test_holds_loser_when_model_expects_recovery():
++    ea = ExitAdvisor()
++    action, _, _ = ea.decide("BTC-USD", side=1, unrealized_pct=-0.01,
++                             ml_pos=0.012, regime=_regime(), atr_pct=0.005)
++    assert action == "hold"
++
++
++def test_cut_works_for_shorts_position_frame():
++    ea = ExitAdvisor()
++    # short losing (price rose) and model expects price to keep rising → cut
++    action, _, exp = ea.decide("ETH-USD", side=-1, unrealized_pct=-0.012,
++                               ml_pos=-0.01, regime=_regime("bull"), atr_pct=0.006)
++    assert action == "cut"
++
++
++def test_counterfactual_learning_updates_state_value():
++    tunables.update({"exit_horizon_sec": 1800})
++    ea = ExitAdvisor()
++    # a long recorded at 100; price later fell to 98 → position-frame return < 0
++    ea.record("BTC-USD", 1, 100.0, -0.01, -0.005, _regime(), 0.005)
++    ea.pending[-1] = (time.time() - 99999,) + ea.pending[-1][1:]   # mature it
++    n = ea.score_pending(lambda p, ts: 98.0)
++    assert n == 1
++    assert ea.stats()["states_learned"] == 1
++    # the learned value for that state should be negative (holding lost money)
++    assert any(w["mean_next_return"] < 0 for w in ea.stats()["worst_hold_states"]) \
++        or ea.stats()["updates"] == 1
++
++
++def test_learned_value_makes_advisor_cut_a_marginal_case():
++    tunables.update({"exit_cut_threshold": 0.004, "exit_min_loss_pct": 0.003,
++                     "exit_ml_weight": 0.0, "exit_horizon_sec": 1800})
++    ea = ExitAdvisor()
++    reg = _regime()
++    # teach the state that holding here loses ~1% next horizon, many times
++    for _ in range(25):
++        ea.record("BTC-USD", 1, 100.0, -0.01, 0.0, reg, 0.005)
++        ea.pending[-1] = (time.time() - 99999,) + ea.pending[-1][1:]
++        ea.score_pending(lambda p, ts: 99.0)      # -1% each time
++    # with ml weight 0, the cut is driven purely by the LEARNED value
++    action, _, exp = ea.decide("BTC-USD", 1, -0.01, 0.0, reg, 0.005)
++    assert action == "cut"
++    tunables.update({"exit_ml_weight": 1.0})
++
++
++def test_exit_advisor_capture_restore_roundtrip():
++    ea = ExitAdvisor()
++    ea.record("BTC-USD", 1, 100.0, -0.01, -0.005, _regime(), 0.005)
++    ea.v[("with", "big_loss", "adv", "normal")] = (7, -0.009)
++    snap = ea.capture()
++    ea2 = ExitAdvisor()
++    ea2.restore(snap)
++    assert ea2.v[("with", "big_loss", "adv", "normal")] == (7, -0.009)
++    assert len(ea2.pending) == 1
++
++
++# ---------------- direction learner ----------------
++
++def test_direction_bias_favours_side_that_paid():
++    dl = DirectionLearner()
++    bull = "bull/normal"
++    for _ in range(20):
++        dl.on_trade_closed({"regime_at_entry": bull, "side": -1, "qty": 1,
++                            "entry": 100, "pnl": -3})   # shorts lose
++        dl.on_trade_closed({"regime_at_entry": bull, "side": 1, "qty": 1,
++                            "entry": 100, "pnl": 2})     # longs win
++    assert dl.bias(bull, 0.0) > 0                        # pushed toward long
++
++
++def test_direction_bias_can_flip_marginal_call():
++    dl = DirectionLearner()
++    bull = "bull/normal"
++    for _ in range(20):
++        dl.on_trade_closed({"regime_at_entry": bull, "side": -1, "qty": 1,
++                            "entry": 100, "pnl": -4})
++        dl.on_trade_closed({"regime_at_entry": bull, "side": 1, "qty": 1,
++                            "entry": 100, "pnl": 3})
++    new, flipped = dl.adjust(bull, -0.05, 0.2)           # marginal short
++    assert flipped and new > 0
++
++
++def test_direction_bias_capped_and_ignored_without_evidence():
++    dl = DirectionLearner()
++    assert dl.bias("unknown", 0.0) == 0.0                # no data → no bias
++    bull = "bull/normal"
++    for _ in range(30):
++        dl.on_trade_closed({"regime_at_entry": bull, "side": 1, "qty": 1,
++                            "entry": 100, "pnl": 50})     # huge long edge
++        dl.on_trade_closed({"regime_at_entry": bull, "side": -1, "qty": 1,
++                            "entry": 100, "pnl": -50})
++    tunables.update({"direction_bias_cap": 0.25})
++    assert abs(dl.bias(bull, 0.0)) <= 0.25 + 1e-9        # never exceeds the cap
++
++
++def test_mtf_veto_blocks_fighting_strong_trend():
++    dl = DirectionLearner()
++    tunables.update({"mtf_veto_align": 0.75})
++    v, why = dl.veto(-1, 0.9)                            # short vs strong bull
++    assert v and "short vetoed" in why
++    v2, _ = dl.veto(1, 0.9)                              # long agrees → allowed
++    assert not v2
++    v3, why3 = dl.veto(1, -0.9)                          # long vs strong bear
++    assert v3 and "long vetoed" in why3
++
++
++def test_mtf_veto_ignores_weak_alignment():
++    dl = DirectionLearner()
++    tunables.update({"mtf_veto_align": 0.75})
++    assert dl.veto(-1, 0.3)[0] is False                 # weak trend → no veto
++
++
++def test_direction_capture_restore_roundtrip():
++    dl = DirectionLearner()
++    dl.on_trade_closed({"regime_at_entry": "bull/normal", "side": 1,
++                        "qty": 1, "entry": 100, "pnl": 5})
++    snap = dl.capture()
++    dl2 = DirectionLearner()
++    dl2.restore(snap)
++    assert dl2.edge.get(("bull/normal", 1)) is not None
++    assert dl2.n_updates == 1

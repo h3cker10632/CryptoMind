@@ -206,7 +206,7 @@
     </div>
     <h2 style="margin-top:12px">Bandit posteriors — current regime <span id="bandit-regime" style="text-transform:none;color:var(--accent)"></span></h2>
     <table id="tbl-bandit"><thead><tr>
-      <th>Strategy</th><th>Samples (regime / pool)</th><th>Mean aligned return (bps)</th><th>Std (bps)</th><th>Hit rate</th><th>Weight</th>
+      <th>Strategy</th><th title="Effective sample size (recent evidence is weighted more; old evidence decays)">Eff. samples (regime / pool)</th><th>Mean aligned return (bps)</th><th>Std (bps)</th><th>Hit rate</th><th>Weight</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -693,7 +693,8 @@ async function refresh(){
     const post=ln.bandit_posteriors||{}, sstats=ln.strategy_stats||{};
     $('#tbl-bandit tbody').innerHTML=Object.keys(ln.weights||{}).map(s=>{
       const p=post[s]||{}, st2=sstats[s]||{};
-      return `<tr><td>${s}</td><td>${p.n??0} / ${p.n_pool??0}</td>
+      const _r1=x=>x==null?0:(Math.round(x*10)/10);
+      return `<tr><td>${s}</td><td>${_r1(p.n)} / ${_r1(p.n_pool)}</td>
       <td class="${cls(p.mean_bps||0)}">${p.mean_bps??'—'}</td>
       <td>${p.std_bps??'—'}</td>
       <td>${st2.hit_rate!=null?(st2.hit_rate*100).toFixed(0)+'%':'—'}</td>

@@ -36,6 +36,7 @@ class LLMAdvisor:
         except Exception:
             return False
 
+<<<<<<< HEAD
     KEY_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                             "llm_key.txt")
 
@@ -59,6 +60,11 @@ class LLMAdvisor:
         except OSError:
             pass
         return None
+=======
+    @staticmethod
+    def _api_key():
+        return os.environ.get("CRYPTOMIND_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
 
     @staticmethod
     def _ttl():
@@ -141,6 +147,7 @@ class LLMAdvisor:
                                   f"(fed to the bandit as the 'llm' arm)")
         return updated
 
+<<<<<<< HEAD
     @classmethod
     def _base_url(cls):
         return (os.environ.get("CRYPTOMIND_LLM_BASE") or cls.DEFAULT_BASE).rstrip("/")
@@ -160,6 +167,20 @@ class LLMAdvisor:
         self.calls += 1
         base = self._base_url()
         model = self._model()
+=======
+    async def _ask_model(self, ctx):
+        """Query the configured LLM for a directional lean. Returns (lean, why).
+
+        Provider-agnostic OpenAI-compatible chat call; the endpoint/model are
+        env-overridable. Returns (None, "") on any non-parseable response so the
+        caller keeps the previous cached lean rather than trusting garbage.
+        """
+        import httpx
+        self.calls += 1
+        base = os.environ.get("CRYPTOMIND_LLM_BASE",
+                              "https://api.openai.com/v1")
+        model = os.environ.get("CRYPTOMIND_LLM_MODEL", "gpt-4o-mini")
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
         sys_prompt = (
             "You are a cautious crypto trading advisor. Given compact market "
             "features for one asset, respond with ONLY a JSON object "
@@ -170,7 +191,10 @@ class LLMAdvisor:
         payload = {
             "model": model,
             "temperature": 0.2,
+<<<<<<< HEAD
             "response_format": {"type": "json_object"},
+=======
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
             "messages": [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": json.dumps(ctx)},
@@ -212,8 +236,11 @@ class LLMAdvisor:
         return {
             "enabled": self.enabled(),
             "configured": self.configured(),
+<<<<<<< HEAD
             "provider": "gemini",
             "model": self._model(),
+=======
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
             "cached_leans": {p: round(e["lean"], 3)
                              for p, e in self._leans.items()},
             "last_refresh": self.last_refresh,

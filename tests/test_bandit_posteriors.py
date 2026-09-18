@@ -71,6 +71,12 @@ def test_ml_silent_when_below_coin_flip():
         assert "ml" in silent
         w = L._allocate("bull", silent)
         assert w["ml"] == 0.0
+<<<<<<< HEAD
+=======
+        # weights are rounded to 4dp in _allocate(), so with several non-zero
+        # sleeves the sum can drift up to ~±5e-4 from 1.0 — that's expected, not
+        # a bug. Use a tolerance appropriate for 4-decimal rounding.
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
         assert abs(sum(w.values()) - 1.0) < 1e-3
     finally:
         _restore_model(orig_n, orig_acc)

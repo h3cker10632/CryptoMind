@@ -64,9 +64,13 @@ def test_parse_tolerates_prose_and_fences():
 def test_not_configured_without_key(monkeypatch):
     settings.update({"llm_advisor_enabled": True})
     monkeypatch.delenv("CRYPTOMIND_LLM_KEY", raising=False)
+<<<<<<< HEAD
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(LLMAdvisor, "KEY_PATH", os.path.join("no", "such", "llm_key.txt"))
+=======
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
     a = LLMAdvisor()
     assert a.configured() is False
     # refresh no-ops (returns 0) when unconfigured — never raises
@@ -74,6 +78,7 @@ def test_not_configured_without_key(monkeypatch):
     settings.update({"llm_advisor_enabled": False})
 
 
+<<<<<<< HEAD
 def test_key_file_configures_advisor(tmp_path, monkeypatch):
     settings.update({"llm_advisor_enabled": True})
     monkeypatch.delenv("CRYPTOMIND_LLM_KEY", raising=False)
@@ -88,11 +93,14 @@ def test_key_file_configures_advisor(tmp_path, monkeypatch):
     settings.update({"llm_advisor_enabled": False})
 
 
+=======
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
 def test_stats_shape():
     a = LLMAdvisor()
     a.set_lean("BTC-USD", 0.3)
     st = a.stats()
     assert set(["enabled", "configured", "cached_leans", "calls"]) <= set(st)
+<<<<<<< HEAD
 
 
 def test_gemini_is_default_provider(monkeypatch):
@@ -122,3 +130,5 @@ def test_telegram_llm_command_toggles_setting(monkeypatch):
     assert settings.get("llm_advisor_enabled") is False
     # reachable through the dispatcher too
     assert "LLM advisor" in alerts.handle_command("/llm")
+=======
+>>>>>>> f099ee919fb3f011e80dadbff6ffd5122f78c190
