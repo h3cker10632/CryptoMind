@@ -28,3 +28,6 @@ venv/
 cryptomind-*.zip
 cryptomind-*.diff
 cryptomind-*.patch
+
+# --- local data backups ---
+backups/
