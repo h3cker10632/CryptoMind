@@ -140,6 +140,19 @@ class Orchestrator:
         except Exception:
             pass
 
+    def _record_skip(self, sig):
+        """Phase 3: hand a gated-out ACTIONABLE conviction signal to the learner
+        as a counterfactual. The learner scores what the trade would have made
+        net of cost and teaches the bandit — so a signal we were throttled out
+        of (cooldown, max-positions, per-hour cap, funding, min-notional) still
+        produces a learning sample. Never let it break the decision loop."""
+        try:
+            learner.on_entry_skipped(
+                sig["product"], sig["direction"], sig.get("price"),
+                sig.get("regime"), engine.per_strategy.get(sig["product"], {}))
+        except Exception:
+            pass
+
     def tick(self):
         self.tick_count += 1
         if not market.tickers:
@@ -253,14 +266,17 @@ class Orchestrator:
                 gok, gwhy = guardian.can_enter()
                 if not gok:
                     self._audit(sig, "skip", gwhy)
+                    self._record_skip(sig)     # counterfactual (Phase 3)
                     continue
                 ok, why = risk.can_open(p, broker, market, market.healthy)
                 if not ok:
                     self._audit(sig, "skip", why)
+                    self._record_skip(sig)     # counterfactual (Phase 3)
                     continue
                 ok, why = risk.funding_gate(p, sig["direction"])
                 if not ok:
                     self._audit(sig, "skip", why)
+                    self._record_skip(sig)     # counterfactual (Phase 3)
                     continue
                 notional, stop, take = risk.size(
                     equity, sig["price"], sig["atr"], sig["confidence"],
@@ -270,6 +286,7 @@ class Orchestrator:
                     self._audit(sig, "skip",
                                 f"notional ${notional:,.0f} below min "
                                 f"${tv('min_notional')}", size_pre=notional)
+                    self._record_skip(sig)     # counterfactual (Phase 3)
                     continue
                 # A cost-viable conviction candidate cleared the gate — this
                 # interval WAS a real chance to trade, whether or not the fill

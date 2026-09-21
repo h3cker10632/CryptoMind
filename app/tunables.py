@@ -118,6 +118,14 @@ TUNABLES = {
                            "abundant-but-noisy signal stream"),
     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
+    "skip_learn_weight": T(0.5, 0.0, 2.0, 0.05, "learning", "Skip counterfactual weight",
+                           "Scale on the NET-of-cost counterfactual return of an "
+                           "ACTIONABLE conviction signal that was gated out (risk/"
+                           "guardian/funding/notional). It teaches the bandit what "
+                           "the trade WOULD have paid — a real, cost-aware lesson "
+                           "from decisions the book was throttled out of, sitting "
+                           "between the abundant gross signal stream and a real "
+                           "fill in quality. 0 disables counterfactual credit."),
     # ---- predictive loss-cut exit advisor ----
     "exit_cut_threshold": T(0.004, 0.001, 0.05, 0.001, "learning", "Loss-cut threshold",
                            "Cut a losing position when its blended expected next-"

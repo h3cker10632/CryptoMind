@@ -36,6 +36,8 @@ ML_HORIZON_SEC = 1800          # online model label horizon (30 min), primary he
 # online_model (shared hidden layer) — the primary 30-min head is unchanged.
 # Kept within the 3h price-history / candle window so labels can be resolved.
 AUX_HORIZONS = [(0, 300), (1, 7200)]   # head 0 = 5 min, head 1 = 2 h
+SKIP_EVAL_HORIZON_SEC = 1800   # Phase 3: counterfactual horizon for skipped
+                               # conviction entries (30 min — one swing leg)
 EVOLVE_EVERY_SEC = 1200        # a GA run every 20 min, rotating the universe
 WEIGHT_SMOOTH = 0.35           # EMA smoothing of bandit draws (stability)
 LOOKUP_GIVE_UP_SEC = 3 * 3600  # abandon unscored signals after this (no train)
@@ -54,6 +56,15 @@ class Learner:
         # pending_ml so the primary-head training path + its persistence schema
         # are completely untouched.
         self.pending_aux = deque(maxlen=6000)
+        # Phase 3: COUNTERFACTUAL credit for actionable conviction signals the
+        # book was gated out of (risk/guardian/funding/notional). Each entry is
+        # (ts, product, direction, entry_price, regime, votes) — after the
+        # horizon we compute the NET-of-cost return the trade would have made
+        # and teach the bandit's voting strategies, exactly like a real fill
+        # but at a discounted weight. This directly attacks data starvation:
+        # every throttled-but-wanted trade becomes a learning sample.
+        self.pending_skips = deque(maxlen=4000)
+        self.skip_attributions = 0
         self.last_evolution_start = 0.0
         self._evo_thread = None
         self.drift_state = {"drifting": False, "worst_feature": None, "psi": 0.0}
@@ -315,6 +326,76 @@ class Learner:
                      f"{', '.join(f'{k}({v:+.2f})' for k, v in votes.items())} "
                      f"[regime={regime}]")
 
+    # ------------------------------------------------ counterfactual (Phase 3)
+    def on_entry_skipped(self, product, direction, price, regime, votes):
+        """Record a COUNTERFACTUAL: an actionable conviction signal the book was
+        gated out of. `_score_skips` later credits the bandit with the net-of-
+        cost return the trade WOULD have made. No-op when disabled or when the
+        candidate has no attributable votes / a bad price (nothing to learn).
+        """
+        from ..tunables import tv
+        if tv("skip_learn_weight") <= 0:
+            return
+        if not votes or not price or price <= 0:
+            return
+        # only keep votes for arms the bandit actually allocates to
+        kept = {k: v for k, v in votes.items() if k in STRATEGIES}
+        if not kept:
+            return
+        self.pending_skips.append(
+            (time.time(), product, int(direction), float(price),
+             regime or "unknown", kept))
+
+    def _round_trip_cost(self):
+        """Fractional round-trip cost (both fills): 2x(fee + slippage). Matches
+        the cost the paper broker actually charges, so the counterfactual return
+        is comparable to a real closed trade's net PnL."""
+        from ..tunables import tv
+        return 2.0 * (tv("fee_rate") + tv("slippage_bps") / 1e4)
+
+    def _score_skips(self, market):
+        """Mature skipped-entry counterfactuals and teach the bandit the net-of-
+        cost return each would have produced. Discounted by skip_learn_weight
+        and, like real fills, losers teach loss_lesson_mult times harder."""
+        from ..tunables import tv
+        w0 = tv("skip_learn_weight")
+        if w0 <= 0:
+            self.pending_skips.clear()
+            return 0
+        now = time.time()
+        cost = self._round_trip_cost()
+        loss_mult = tv("loss_lesson_mult")
+        scored = 0
+        remaining = deque(maxlen=self.pending_skips.maxlen)
+        while self.pending_skips:
+            ts, p, direction, p0, regime, votes = self.pending_skips.popleft()
+            if now - ts < SKIP_EVAL_HORIZON_SEC:
+                remaining.append((ts, p, direction, p0, regime, votes))
+                continue
+            if now - ts > SKIP_EVAL_HORIZON_SEC + LOOKUP_GIVE_UP_SEC:
+                continue                       # too old to price — give up
+            p1 = self._price_at(p, ts + SKIP_EVAL_HORIZON_SEC, market) \
+                or market.price(p)
+            if not (p0 and p1):
+                remaining.append((ts, p, direction, p0, regime, votes))
+                continue
+            # net-of-cost directional return the skipped trade would have made
+            net = (p1 / p0 - 1) * direction - cost
+            total_w = sum(abs(v) for v in votes.values()) or 1e-9
+            for strat, v in votes.items():
+                share = abs(v) / total_w
+                aligned = net if v > 0 else -net
+                w = w0 * (loss_mult if aligned < 0 else 1.0)
+                self.bandit.update(regime, strat, aligned * share * w)
+            self.skip_attributions += 1
+            scored += 1
+        self.pending_skips = remaining
+        if scored:
+            db.log_event("learn",
+                         f"Counterfactual credit: {scored} skipped entr"
+                         f"{'y' if scored == 1 else 'ies'} scored net-of-cost")
+        return scored
+
     def _evolved_live(self):
         """True only when a walk-forward champion (or portfolio) is actually
         voting. An empty book is not an arm — leftover +bps from a dead genome
@@ -445,6 +526,12 @@ class Learner:
             else:
                 n_retry += 1
 
+        # 1b. COUNTERFACTUAL credit (Phase 3): score actionable conviction
+        # signals the book was gated out of with the net-of-cost return they
+        # would have made, and teach the bandit — every throttled-but-wanted
+        # trade becomes a learning sample instead of a silent lost decision.
+        self._score_skips(market)
+
         # 2. classic per-strategy stats (for dashboard)
         rows = db.strategy_scores(ALLOC_LOOKBACK)
         per = {}
@@ -517,6 +604,7 @@ class Learner:
             "drift": {**self.drift_state, **detector.stats(), **page_hinkley.stats()},
             "rl_risk": rl_agent.stats(),
             "trade_attributions": self.trade_attributions,
+            "skip_attributions": self.skip_attributions,
             "evolution": evolution.stats(),
             "llm_advisor": self._llm_advisor_stats(),
             "exit_advisor": self._exit_advisor_stats(),

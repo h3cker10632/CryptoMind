@@ -143,6 +143,10 @@ def capture():
             "pending_aux": [[ts, p, x, head, hz]
                             for (ts, p, x, head, hz)
                             in list(learner.pending_aux)],
+            "pending_skips": [[ts, p, d, px, reg, votes]
+                              for (ts, p, d, px, reg, votes)
+                              in list(learner.pending_skips)],
+            "skip_attributions": learner.skip_attributions,
             "price_history": {p: hist[-400:]
                               for p, hist in learner.price_history.items()},
         },
@@ -329,6 +333,14 @@ def load():
                     if isinstance(x, (list, tuple)) and len(x) == N_IN]
         learner.pending_aux = deque(kept_aux,
                                     maxlen=learner.pending_aux.maxlen)
+        # Phase 3: restore the counterfactual skip queue + its counter.
+        skips = l.get("pending_skips") or []
+        learner.pending_skips = deque(
+            [(ts, p, d, px, reg, votes)
+             for ts, p, d, px, reg, votes in skips if votes and px],
+            maxlen=learner.pending_skips.maxlen)
+        learner.skip_attributions = l.get("skip_attributions",
+                                          learner.skip_attributions)
         if dropped:
             db.log_event("learn",
                          f"Dropped {dropped} restored pending ML sample(s) "
