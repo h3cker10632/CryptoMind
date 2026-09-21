@@ -4,9 +4,12 @@ A working implementation of the full architecture: research ingestion → NLP �
 signal generation → adaptive risk → paper execution → backtesting → self-improvement
 loop, with an orchestrator, audit log, and live dashboard.
 
-**Safety-first defaults:** paper trading only (simulated $100k account), spot
-long-only, with kill switch, daily loss halt, and full audit trail. No API keys
-required — everything runs on public, key-free data sources.
+**Safety-first defaults:** paper trading only (simulated $100k account), with
+kill switch, daily loss halt, gross-exposure caps, and a full audit trail.
+Directional shorts and market-neutral pair hedging are supported (runtime
+toggles); real order routing is deliberately **not** enabled. No API keys are
+required for core operation — everything runs on public, key-free data sources
+(an optional Gemini LLM advisor is the only key-gated, off-by-default extra).
 
 ## Architecture → Module map
 
@@ -41,15 +44,17 @@ Open http://localhost:8000
 
 ## API
 
-- `GET /api/status` — full system snapshot (equity, risk, regime, weights…)
-- `GET /api/signals` · `/api/market` · `/api/derivatives` · `/api/research` · `/api/learning`
+- `GET /api/status` — full system snapshot (equity, risk, regime, weights, exit-advisor, memes…)
+- `GET /api/signals` · `/api/market` · `/api/derivatives` · `/api/research` · `/api/learning` · `/api/universe` · `/api/decisions` · `/api/shadow`
 - `GET /api/trades` · `/api/equity` · `/api/events`
 - `GET /api/backtest?product=BTC-USD&strategy=trend|meanrev|breakout`
 - `POST /api/control/pause` · `/resume` · `/kill` · `/reset-kill` · `/save` · `/reset-account` · `/evolve`
+- `POST /api/settings` — toggle `allow_shorts`, `hedge_enabled`, `llm_advisor_enabled`, `exit_advisor_enabled`, `meme_trading_enabled`, trade stance…
 
-## The learning intelligence stack (v2)
+## The learning intelligence stack
 
-Six learning algorithms run concurrently (`app/learn/`):
+Multiple learning algorithms run concurrently (`app/learn/`), all learning from
+realized, after-cost PnL:
 
 1. **Signal scoring** (`loop.py`) — every strategy signal is labeled with its
    realized 1-hour forward return, aligned to direction.
@@ -58,13 +63,17 @@ Six learning algorithms run concurrently (`app/learn/`):
    returns; ensemble weights are Thompson-sampled per regime, so exploration
    vs exploitation is handled by Bayesian uncertainty, not a fixed schedule.
    Weights are EMA-smoothed with a 4% exploration floor.
-3. **Online neural network** (`online_model.py`) — a 17→16→1 tanh MLP trained
-   continually (pure-Python SGD + AdaGrad) on live feature snapshots vs 30-min
-   forward returns. Continual-learning safeguards: experience replay buffer
-   (4000 samples, 6 replays per update) against catastrophic forgetting, and
-   honest held-out directional-accuracy tracking (predictions are recorded
-   *before* labels arrive). Once warmed up (40 updates) it joins the ensemble
-   as the `ml` strategy, trust-weighted by its own accuracy.
+3. **Online neural-net committee** (`online_model.py`) — an ensemble of three
+   independently-seeded 18→16→1 tanh MLPs trained continually (SGD + AdaGrad) on
+   live feature snapshots vs 30-min forward returns, with **quantile heads
+   (P10/P90)** for an aleatoric band and inter-member disagreement for epistemic
+   uncertainty. Continual-learning safeguards: prioritized experience replay
+   (4000 samples, error-weighted), online feature standardization (Welford), and
+   honest held-out directional-accuracy tracking (predictions recorded *before*
+   labels arrive). Once warmed up it joins the ensemble as the `ml` strategy,
+   trust-weighted by accuracy, and its combined uncertainty scales position size
+   (0.4×–1.0×) so the book bets small when unsure. Weights + replay persist across
+   restart.
 4. **Drift detection** (`drift.py`) — Population Stability Index over the
    feature stream; on drift (PSI > 0.25) the online model's learning rate is
    boosted ×3 for fast re-adaptation, then decays back.
@@ -74,17 +83,50 @@ Six learning algorithms run concurrently (`app/learn/`):
    penalty; epsilon-greedy with decay. Its chosen multiplier feeds directly
    into position sizing every tick.
 6. **Genetic strategy evolution** (`evolution.py`) — a GA (population 24,
-   8 generations, elitism + tournament selection + crossover + mutation)
-   evolves 7-gene trading rules against real hourly history in a background
-   thread (hourly, or on demand via the dashboard). Fitness is Calmar-like
-   (return/drawdown with overtrading penalties). A champion is **only
-   promoted** into the live ensemble (`evolved` strategy) if it passes
-   out-of-sample validation — genomes that shine in-sample but fail
-   out-of-sample are rejected (anti-overfitting gate).
+   8 generations, NSGA-II multi-objective selection over {return, −drawdown,
+   per-trade Sharpe}) evolves trading-rule genomes against real history in a
+   background thread. Promotion requires **purged walk-forward** validation
+   (profit in ≥60% of OOS windows + a deflated-Sharpe gate), and up to 3
+   validated genomes are averaged as a champion **portfolio** to dilute
+   overfit outliers. The backtester is **NumPy-vectorized** (~5× faster,
+   numerically identical, parity-tested; pure-Python fallback if NumPy is absent).
+7. **Adaptive loss-cut exit advisor** (`exit_advisor.py`) — after the hard stops
+   run, forms an expected next-horizon return in the position's own frame (ML
+   committee view blended with a learned per-state value) and **cuts a losing
+   position early** when it confidently expects the move to keep going against it.
+   Learns **hold-vs-fold** per market state from the counterfactual: what price
+   actually did next. Never overrides the hard stop/target/liquidation; exempts
+   hedge legs. Toggle `exit_advisor_enabled` (default on).
+8. **Direction learner** (`direction.py`) — tracks realized net PnL per
+   (regime, direction) and nudges the composite toward the side that has actually
+   paid (a bounded tie-breaker, never an override), plus a **multi-timeframe veto**
+   that blocks entries fighting a strongly-aligned higher-timeframe trend (stops
+   shorting into strong uptrends and vice-versa).
 
 Inspect everything live: `GET /api/learning` returns bandit posteriors,
-model accuracy, Q-values, PSI per feature, and GA generation history; the
-dashboard's "Learning intelligence stack" panel renders it all.
+model accuracy, Q-values, PSI per feature, GA generation history, exit-advisor
+and direction-learner stats; the dashboard's "Learning intelligence stack" panel
+and the `/brains` Telegram command render it all.
+
+## Meme-coin trading (opt-in sleeve)
+
+A dedicated meme sleeve (`app/data/memes.py`): a **curated seed** of Coinbase-listed
+meme majors (DOGE/SHIB/PEPE/BONK/WIF/FLOKI) is eligible immediately, and CoinGecko's
+meme-token category is polled so **hot new memes auto-surface** and get tagged. Memes
+trade under a **tighter risk envelope** — reduced dollar-risk and position cap
+(`meme_risk_factor`), wider ATR stops/targets (`meme_stop_widen`), a concurrent-meme
+cap (`meme_max_positions`) and a total meme-exposure cap (`meme_max_exposure`) — so
+one meme candle can't run away with the book. Non-meme trading is unaffected. Toggle
+`meme_trading_enabled` (dashboard, `/api/settings`); high variance by nature.
+
+## Optional LLM advisor (Gemini, off by default)
+
+An opt-in advisor (`app/learn/llm_advisor.py`) contributes **one** directional vote
+that the Thompson bandit weights like any other strategy — never the driver. Defaults
+to **Gemini** (`gemini-2.5-flash`); provide a key in `llm_key.txt` (gitignored) or via
+`CRYPTOMIND_LLM_KEY` / `GEMINI_API_KEY`. With no key it is completely inert (no cost,
+no effect). Enable via the dashboard toggle, `/api/settings`, or the `/llm on` Telegram
+command.
 
 ## Extending to live trading (shadow plumbing built; real orders deliberately NOT enabled)
 
@@ -158,8 +200,8 @@ PBO<0.30, walk-forward pass, and beats buy-and-hold. `pytest -q` runs the suite.
   button or `/notify on|off` in the bot).
 - **Two-way Telegram command bot**: once a bot token + chat id are set, control
   and query the system from your phone. Commands are private to your chat id.
-  `/status /positions /trades /pnl /balance /stats /brains /signals /diag /chart /risk /why`
-  `/pause /resume /kill /resetkill /close <product>|all /shorts on|off /mode <stance>`
+  `/status /positions /trades /pnl /balance /stats /brains /signals /decisions /diag /chart /risk /why`
+  `/pause /resume /kill /resetkill /close <product>|all /shorts on|off /mode <stance> /llm on|off`
   `/set <tunable> <value> /get <tunable> /tunables /notify on|off /help`.
   Notably `/resetkill` clears the kill switch + daily halt remotely, and
   `/close BTC` (or `/close all`) flattens a live position from your phone.
