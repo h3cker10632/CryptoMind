@@ -24,6 +24,16 @@ N_HID = 16
 # quantile levels for the aleatoric band (P10 / P90)
 QUANTILES = (0.10, 0.90)
 
+# Auxiliary MULTI-HORIZON heads (Phase 2). The primary median head predicts the
+# 30-min forward return; these extra heads predict the SAME snapshot's return at
+# other horizons (a fast one and a slow one — see loop.AUX_HORIZONS) as
+# auxiliary tasks on top of the shared hidden layer. They are never read by
+# predict()/sizing; their only job is to force the shared representation to
+# encode structure that is predictive across timescales, which both speeds up
+# feedback (the fast head labels in minutes) and adds longer-context signal
+# (the slow head) without changing the primary output or its persistence.
+AUX_HEADS = 2
+
 FEAT_NAMES = ["rsi", "macd", "macd_delta", "mom_1h", "mom_4h", "vol_ratio",
               "imbalance", "spread", "asset_sent", "market_sent",
               "price_vs_sma20", "sma20_vs_sma50", "volatility",
@@ -86,6 +96,13 @@ class TinyMLP:
         self.qW = [[rnd.gauss(0, s2) for _ in range(n_hid)]
                    for _ in self.quantiles]
         self.qb = [0.0 for _ in self.quantiles]
+        # AUXILIARY multi-horizon heads (Phase 2): one linear+tanh head per aux
+        # horizon on top of the SHARED hidden layer. Trained with plain MSE
+        # against that horizon's scaled forward return. They shape the hidden
+        # layer but are never surfaced to sizing / predict().
+        self.aW = [[rnd.gauss(0, s2) for _ in range(n_hid)]
+                   for _ in range(AUX_HEADS)]
+        self.ab = [0.0 for _ in range(AUX_HEADS)]
         # AdaGrad accumulators
         self.gW1 = [[1e-8] * n_in for _ in range(n_hid)]
         self.gb1 = [1e-8] * n_hid
@@ -93,6 +110,8 @@ class TinyMLP:
         self.gb2 = 1e-8
         self.gqW = [[1e-8] * n_hid for _ in self.quantiles]
         self.gqb = [1e-8 for _ in self.quantiles]
+        self.gaW = [[1e-8] * n_hid for _ in range(AUX_HEADS)]
+        self.gab = [1e-8 for _ in range(AUX_HEADS)]
         self.lr = lr
         self.lr_boost = 1.0          # raised temporarily on drift
         self.l2 = l2
@@ -247,6 +266,48 @@ class TinyMLP:
         if self.lr_boost > 1.0:                       # decay drift boost
             self.lr_boost = max(1.0, self.lr_boost * 0.995)
 
+    def update_aux(self, x, fwd_return, head):
+        """Train ONE auxiliary horizon head on a matured sample.
+
+        Unlike update(), this does NOT touch the primary median head, quantile
+        heads, replay buffer, n_updates or the directional-accuracy window — it
+        only fits the given aux head AND backprops that head's error into the
+        SHARED hidden layer, so multi-horizon structure improves the common
+        representation the primary head reads from. `head` selects which aux
+        horizon (0..AUX_HEADS-1).
+        """
+        if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
+            return
+        if not (0 <= head < len(self.aW)):
+            return
+        target = _clip(fwd_return / 0.004, -1, 1)
+        self._observe_features(x)
+        xs = self._standardize(x)
+        h, _ = self._fwd(xs)
+        lr = self.lr * self.lr_boost
+        az = sum(w * hi for w, hi in zip(self.aW[head], h)) + self.ab[head]
+        ay = math.tanh(az)
+        daz = (ay - target) * (1 - ay * ay)
+        dh = [0.0] * len(h)
+        for j in range(len(self.aW[head])):
+            g = daz * h[j] + self.l2 * self.aW[head][j]
+            self.gaW[head][j] += g * g
+            dh[j] = daz * self.aW[head][j]
+            self.aW[head][j] -= lr / math.sqrt(self.gaW[head][j]) * g
+        self.gab[head] += daz * daz
+        self.ab[head] -= lr / math.sqrt(self.gab[head]) * daz
+        # backprop the aux error into the SHARED hidden layer (this is the whole
+        # point — the primary head benefits from the auxiliary supervision).
+        for j in range(len(self.W1)):
+            dhj = dh[j] * (1 - h[j] * h[j])
+            row, grow = self.W1[j], self.gW1[j]
+            for i in range(len(row)):
+                g = dhj * xs[i] + self.l2 * row[i]
+                grow[i] += g * g
+                row[i] -= lr / math.sqrt(grow[i]) * g
+            self.gb1[j] += dhj * dhj
+            self.b1[j] -= lr / math.sqrt(self.gb1[j]) * dhj
+
     # ---------- introspection ----------
     def reset(self, seed=7):
         """Re-init weights and wipe online stats. Used when directional
@@ -261,6 +322,8 @@ class TinyMLP:
         self.gW2, self.gb2 = fresh.gW2, fresh.gb2
         self.qW, self.qb = fresh.qW, fresh.qb
         self.gqW, self.gqb = fresh.gqW, fresh.gqb
+        self.aW, self.ab = fresh.aW, fresh.ab
+        self.gaW, self.gab = fresh.gaW, fresh.gab
         self.lr_boost = 1.0
         self.n_updates = 0
         self.replay = deque(maxlen=self.replay.maxlen)
@@ -333,6 +396,11 @@ class Committee:
         sampling, which is enough to keep their errors partially decorrelated."""
         for m in self.members:
             m.update(x, fwd_return, pred_at_record=pred_at_record)
+
+    def update_aux(self, x, fwd_return, head):
+        """Train the auxiliary horizon head on every member."""
+        for m in self.members:
+            m.update_aux(x, fwd_return, head)
 
     def reset(self, base_seed=7):
         for i, m in enumerate(self.members):

@@ -29,7 +29,13 @@ from .drift import detector, page_hinkley
 from .rl_risk import agent as rl_agent
 from .evolution import evolution
 
-ML_HORIZON_SEC = 1800          # online model label horizon (30 min)
+ML_HORIZON_SEC = 1800          # online model label horizon (30 min), primary head
+# Auxiliary multi-horizon labels (Phase 2). Each entry is (aux_head_index,
+# horizon_seconds): a FAST head that labels in minutes for quick feedback, and a
+# SLOW head that carries longer-context structure. These train the aux heads in
+# online_model (shared hidden layer) — the primary 30-min head is unchanged.
+# Kept within the 3h price-history / candle window so labels can be resolved.
+AUX_HORIZONS = [(0, 300), (1, 7200)]   # head 0 = 5 min, head 1 = 2 h
 EVOLVE_EVERY_SEC = 1200        # a GA run every 20 min, rotating the universe
 WEIGHT_SMOOTH = 0.35           # EMA smoothing of bandit draws (stability)
 LOOKUP_GIVE_UP_SEC = 3 * 3600  # abandon unscored signals after this (no train)
@@ -43,6 +49,11 @@ class Learner:
         self.last_run = 0.0
         self.price_history = {}            # product -> [(ts, price)]
         self.pending_ml = deque(maxlen=2000)  # (ts, product, x, pred)
+        # Phase 2: matured-at-other-horizons queue for the auxiliary heads.
+        # (ts, product, x, head_index, horizon_sec). Kept separate from
+        # pending_ml so the primary-head training path + its persistence schema
+        # are completely untouched.
+        self.pending_aux = deque(maxlen=6000)
         self.last_evolution_start = 0.0
         self._evo_thread = None
         self.drift_state = {"drifting": False, "worst_feature": None, "psi": 0.0}
@@ -95,6 +106,9 @@ class Learner:
                         derivatives.features(p))
             pred = model.predict(x) if model.n_updates >= 10 else 0.0
             self.pending_ml.append((now, p, x, pred))
+            # Phase 2: same snapshot also queued for each auxiliary horizon.
+            for head, hz in AUX_HORIZONS:
+                self.pending_aux.append((now, p, x, head, hz))
             detector.add(x)
 
     def _train_online_model(self, market):
@@ -136,6 +150,43 @@ class Learner:
             db.log_event("learn",
                          f"Dropped {dropped_dim} pending ML sample(s) with "
                          f"stale feature dim (need {N_IN})")
+        self._train_aux_heads(market)
+        return trained
+
+    def _train_aux_heads(self, market):
+        """Label matured auxiliary-horizon snapshots and train the aux heads.
+
+        Each entry matures at its own horizon (the deque is roughly time-ordered
+        since horizons are pushed together, but a shorter horizon queued later
+        can mature first, so we scan rather than only peek the head). The aux
+        heads only shape the shared hidden layer — they never touch the primary
+        head, replay buffer or n_updates.
+        """
+        now = time.time()
+        trained = 0
+        remaining = deque(maxlen=self.pending_aux.maxlen)
+        while self.pending_aux:
+            ts, p, x, head, hz = self.pending_aux.popleft()
+            if now - ts < hz:
+                remaining.append((ts, p, x, head, hz))
+                continue
+            # give up on samples too old to price (past the history window)
+            if now - ts > hz + LOOKUP_GIVE_UP_SEC:
+                continue
+            if not isinstance(x, (list, tuple)) or len(x) != N_IN:
+                continue
+            if trained >= 80:                    # cap per cycle (2 heads)
+                remaining.append((ts, p, x, head, hz))
+                continue
+            p0 = self._price_at(p, ts, market)
+            p1 = self._price_at(p, ts + hz, market)
+            if p0 and p1:
+                committee.update_aux(x, p1 / p0 - 1, head)
+                trained += 1
+            # if price can't be resolved yet, keep it and retry next cycle
+            elif now - ts < hz + LOOKUP_GIVE_UP_SEC:
+                remaining.append((ts, p, x, head, hz))
+        self.pending_aux = remaining
         return trained
 
     # ------------------------------------------------ drift

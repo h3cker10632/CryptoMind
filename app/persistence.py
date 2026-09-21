@@ -47,6 +47,7 @@ def _dump_mlp(m):
         "W1": m.W1, "b1": m.b1, "W2": m.W2, "b2": m.b2,
         "gW1": m.gW1, "gb1": m.gb1, "gW2": m.gW2, "gb2": m.gb2,
         "qW": m.qW, "qb": m.qb, "gqW": m.gqW, "gqb": m.gqb,
+        "aW": m.aW, "ab": m.ab, "gaW": m.gaW, "gab": m.gab,
         "n_updates": m.n_updates, "lr_boost": m.lr_boost,
         "replay": [[x, t] for x, t in list(m.replay)[-1500:]],
         "replay_pr": list(m.replay_pr)[-1500:],
@@ -69,6 +70,11 @@ def _load_mlp(m, d):
     if d.get("qW") and len(d["qW"]) == len(m.qW):
         m.qW, m.qb = d["qW"], d["qb"]
         m.gqW, m.gqb = d.get("gqW", m.gqW), d.get("gqb", m.gqb)
+    # aux multi-horizon heads (Phase 2): tolerate snapshots written before they
+    # existed — keep the fresh heads in that case.
+    if d.get("aW") and len(d["aW"]) == len(m.aW) and len(d["aW"][0]) == len(m.aW[0]):
+        m.aW, m.ab = d["aW"], d["ab"]
+        m.gaW, m.gab = d.get("gaW", m.gaW), d.get("gab", m.gab)
     m.n_updates = d.get("n_updates", 0)
     m.lr_boost = d.get("lr_boost", 1.0)
     m.replay = deque([(x, t) for x, t in d.get("replay", [])],
@@ -134,6 +140,9 @@ def capture():
             # wiped before it matures and the model NEVER trains (n_updates=0).
             "pending_ml": [[ts, p, x, pred]
                            for (ts, p, x, pred) in list(learner.pending_ml)],
+            "pending_aux": [[ts, p, x, head, hz]
+                            for (ts, p, x, head, hz)
+                            in list(learner.pending_aux)],
             "price_history": {p: hist[-400:]
                               for p, hist in learner.price_history.items()},
         },
@@ -314,6 +323,12 @@ def load():
             else:
                 dropped += 1
         learner.pending_ml = deque(kept, maxlen=learner.pending_ml.maxlen)
+        # Phase 2: restore the auxiliary multi-horizon queue the same way.
+        aux = l.get("pending_aux") or []
+        kept_aux = [(ts, p, x, head, hz) for ts, p, x, head, hz in aux
+                    if isinstance(x, (list, tuple)) and len(x) == N_IN]
+        learner.pending_aux = deque(kept_aux,
+                                    maxlen=learner.pending_aux.maxlen)
         if dropped:
             db.log_event("learn",
                          f"Dropped {dropped} restored pending ML sample(s) "
