@@ -964,8 +964,8 @@ def _cmd_llm(arg):
     app_settings.update({"llm_advisor_enabled": arg == "on"})
     if arg == "on" and not advisor.configured():
         return ("LLM advisor ENABLED — but no API key is set, so it stays "
-                "inert. Set CRYPTOMIND_LLM_KEY (or OPENAI_API_KEY) in the "
-                "environment to activate it.")
+                "inert. Put a Gemini key in llm_key.txt, or set "
+                "CRYPTOMIND_LLM_KEY / GEMINI_API_KEY.")
     return f"LLM advisor {'ENABLED' if arg == 'on' else 'DISABLED'}."
 
 

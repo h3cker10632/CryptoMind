@@ -23,7 +23,7 @@ from collections import deque
 from ..config import ALLOC_LOOKBACK, SIGNAL_EVAL_HORIZON_SEC, ALLOC_TEMPERATURE
 from .. import db
 from ..signals.engine import STRATEGIES
-from .online_model import model, committee, build_x, FEAT_NAMES
+from .online_model import model, committee, build_x, FEAT_NAMES, N_IN
 from .bandit import RegimeBandit
 from .drift import detector, page_hinkley
 from .rl_risk import agent as rl_agent
@@ -101,8 +101,15 @@ class Learner:
         """Label matured feature snapshots and run online SGD updates."""
         now = time.time()
         trained = 0
+        dropped_dim = 0
         while self.pending_ml and now - self.pending_ml[0][0] >= ML_HORIZON_SEC:
             ts, p, x, pred = self.pending_ml.popleft()
+            # Snapshots taken before a feature was added (e.g. 17-d before
+            # mtf_align) must not train an N_IN net — TinyMLP indexes x[i]
+            # against W1 and IndexErrors the whole orchestrator tick.
+            if not isinstance(x, (list, tuple)) or len(x) != N_IN:
+                dropped_dim += 1
+                continue
             p0 = self._price_at(p, ts, market)
             p1 = self._price_at(p, ts + ML_HORIZON_SEC, market) or market.price(p)
             if p0 and p1 and trained < 40:            # cap per cycle
@@ -125,6 +132,10 @@ class Learner:
                 # the reset, not a silent skip that would drain the queue.
                 committee.update(x, fwd, pred_at_record=pred)
                 trained += 1
+        if dropped_dim:
+            db.log_event("learn",
+                         f"Dropped {dropped_dim} pending ML sample(s) with "
+                         f"stale feature dim (need {N_IN})")
         return trained
 
     # ------------------------------------------------ drift

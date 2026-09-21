@@ -23,7 +23,7 @@ CB = "https://api.exchange.coinbase.com"
 CG_TRENDING = "https://api.coingecko.com/api/v3/search/trending"
 
 CORE = list(PRODUCTS)              # original 6 — never removed
-MAX_UNIVERSE = 12                  # core + up to 6 discovered
+MAX_UNIVERSE = 14                  # core + up to 8 discovered
 MIN_DOLLAR_VOL_24H = 3_000_000     # liquidity floor for discovered coins
 REFRESH_SEC = 900                  # discovery cycle every 15 min
 

@@ -64,11 +64,27 @@ def test_parse_tolerates_prose_and_fences():
 def test_not_configured_without_key(monkeypatch):
     settings.update({"llm_advisor_enabled": True})
     monkeypatch.delenv("CRYPTOMIND_LLM_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(LLMAdvisor, "KEY_PATH", os.path.join("no", "such", "llm_key.txt"))
     a = LLMAdvisor()
     assert a.configured() is False
     # refresh no-ops (returns 0) when unconfigured — never raises
     assert asyncio.run(a.refresh(None, None, ["BTC-USD"])) == 0
+    settings.update({"llm_advisor_enabled": False})
+
+
+def test_key_file_configures_advisor(tmp_path, monkeypatch):
+    settings.update({"llm_advisor_enabled": True})
+    monkeypatch.delenv("CRYPTOMIND_LLM_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    p = tmp_path / "llm_key.txt"
+    p.write_text("sk-test-from-file\n")
+    monkeypatch.setattr(LLMAdvisor, "KEY_PATH", str(p))
+    a = LLMAdvisor()
+    assert a._api_key() == "sk-test-from-file"
+    assert a.configured() is True
     settings.update({"llm_advisor_enabled": False})
 
 
@@ -79,10 +95,21 @@ def test_stats_shape():
     assert set(["enabled", "configured", "cached_leans", "calls"]) <= set(st)
 
 
+def test_gemini_is_default_provider(monkeypatch):
+    monkeypatch.delenv("CRYPTOMIND_LLM_BASE", raising=False)
+    monkeypatch.delenv("CRYPTOMIND_LLM_MODEL", raising=False)
+    a = LLMAdvisor()
+    assert "generativelanguage.googleapis.com" in a._base_url()
+    assert a._model().startswith("gemini-")
+    assert a.stats()["provider"] == "gemini"
+
+
 def test_telegram_llm_command_toggles_setting(monkeypatch):
     import app.alerts as alerts
     monkeypatch.delenv("CRYPTOMIND_LLM_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(LLMAdvisor, "KEY_PATH", os.path.join("no", "such", "llm_key.txt"))
     settings.update({"llm_advisor_enabled": False})
     # usage/status when no arg
     assert "Usage: /llm" in alerts._cmd_llm("")

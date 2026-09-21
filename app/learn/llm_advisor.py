@@ -36,9 +36,29 @@ class LLMAdvisor:
         except Exception:
             return False
 
-    @staticmethod
-    def _api_key():
-        return os.environ.get("CRYPTOMIND_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    KEY_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                            "llm_key.txt")
+
+    DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+    DEFAULT_MODEL = "gemini-2.5-flash"
+
+    @classmethod
+    def _api_key(cls):
+        """Env first, then llm_key.txt (gitignored, same pattern as api_token.txt)."""
+        env = (os.environ.get("CRYPTOMIND_LLM_KEY")
+               or os.environ.get("GEMINI_API_KEY")
+               or os.environ.get("OPENAI_API_KEY"))
+        if env:
+            return env.strip()
+        try:
+            if os.path.exists(cls.KEY_PATH):
+                with open(cls.KEY_PATH) as f:
+                    t = f.read().strip()
+                if t:
+                    return t
+        except OSError:
+            pass
+        return None
 
     @staticmethod
     def _ttl():
@@ -121,18 +141,25 @@ class LLMAdvisor:
                                   f"(fed to the bandit as the 'llm' arm)")
         return updated
 
-    async def _ask_model(self, ctx):
-        """Query the configured LLM for a directional lean. Returns (lean, why).
+    @classmethod
+    def _base_url(cls):
+        return (os.environ.get("CRYPTOMIND_LLM_BASE") or cls.DEFAULT_BASE).rstrip("/")
 
-        Provider-agnostic OpenAI-compatible chat call; the endpoint/model are
-        env-overridable. Returns (None, "") on any non-parseable response so the
-        caller keeps the previous cached lean rather than trusting garbage.
+    @classmethod
+    def _model(cls):
+        return os.environ.get("CRYPTOMIND_LLM_MODEL") or cls.DEFAULT_MODEL
+
+    async def _ask_model(self, ctx):
+        """Query Gemini (OpenAI-compatible chat) for a directional lean.
+
+        Defaults to Google's Gemini OpenAI-compat endpoint. Override with
+        CRYPTOMIND_LLM_BASE / CRYPTOMIND_LLM_MODEL. Returns (None, "") on any
+        non-parseable response so the caller keeps the previous cached lean.
         """
         import httpx
         self.calls += 1
-        base = os.environ.get("CRYPTOMIND_LLM_BASE",
-                              "https://api.openai.com/v1")
-        model = os.environ.get("CRYPTOMIND_LLM_MODEL", "gpt-4o-mini")
+        base = self._base_url()
+        model = self._model()
         sys_prompt = (
             "You are a cautious crypto trading advisor. Given compact market "
             "features for one asset, respond with ONLY a JSON object "
@@ -143,6 +170,7 @@ class LLMAdvisor:
         payload = {
             "model": model,
             "temperature": 0.2,
+            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": json.dumps(ctx)},
@@ -184,6 +212,8 @@ class LLMAdvisor:
         return {
             "enabled": self.enabled(),
             "configured": self.configured(),
+            "provider": "gemini",
+            "model": self._model(),
             "cached_leans": {p: round(e["lean"], 3)
                              for p, e in self._leans.items()},
             "last_refresh": self.last_refresh,

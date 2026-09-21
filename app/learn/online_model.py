@@ -147,6 +147,8 @@ class TinyMLP:
                 for qw, qb in zip(self.qW, self.qb)]
 
     def predict(self, x):
+        if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
+            return 0.0
         return self._fwd(self._standardize(x))[1]
 
     def predict_quantiles(self, x):
@@ -224,6 +226,8 @@ class TinyMLP:
 
     def update(self, x, fwd_return, pred_at_record=None):
         """Learn from a labeled sample; also replays PRIORITIZED past samples."""
+        if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
+            return
         target = _clip(fwd_return / 0.004, -1, 1)     # ±0.4% move = full signal
         if pred_at_record is not None and abs(target) > 0.15:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)

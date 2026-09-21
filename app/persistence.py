@@ -305,10 +305,19 @@ def load():
         # before a restart still mature into training examples afterwards. This
         # is what actually lets the online model accumulate updates across the
         # frequent restarts (without it, n_updates is pinned at 0 forever).
+        from .learn.online_model import N_IN
         pend = l.get("pending_ml") or []
-        learner.pending_ml = deque(
-            [(ts, p, x, pred) for ts, p, x, pred in pend],
-            maxlen=learner.pending_ml.maxlen)
+        kept, dropped = [], 0
+        for ts, p, x, pred in pend:
+            if isinstance(x, (list, tuple)) and len(x) == N_IN:
+                kept.append((ts, p, x, pred))
+            else:
+                dropped += 1
+        learner.pending_ml = deque(kept, maxlen=learner.pending_ml.maxlen)
+        if dropped:
+            db.log_event("learn",
+                         f"Dropped {dropped} restored pending ML sample(s) "
+                         f"with stale feature dim (need {N_IN})")
         ph = l.get("price_history") or {}
         learner.price_history = {p: [tuple(pt) for pt in hist]
                                  for p, hist in ph.items()}
