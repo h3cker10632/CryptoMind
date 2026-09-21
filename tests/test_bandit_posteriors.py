@@ -116,13 +116,71 @@ def test_broken_ml_resets_once_then_stops():
         _restore_model(orig_n, orig_acc)
 
 
-def test_run_does_not_feed_bandit_from_1h_labels(monkeypatch):
+def test_signal_stream_feeds_bandit_when_enabled(monkeypatch):
+    """The GROSS directional signal-scoring stream now teaches the bandit as a
+    discounted secondary teacher (signal_learn_weight>0). A matured signal that
+    was directionally RIGHT (price rose after a long) must add a bump to that
+    (regime, strategy) arm on top of the per-cycle decay."""
     from app.learn.loop import Learner
     from app.learn.evolution import evolution
+    from app import tunables
     orig_c = dict(evolution.champions)
     orig_p = dict(evolution.champion_portfolios)
     L = Learner()
     try:
+        tunables.update({"signal_learn_weight": 0.15, "signal_learn_clip": 0.01})
+        evolution.champions = {}
+        evolution.champion_portfolios = {}
+        for _ in range(40):
+            L.bandit.update("bull", "trend", 0.002)
+        n0, mean0, _ = L.bandit.arms[("bull", "trend")]
+
+        monkeypatch.setattr("app.learn.loop.db.unscored_signals",
+                            lambda older: [{"rowid": 1, "product": "BTC-USD",
+                                            "ts": 0, "direction": 1,
+                                            "strategy": "trend",
+                                            "confidence": 1.0,
+                                            "regime": "bull"}])
+        monkeypatch.setattr("app.learn.loop.db.score_signal", lambda *a, **k: None)
+        monkeypatch.setattr("app.learn.loop.db.strategy_scores", lambda *a, **k: [])
+        monkeypatch.setattr("app.learn.loop.db.log_event", lambda *a, **k: None)
+        monkeypatch.setattr("app.learn.loop.db.abandon_signal", lambda *a, **k: None)
+        # price rose from 100 -> 102 over the horizon: a correct long
+        monkeypatch.setattr(L, "_price_at",
+                            lambda p, ts, m=None: 100.0 if ts == 0 else 102.0)
+        monkeypatch.setattr(L, "maybe_evolve", lambda *a, **k: None)
+        monkeypatch.setattr(L, "_train_online_model", lambda *a, **k: 0)
+        monkeypatch.setattr(L, "_check_drift", lambda *a, **k: None)
+        monkeypatch.setattr(L, "_maybe_reset_broken_ml", lambda: False)
+
+        class M:
+            tickers = {}
+            def price(self, p):
+                return 102.0
+
+        L.run(M(), {"label": "bull"})
+        n1, mean1, _ = L.bandit.arms[("bull", "trend")]
+        # the signal update ADDS an observation on top of decay, so n barely
+        # drops (or rises) vs the pure-decay case, and the arm is still positive
+        assert n1 > n0 * 0.99                           # gained an obs vs decay-only
+        assert mean1 > 0                                # correct long kept it positive
+    finally:
+        tunables.update({"signal_learn_weight": 0.15})
+        evolution.champions = orig_c
+        evolution.champion_portfolios = orig_p
+
+
+def test_signal_stream_disabled_when_weight_zero(monkeypatch):
+    """signal_learn_weight=0 restores the old behaviour: the 1h signal stream
+    is dashboard-only and does NOT touch the bandit (decay only)."""
+    from app.learn.loop import Learner
+    from app.learn.evolution import evolution
+    from app import tunables
+    orig_c = dict(evolution.champions)
+    orig_p = dict(evolution.champion_portfolios)
+    L = Learner()
+    try:
+        tunables.update({"signal_learn_weight": 0.0})
         evolution.champions = {}
         evolution.champion_portfolios = {}
         for _ in range(40):
@@ -152,13 +210,13 @@ def test_run_does_not_feed_bandit_from_1h_labels(monkeypatch):
 
         L.run(M(), {"label": "bull"})
         n1, mean1, _ = L.bandit.arms[("bull", "trend")]
-        assert n1 < n0                                 # decay only
-        assert mean1 > 0                               # 1h −1.2% was NOT applied
+        assert n1 < n0                                 # decay only, no new obs
         assert abs(mean1) < abs(mean0)                 # idle mean toward 0
         assert L.last_cycle["ghost_weight"] == 0.0
         assert "evolved" in L.last_cycle["silent"]
         assert L.weights["evolved"] == 0.0
     finally:
+        tunables.update({"signal_learn_weight": 0.15})
         evolution.champions = orig_c
         evolution.champion_portfolios = orig_p
 

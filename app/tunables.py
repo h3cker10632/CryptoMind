@@ -105,8 +105,17 @@ TUNABLES = {
                            "its universe heat"),
     "trade_weight":      T(2.0, 0.5, 10.0, 0.5, "learning", "Trade attribution weight",
                            "Scale on closed-trade net PnL fed to the bandit "
-                           "(1h signal labels are dashboard-only and no longer "
-                           "update posteriors)"),
+                           "(the premium, real-money learning signal)"),
+    "signal_learn_weight": T(0.15, 0.0, 1.0, 0.01, "learning", "Signal-stream weight",
+                           "Scale on the GROSS directional signal-scoring stream fed "
+                           "to the bandit. This is abundant (100-1000x the trade "
+                           "count) but lower quality (pre-cost, not a real fill), so "
+                           "it's discounted well below trade_weight. 0 disables it — "
+                           "restoring the old dashboard-only behaviour."),
+    "signal_learn_clip":  T(0.01, 0.001, 0.05, 0.001, "learning", "Signal-stream clip",
+                           "Clip each gross signal forward-return to +/- this before "
+                           "feeding the bandit, so one violent bar can't dominate the "
+                           "abundant-but-noisy signal stream"),
     "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
                            "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
     # ---- predictive loss-cut exit advisor ----

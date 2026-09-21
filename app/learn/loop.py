@@ -357,13 +357,22 @@ class Learner:
         regime_label = (regime or {}).get("label", "unknown")
         self.current_regime_label = regime_label
 
-        # 1. score matured strategy signals for the DASHBOARD only.
-        # Do NOT feed 1h net-of-taker into the bandit: that exam subtracts ~120bps
-        # from every vote, so every 5m sleeve prints as a confirmed loser and
-        # drowns the 8 real fill attributions. Closed-trade PnL (on_trade_closed)
-        # is the only bandit teacher.
+        # 1. score matured strategy signals.
+        # The GROSS (pre-cost) forward return measures a sleeve's DIRECTIONAL
+        # skill. We store it for the dashboard AND feed it to the bandit as a
+        # separate, heavily-discounted teacher (signal_learn_weight). Rationale:
+        # closed-trade PnL is the premium signal but is desperately sparse (a
+        # handful of fills/hour across all regime×strategy arms — it can take
+        # weeks to fill one arm to NET_EDGE_N). The signal stream is 100-1000x
+        # more abundant, so a small amount of it dramatically speeds warm-up on
+        # DIRECTION. We deliberately do NOT subtract taker cost here (that made
+        # every 5m sleeve a confirmed loser); net-of-cost skill is still taught
+        # by on_trade_closed, which keeps the dominant weight.
         matured = db.unscored_signals(now - SIGNAL_EVAL_HORIZON_SEC)
         n_scored, n_retry, n_abandon = 0, 0, 0
+        from ..tunables import tv as _tv0
+        sig_w = _tv0("signal_learn_weight")
+        sig_clip = _tv0("signal_learn_clip")
         for s in matured:
             p0 = self._price_at(s["product"], s["ts"], market)
             p1 = self._price_at(s["product"], s["ts"] + SIGNAL_EVAL_HORIZON_SEC, market) \
@@ -372,6 +381,13 @@ class Learner:
                 fwd = (p1 / p0 - 1) * s["direction"]
                 db.score_signal(s["rowid"], fwd)   # store GROSS fwd for the UI
                 n_scored += 1
+                # feed the bandit a discounted, clipped, confidence-weighted
+                # directional lesson (only for arms it actually allocates to)
+                if sig_w > 0 and s["strategy"] in STRATEGIES:
+                    aligned = max(-sig_clip, min(sig_clip, fwd))
+                    reg = s.get("regime") or "unknown"
+                    self.bandit.update(reg, s["strategy"],
+                                       aligned * s["confidence"] * sig_w)
             elif now - s["ts"] > LOOKUP_GIVE_UP_SEC:
                 db.abandon_signal(s["rowid"])
                 n_abandon += 1
