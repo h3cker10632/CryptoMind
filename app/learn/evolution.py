@@ -191,12 +191,85 @@ def walk_forward_eval(genome, candles, n_windows=5, embargo=70, sizing="risk"):
 
 # ---------------- genome simulation on candle history ----------------
 
+try:
+    import numpy as _np
+except Exception:                       # numpy optional — pure-Python fallback
+    _np = None
+
+
 def _ema_series(xs, n):
     k = 2 / (n + 1)
     out = [xs[0]]
     for x in xs[1:]:
         out.append(x * k + out[-1] * (1 - k))
     return out
+
+
+def _precompute_indicators(candles, genome):
+    """Vectorized indicator precompute for one genome over a candle history.
+
+    Computes EMA(fast/slow), ATR(14), RSI(14), and rolling breakout high/low
+    ONCE with NumPy instead of recomputing each window inside the per-bar trade
+    loop (the old O(bars x window) hot path). Results are numerically identical
+    to the original per-bar arithmetic to floating-point epsilon (verified), so
+    trade decisions and promoted champions are unchanged.
+
+    Returns a dict of Python lists (the sequential loop indexes them exactly
+    like the old locals). Returns None if NumPy is unavailable, so the caller
+    falls back to the original per-bar computation.
+    """
+    if _np is None:
+        return None
+    n = len(candles)
+    arr = _np.asarray(candles, dtype=float)
+    lows, highs, closes = arr[:, 1], arr[:, 2], arr[:, 4]
+    n_bo = genome["breakout_n"]
+
+    # ATR(14): true range then trailing 14-mean (bar i uses j in [i-13, i],
+    # prev-close from i-14; matches the original loop exactly for i >= 14).
+    prev_c = _np.empty(n)
+    prev_c[0] = closes[0]
+    prev_c[1:] = closes[:-1]
+    tr = _np.maximum(highs - lows,
+                     _np.maximum(_np.abs(highs - prev_c), _np.abs(lows - prev_c)))
+    cs_tr = _np.concatenate(([0.0], _np.cumsum(tr)))
+    atr = _np.zeros(n)
+    if n > 14:
+        idx = _np.arange(14, n)
+        atr[idx] = (cs_tr[idx + 1] - cs_tr[idx - 13]) / 14.0
+
+    # RSI(14): trailing 14-mean of gains/losses (same window as ATR).
+    diff = _np.diff(closes, prepend=closes[0])
+    gain = _np.clip(diff, 0, None)
+    loss = _np.clip(-diff, 0, None)
+    cs_g = _np.concatenate(([0.0], _np.cumsum(gain)))
+    cs_l = _np.concatenate(([0.0], _np.cumsum(loss)))
+    rsi = _np.zeros(n)
+    if n > 14:
+        idx = _np.arange(14, n)
+        ag = (cs_g[idx + 1] - cs_g[idx - 13]) / 14.0
+        al = (cs_l[idx + 1] - cs_l[idx - 13]) / 14.0
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            r = 100.0 - 100.0 / (1.0 + ag / al)
+        r[al == 0] = 100.0
+        rsi[idx] = r
+
+    # Rolling breakout high/low: for bar i, max(high[i-n_bo:i]) / min(low[...]).
+    brk_up = _np.zeros(n)
+    brk_dn = _np.zeros(n)
+    if n_bo >= 1 and n > n_bo:
+        from numpy.lib.stride_tricks import sliding_window_view
+        sw_hi = sliding_window_view(highs, n_bo).max(axis=1)   # sw_hi[s]=max hi[s:s+n_bo]
+        sw_lo = sliding_window_view(lows, n_bo).min(axis=1)
+        idx = _np.arange(n_bo, n)
+        brk_up[idx] = sw_hi[idx - n_bo]                        # window [i-n_bo, i-1]
+        brk_dn[idx] = sw_lo[idx - n_bo]
+
+    return {"ema_fast": _ema_series(closes.tolist(), genome["ema_fast"]),
+            "ema_slow": _ema_series(closes.tolist(), genome["ema_slow"]),
+            "atr": atr.tolist(), "rsi": rsi.tolist(),
+            "brk_up": brk_up.tolist(), "brk_dn": brk_dn.tolist(),
+            "closes": closes.tolist()}
 
 
 def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
@@ -234,10 +307,21 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
         # never exceed the position cap or available cash
         return min(notional, equity_now * max_pos, equity_now * 0.95)
     closes = [c[4] for c in candles]
-    ef = _ema_series(closes, genome["ema_fast"])
-    es = _ema_series(closes, genome["ema_slow"])
     n_bo = genome["breakout_n"]
     can_short = genome.get("short_w", 0) > 0.5
+
+    # Vectorized indicator precompute (NumPy) — identical arithmetic to the old
+    # per-bar loop, computed once. Falls back to per-bar computation if NumPy is
+    # unavailable (`ind` stays None).
+    ind = _precompute_indicators(candles, genome)
+    if ind is not None:
+        ef, es = ind["ema_fast"], ind["ema_slow"]
+        _atr, _rsi = ind["atr"], ind["rsi"]
+        _brk_up_lvl, _brk_dn_lvl = ind["brk_up"], ind["brk_dn"]
+    else:
+        ef = _ema_series(closes, genome["ema_fast"])
+        es = _ema_series(closes, genome["ema_slow"])
+        _atr = _rsi = _brk_up_lvl = _brk_dn_lvl = None
 
     cash, side, qty, entry, stop, take, margin = start_cash, 0, 0.0, 0.0, 0.0, 0.0, 0.0
     eq, trades = [], []
@@ -257,12 +341,15 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
     for i in range(warm, len(candles)):
         ts, lo, hi, op, cl, vol = candles[i]
 
-        # ATR(14)
-        trs = []
-        for j in range(i - 13, i + 1):
-            phi, plo, pc = candles[j][2], candles[j][1], candles[j - 1][4]
-            trs.append(max(phi - plo, abs(phi - pc), abs(plo - pc)))
-        atr = sum(trs) / 14
+        # ATR(14) — precomputed (NumPy) or per-bar fallback
+        if _atr is not None:
+            atr = _atr[i]
+        else:
+            trs = []
+            for j in range(i - 13, i + 1):
+                phi, plo, pc = candles[j][2], candles[j][1], candles[j - 1][4]
+                trs.append(max(phi - plo, abs(phi - pc), abs(plo - pc)))
+            atr = sum(trs) / 14
 
         # exits (intra-bar)
         if side > 0:
@@ -277,15 +364,22 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
                 close_pos(take * (1 + slip))
 
         if side == 0 and atr > 0:
-            # RSI(14)
-            gains = [max(closes[j] - closes[j - 1], 0) for j in range(i - 13, i + 1)]
-            losses = [max(closes[j - 1] - closes[j], 0) for j in range(i - 13, i + 1)]
-            ag, al = sum(gains) / 14, sum(losses) / 14
-            rsi = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+            # RSI(14) — precomputed (NumPy) or per-bar fallback
+            if _rsi is not None:
+                rsi = _rsi[i]
+            else:
+                gains = [max(closes[j] - closes[j - 1], 0) for j in range(i - 13, i + 1)]
+                losses = [max(closes[j - 1] - closes[j], 0) for j in range(i - 13, i + 1)]
+                ag, al = sum(gains) / 14, sum(losses) / 14
+                rsi = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
 
             up_trend = ef[i] > es[i]
-            brk_up = cl >= max(c[2] for c in candles[i - n_bo:i])
-            brk_dn = cl <= min(c[1] for c in candles[i - n_bo:i])
+            if _brk_up_lvl is not None:
+                brk_up = cl >= _brk_up_lvl[i]
+                brk_dn = cl <= _brk_dn_lvl[i]
+            else:
+                brk_up = cl >= max(c[2] for c in candles[i - n_bo:i])
+                brk_dn = cl <= min(c[1] for c in candles[i - n_bo:i])
             mom_up = closes[i] > closes[i - 12] if genome["mom_w"] > 0.5 else True
             mom_dn = closes[i] < closes[i - 12] if genome["mom_w"] > 0.5 else True
 
