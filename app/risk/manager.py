@@ -152,6 +152,24 @@ class RiskManager:
         ok, why = self.price_sane(product, market)
         if not ok:
             return False, why
+        # ---- meme blast-radius caps ----
+        # Memes are high-variance; keep them from taking over the book. Two
+        # independent caps: a limit on CONCURRENT meme positions and a limit on
+        # total meme exposure as a fraction of equity. Non-meme trading is
+        # unaffected by these.
+        from ..data.memes import memes
+        if memes.is_meme(product):
+            if not memes.enabled():
+                return False, "meme trading disabled"
+            held_memes = [q for q in broker.positions if memes.is_meme(q)]
+            if len(held_memes) >= tv("meme_max_positions"):
+                return False, f"max meme positions ({tv('meme_max_positions')})"
+            meme_expo = sum(broker.position_notional(q, market)
+                            if hasattr(broker, "position_notional")
+                            else abs(broker.positions[q]["qty"]) * (market.price(q) or 0)
+                            for q in held_memes)
+            if eq > 0 and meme_expo / eq >= tv("meme_max_exposure"):
+                return False, "max meme exposure"
         return True, "ok"
 
     def price_sane(self, product, market):
@@ -214,12 +232,20 @@ class RiskManager:
         st = stance.current()
         scale = risk_status["effective_risk_scale"] * st["risk_mult"]
         ml_mult = 0.4 + 0.6 * max(0.0, min(1.0, ml_confidence))   # 0.4x .. 1.0x
+        # ---- meme risk envelope ----
+        # A meme position risks a fraction of the normal dollar risk and uses a
+        # wider stop (memes gap hard, so a normal-width stop just donates the
+        # spread on noise). Both are tunables; 1.0 / 1.0 disables the effect.
+        from ..data.memes import memes
+        is_meme = product is not None and memes.is_meme(product)
+        meme_risk_mult = tv("meme_risk_factor") if is_meme else 1.0
+        meme_stop_mult = tv("meme_stop_widen") if is_meme else 1.0
         risk_dollars = (equity * tv("risk_per_trade") * scale
-                        * (0.5 + confidence / 2) * ml_mult)
+                        * (0.5 + confidence / 2) * ml_mult * meme_risk_mult)
         # ---- honest ATR-based stop & target ----
         # Size from the REAL volatility horizon, never a fee-floor-inflated one.
-        stop_dist = tv("stop_atr_mult") * atr
-        take_dist = tv("take_profit_atr_mult") * atr
+        stop_dist = tv("stop_atr_mult") * atr * meme_stop_mult
+        take_dist = tv("take_profit_atr_mult") * atr * meme_stop_mult
         if stop_dist <= 0 or take_dist <= 0:
             return 0, 0, 0
         # ---- cost-viability gate ----
@@ -234,7 +260,11 @@ class RiskManager:
         if take_dist < min_take_dist:
             return 0, 0, 0        # unprofitable after costs -> no trade
         notional = risk_dollars / (stop_dist / price)
-        notional = min(notional, equity * tv("max_position_pct") * min(1.5, st["risk_mult"]))
+        pos_cap = equity * tv("max_position_pct") * min(1.5, st["risk_mult"])
+        if is_meme:
+            # never let the position-% fallback re-inflate a meme past its share
+            pos_cap = min(pos_cap, equity * tv("max_position_pct") * meme_risk_mult)
+        notional = min(notional, pos_cap)
         # per-coin liquidity cap: never take more than `liq_cap_pct` of the
         # asset's ~24h traded dollar volume, so our own order can't move a thin
         # discovered coin's book (also keeps paper fills realistic).

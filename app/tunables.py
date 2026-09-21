@@ -133,6 +133,18 @@ TUNABLES = {
     "mtf_veto_align":    T(0.75, 0.34, 1.0, 0.01, "learning", "HTF direction veto",
                            "Block entries that fight the higher-timeframe trend when "
                            "|mtf_align| is at least this (1.0 disables the veto)"),
+    # ---- meme coin risk envelope ----
+    "meme_risk_factor":  T(0.5, 0.1, 1.0, 0.05, "meme", "Meme risk factor",
+                           "Fraction of normal dollar-risk and position cap used for "
+                           "meme coins (0.5 = half size; 1.0 = same as any coin)"),
+    "meme_stop_widen":   T(1.5, 1.0, 3.0, 0.1, "meme", "Meme stop/target widen",
+                           "Multiplier on the ATR stop AND target for memes — they "
+                           "gap hard, so a normal-width stop just donates spread"),
+    "meme_max_positions": T(2, 1, 6, 1, "meme", "Max concurrent memes",
+                           "Cap on how many meme positions can be open at once", True),
+    "meme_max_exposure": T(0.15, 0.02, 0.60, 0.01, "meme", "Max meme exposure",
+                           "Total meme notional cap as a fraction of equity — the "
+                           "blast radius if a meme trade goes wrong"),
     "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
                            "Seconds between LLM-advisor lean refreshes (only when "
                            "the advisor is enabled + a key is configured)", True),

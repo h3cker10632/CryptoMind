@@ -420,6 +420,18 @@ class Orchestrator:
         except Exception:
             return {}
 
+    @staticmethod
+    def _meme_snapshot():
+        try:
+            from .data.memes import memes
+            s = memes.stats()
+            held = [p for p in broker.positions if memes.is_meme(p)]
+            return {"enabled": s.get("enabled"),
+                    "active_in_universe": s.get("active_in_universe"),
+                    "held": held, "known_count": s.get("known_count")}
+        except Exception:
+            return {}
+
     def snapshot(self):
         eq = broker.equity(market)
         return {
@@ -446,6 +458,7 @@ class Orchestrator:
             "stance": stance.current(),
             "guardian": guardian.snapshot(),
             "exit_advisor": self._exit_advisor_snapshot(),
+            "memes": self._meme_snapshot(),
             "hedge": hedger.snapshot(),
             "macro_blackout": _calendar_stats(),
             "regime": market.regime(),

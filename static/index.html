@@ -124,6 +124,10 @@
     <div class="sw"></div>
     <span>loss-cut advisor: <b id="tg-exit-label">on</b></span>
   </div>
+  <div class="toggle" id="tg-meme" title="Meme-coin trading: seeds Coinbase-listed meme majors (DOGE/SHIB/PEPE/BONK/WIF/FLOKI) and auto-discovers hot new memes from CoinGecko's meme category. High variance — traded under a tighter risk envelope (smaller size, wider stops, concurrent + total exposure caps).">
+    <div class="sw"></div>
+    <span>meme trading: <b id="tg-meme-label">off</b></span>
+  </div>
   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
     <span style="color:var(--dim)">stance:</span>
     <button data-mode="passive">🛡 passive</button>
@@ -768,6 +772,8 @@ function renderToggles(){
   $('#tg-llm-label').textContent=s.llm_advisor_enabled?'on (needs API key)':'off';
   $('#tg-exit').classList.toggle('on', s.exit_advisor_enabled!==false);
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
+  $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
+  $('#tg-meme-label').textContent=s.meme_trading_enabled?'on':'off';
 }
 async function loadSettings(){
   try{window._settings=await j('/api/settings');renderToggles();}catch(e){}
@@ -785,6 +791,7 @@ document.querySelectorAll('#seg-mode button').forEach(b=>
 $('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).hedge_enabled);
 $('#tg-llm').onclick=()=>setSetting('llm_advisor_enabled',!(window._settings||{}).llm_advisor_enabled);
 $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
+$('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
 loadSettings();
 
 // ===== alerts =====

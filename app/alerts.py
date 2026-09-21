@@ -622,6 +622,17 @@ def _cmd_brains():
     except Exception:
         out.append("• (initialising)")
     out.append("")
+    out.append("*Meme sleeve*")
+    try:
+        from .data.memes import memes
+        ms = memes.stats()
+        out.append(f"• Enabled: {'yes' if ms.get('enabled') else 'no'}   "
+                   f"known memes: {ms.get('known_count', 0)}")
+        active = ms.get("active_in_universe") or []
+        out.append("• Trading: " + (", ".join(active) if active else "none in universe yet"))
+    except Exception:
+        out.append("• (initialising)")
+    out.append("")
     out.append("*GA evolution*")
     ports = evolution.champion_portfolios or {}
     if champs:

@@ -87,6 +87,14 @@ class PaperBroker:
             pos["regime_at_entry"] = regime_at_entry
         if is_hedge:
             pos["hedge"] = True
+        # tag meme positions so PnL attribution / dashboards can separate the
+        # meme sleeve's performance from the core book's.
+        try:
+            from ..data.memes import memes
+            if memes.is_meme(product):
+                pos["meme"] = True
+        except Exception:
+            pass
         if direction < 0:
             pos["margin"] = notional
         self.positions[product] = pos

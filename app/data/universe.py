@@ -165,6 +165,14 @@ class Universe:
     async def refresh(self, client):
         await self._load_coinbase_products(client)
         await self._fetch_trending(client)
+        # MEME source: give curated meme majors standing eligibility and tag any
+        # known meme so the risk manager can apply its tighter envelope. Runs
+        # before decay/selection so seeded memes compete for a universe slot.
+        try:
+            from .memes import memes
+            memes.seed_universe()
+        except Exception as e:
+            db.log_event("warn", f"Meme seeding failed: {e}")
         # capital-flow source (OI growth) — best-effort; never blocks discovery
         try:
             await self._fetch_oi_growth(client)

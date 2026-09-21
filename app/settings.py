@@ -30,6 +30,13 @@ DEFAULTS = {
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
     "exit_advisor_enabled": True,
+    # Meme-coin trading. When True, a curated seed of Coinbase-listed meme
+    # majors becomes eligible immediately and CoinGecko's meme category is
+    # polled so hot new memes surface automatically — all under a tighter risk
+    # envelope (smaller size, wider stops, concurrent + total exposure caps).
+    # High variance by nature. Enabled per the operator's request to "see how
+    # it plays out"; toggle off any time on the dashboard.
+    "meme_trading_enabled": True,
 }
 
 STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}

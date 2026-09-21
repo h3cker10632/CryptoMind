@@ -9,6 +9,7 @@ from .data.ws_market import WSMarket
 from .data.research import research
 from .data.derivatives import derivatives
 from .data.universe import universe
+from .data.memes import memes
 from .data.calendar import calendar
 from .nlp.sentiment import nlp
 from .signals.engine import engine, STRATEGIES
@@ -60,6 +61,7 @@ async def startup():
     asyncio.create_task(research.run())
     asyncio.create_task(derivatives.run())
     asyncio.create_task(universe.run())
+    asyncio.create_task(memes.run())
     asyncio.create_task(calendar.run())
     asyncio.create_task(orch.decision_loop())
     asyncio.create_task(orch.watchdog())
