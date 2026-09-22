@@ -349,6 +349,163 @@ class TinyMLP:
         }
 
 
+# ---------------------------------------------------------------- conformal
+# Target MISCOVERAGE for the calibrated predictive interval. alpha=0.20 asks for
+# an 80% interval: over the long run the realized (scaled) return should fall
+# inside [lo, hi] ~80% of the time. Coverage is what the sizer's confidence is
+# ultimately staking on, so we want it to MEAN something.
+CONFORMAL_ALPHA = 0.20
+# rolling calibration-set size and ACI step. The window keeps calibration LOCAL
+# (recent regime) rather than averaging over ancient history; gamma is how
+# aggressively Adaptive Conformal Inference chases the coverage target when the
+# regime shifts and the raw bands stop covering.
+CONFORMAL_WINDOW = 500
+CONFORMAL_GAMMA = 0.02
+
+
+def _quantile_sorted(sorted_vals, q):
+    """Linear-interpolation quantile of an ALREADY-SORTED list, q in [0,1].
+    Pure-Python (this module is numpy-free on the hot path)."""
+    n = len(sorted_vals)
+    if n == 0:
+        return 0.0
+    if q <= 0:
+        return sorted_vals[0]
+    if q >= 1:
+        return sorted_vals[-1]
+    pos = q * (n - 1)
+    lo_i = int(math.floor(pos))
+    hi_i = int(math.ceil(pos))
+    if lo_i == hi_i:
+        return sorted_vals[lo_i]
+    frac = pos - lo_i
+    return sorted_vals[lo_i] * (1 - frac) + sorted_vals[hi_i] * frac
+
+
+class ConformalCalibrator:
+    """Split/Adaptive CONFORMAL PREDICTION over the committee's raw band.
+
+    The committee's quantile heads are TRAINED but never CALIBRATED — nothing
+    guarantees the realized return actually lands inside [lo, hi] at the claimed
+    rate, and on fat-tailed crypto trained quantiles are usually OVER-confident
+    (bands too narrow → the sizer presses size when it shouldn't).
+
+    This wraps the model (no retraining) with an inductive-conformal correction:
+      * keep a rolling calibration set of CQR nonconformity scores
+            s = max(lo - y, y - hi)
+        (how far outside the raw band the truth fell; NEGATIVE when it fell
+        comfortably inside).
+      * qhat = the (1-alpha)-quantile of those scores, with the standard
+        finite-sample (n+1)/n inflation. The calibrated interval is then
+            [lo - qhat, hi + qhat]
+        which carries a distribution-free ~(1-alpha) marginal coverage
+        guarantee. qhat < 0 means the raw bands were too WIDE and we TIGHTEN.
+      * ADAPTIVE CONFORMAL INFERENCE (ACI): the effective miscoverage alpha_t is
+        nudged every observation — widen after a miss, tighten after a hit — so
+        coverage self-corrects through regime change instead of drifting.
+
+    All state is cheap and JSON-serialisable so it rides the normal snapshot.
+    """
+
+    def __init__(self, alpha=CONFORMAL_ALPHA, window=CONFORMAL_WINDOW,
+                 gamma=CONFORMAL_GAMMA):
+        self.alpha_target = alpha        # desired long-run miscoverage
+        self.window = window
+        self.gamma = gamma
+        self.alpha_t = alpha             # ACI-adapted miscoverage (live)
+        self.scores = deque(maxlen=window)      # CQR nonconformity scores
+        self._cov = deque(maxlen=window)        # 1/0 coverage over recent obs
+        self.n_seen = 0
+
+    # need a minimum calibration set before the quantile is trustworthy;
+    # below it we behave exactly like the old (uncalibrated) path (qhat=0).
+    @property
+    def ready(self):
+        return len(self.scores) >= 20
+
+    def qhat(self):
+        """Conformal correction on the same scaled-return axis as the band."""
+        if not self.ready:
+            return 0.0
+        n = len(self.scores)
+        level = 1.0 - self.alpha_t                    # ACI-adapted coverage
+        # finite-sample conformal rank (1-alpha)(n+1)/n, capped at 1.0
+        rank = min(1.0, max(0.0, level * (n + 1) / n))
+        return _quantile_sorted(sorted(self.scores), rank)
+
+    def calibrate(self, lo, hi):
+        """Widen (or tighten) a raw band into a coverage-calibrated one."""
+        q = self.qhat()
+        cal_lo, cal_hi = lo - q, hi + q
+        if cal_hi < cal_lo:                            # extreme tighten: collapse
+            mid = 0.5 * (cal_lo + cal_hi)
+            cal_lo = cal_hi = mid
+        return cal_lo, cal_hi, q
+
+    def observe(self, lo, hi, y):
+        """Fold one matured (raw_band, realized_y) pair into the calibration set
+        and run the ACI coverage update. Call with the RAW band that was (re)
+        produced for this sample and the realized scaled return y."""
+        # coverage of the interval we WOULD have emitted (uses current qhat),
+        # tallied BEFORE this score joins the set.
+        q = self.qhat()
+        covered = (lo - q) <= y <= (hi + q)
+        self._cov.append(1 if covered else 0)
+        # ACI: alpha_{t+1} = alpha_t + gamma*(alpha - err). err=1 on a miss lowers
+        # alpha_t → higher coverage target → wider next time; a hit nudges back.
+        err = 0.0 if covered else 1.0
+        self.alpha_t = min(0.60, max(0.01,
+                                     self.alpha_t + self.gamma * (self.alpha_target - err)))
+        # CQR nonconformity score (negative when y sat comfortably inside).
+        self.scores.append(max(lo - y, y - hi))
+        self.n_seen += 1
+
+    def coverage(self):
+        """Empirical rolling coverage of the calibrated interval, or None."""
+        if not self._cov:
+            return None
+        return sum(self._cov) / len(self._cov)
+
+    def stats(self):
+        return {
+            "n_scores": len(self.scores),
+            "n_seen": self.n_seen,
+            "alpha_target": round(self.alpha_target, 4),
+            "alpha_t": round(self.alpha_t, 4),
+            "qhat": round(self.qhat(), 5),
+            "coverage": (round(self.coverage(), 4)
+                         if self.coverage() is not None else None),
+            "ready": self.ready,
+        }
+
+    def to_dict(self):
+        return {
+            "alpha_target": self.alpha_target,
+            "alpha_t": self.alpha_t,
+            "window": self.window,
+            "gamma": self.gamma,
+            "scores": list(self.scores),
+            "cov": list(self._cov),
+            "n_seen": self.n_seen,
+        }
+
+    def load_dict(self, d):
+        if not d:
+            return False
+        try:
+            self.alpha_target = float(d.get("alpha_target", self.alpha_target))
+            self.alpha_t = float(d.get("alpha_t", self.alpha_target))
+            self.gamma = float(d.get("gamma", self.gamma))
+            w = int(d.get("window", self.window))
+            self.window = w
+            self.scores = deque((float(s) for s in d.get("scores", [])), maxlen=w)
+            self._cov = deque((int(c) for c in d.get("cov", [])), maxlen=w)
+            self.n_seen = int(d.get("n_seen", len(self.scores)))
+            return True
+        except (TypeError, ValueError):
+            return False
+
+
 class Committee:
     """A small ENSEMBLE of independently-seeded TinyMLPs.
 
@@ -368,6 +525,11 @@ class Committee:
     def __init__(self, n_members=3, base_seed=7, **kw):
         self.members = [TinyMLP(seed=base_seed + 101 * i, **kw)
                         for i in range(max(1, n_members))]
+        # CONFORMAL layer: calibrates the raw ensemble band to a guaranteed
+        # coverage level and derives the sizer's confidence from the calibrated
+        # (not the trained-but-uncalibrated) width. Fed matured labels via
+        # observe_outcome() from the training loop.
+        self.calibrator = ConformalCalibrator()
 
     @property
     def primary(self):
@@ -406,14 +568,10 @@ class Committee:
         for i, m in enumerate(self.members):
             m.reset(seed=base_seed + 101 * i)
 
-    def predict_with_uncertainty(self, x):
-        """Return a dict:
-          mean       committee mean of member medians
-          epistemic  stdev of member medians (disagreement)
-          aleatoric  mean member P10..P90 band half-width
-          lo, hi     combined predictive band (mean ± total uncertainty)
-          confidence in [0,1]: high when BOTH uncertainties are small.
-        """
+    def _raw_band(self, x):
+        """Committee mean + the RAW (uncalibrated) predictive band and its two
+        uncertainty components. Shared by prediction and calibration so the
+        calibration score is measured against the exact band the sizer sees."""
         meds, halfwidths = [], []
         for m in self.members:
             lo, med, hi = m.predict_quantiles(x)
@@ -427,18 +585,52 @@ class Committee:
             epistemic = 0.0
         aleatoric = sum(halfwidths) / len(halfwidths)
         total = math.sqrt(epistemic ** 2 + aleatoric ** 2)
-        # map total predictive uncertainty (on the ±1 scaled-return axis) to a
-        # confidence multiplier: ~0 unc -> 1.0, growing unc -> toward 0.
-        confidence = 1.0 / (1.0 + 4.0 * total)
+        return mean, epistemic, aleatoric, total
+
+    def predict_with_uncertainty(self, x):
+        """Return a dict:
+          mean          committee mean of member medians
+          epistemic     stdev of member medians (disagreement)
+          aleatoric     mean member P10..P90 band half-width
+          lo, hi        CONFORMAL-CALIBRATED predictive band
+          raw_lo, raw_hi the pre-calibration (mean ± total) band
+          qhat          conformal correction applied (+widen / -tighten)
+          calibrated    True once the calibration set is warm
+          confidence in [0,1]: derived from the CALIBRATED half-width, so it
+                        reflects an empirically-verified ~(1-alpha) interval
+                        rather than the model's trained-but-unchecked band.
+        """
+        mean, epistemic, aleatoric, total = self._raw_band(x)
+        raw_lo, raw_hi = mean - total, mean + total
+        cal_lo, cal_hi, qhat = self.calibrator.calibrate(raw_lo, raw_hi)
+        # confidence from the CALIBRATED half-width on the ±1 scaled-return axis.
+        cal_half = max(0.0, (cal_hi - cal_lo) / 2)
+        confidence = 1.0 / (1.0 + 4.0 * cal_half)
         return {"mean": mean, "epistemic": epistemic, "aleatoric": aleatoric,
-                "lo": mean - total, "hi": mean + total,
+                "lo": cal_lo, "hi": cal_hi,
+                "raw_lo": raw_lo, "raw_hi": raw_hi,
+                "qhat": qhat, "calibrated": self.calibrator.ready,
                 "confidence": max(0.0, min(1.0, confidence))}
+
+    def observe_outcome(self, x, fwd_return):
+        """Fold a matured (features, realized forward-return) pair into the
+        conformal calibration set. `fwd_return` is the RAW return; it is scaled
+        onto the model's ±1 target axis exactly like update() does so the score
+        lives on the same axis as the band. Safe to call before the band heads
+        have warmed — the calibrator just accumulates until it is `ready`."""
+        if not isinstance(x, (list, tuple)) or len(x) != len(self.primary.feat_mean):
+            return
+        y = _clip(fwd_return / 0.004, -1, 1)
+        mean, _epi, _ale, total = self._raw_band(x)
+        raw_lo, raw_hi = mean - total, mean + total
+        self.calibrator.observe(raw_lo, raw_hi, y)
 
     def stats(self):
         st = dict(self.primary.stats())
         # disagreement across members on the last replayed samples is expensive;
         # expose a cheap structural summary instead.
         st["committee_members"] = len(self.members)
+        st["conformal"] = self.calibrator.stats()
         return st
 
 

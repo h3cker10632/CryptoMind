@@ -155,6 +155,9 @@ def capture():
         "model": _dump_mlp(model),
         # `committee` = every member (primary included) for the full ensemble.
         "committee": [_dump_mlp(m) for m in committee.members],
+        # CONFORMAL calibrator state (rolling nonconformity scores + ACI alpha)
+        # so the calibrated coverage guarantee survives restarts warm.
+        "conformal": committee.calibrator.to_dict(),
         "rl": {
             "q": _save_dict_tupkeys(rl_agent.q),
             "eps": rl_agent.eps,
@@ -375,6 +378,10 @@ def load():
                 # legacy snapshot had one net: seed the other members off it.
                 for member in committee.members[1:]:
                     _load_mlp(member, m)
+
+        # conformal calibrator (optional — absent in pre-conformal snapshots,
+        # in which case it simply starts cold and re-warms from live outcomes).
+        committee.calibrator.load_dict(s.get("conformal"))
 
         q = s.get("rl", {})
         rl_agent.q = _load_q(q.get("q", {}))

@@ -152,6 +152,11 @@ class Learner:
                         committee.lr_boost = 2.0
                         db.log_event("learn", "CONCEPT DRIFT (Page-Hinkley): model "
                                      "error broke trend — LR boosted x2 to re-adapt")
+                # CONFORMAL CALIBRATION: fold this matured outcome into the
+                # calibration set BEFORE the update, so the nonconformity score
+                # is measured against the band the model actually emitted when it
+                # made this prediction (inductive/split-conformal ordering).
+                committee.observe_outcome(x, fwd)
                 # run() resets a broken head BEFORE this, so samples land on a
                 # fresh net. Direct callers (tests) still train — freezing is
                 # the reset, not a silent skip that would drain the queue.
