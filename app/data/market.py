@@ -1,9 +1,10 @@
 """Market Data Feed — live candles, tickers and order-book stats from
 Coinbase Exchange public REST API (no keys required)."""
-import asyncio, time, math, statistics
+import asyncio, time
 import httpx
 from ..config import PRODUCTS, CANDLE_GRANULARITY, CANDLE_HISTORY, MARKET_POLL_SEC
 from .. import db
+from .features import features_from_ohlcv
 
 BASE = "https://api.exchange.coinbase.com"
 
@@ -88,7 +89,15 @@ class MarketData:
         return [c[4] for c in self.candles.get(p, [])]
 
     def features(self, p):
-        """Compute technical features for one product."""
+        """Compute technical features for one product.
+
+        The OHLCV-derivable core comes from the SHARED helper
+        (app/data/features.features_from_ohlcv) so the live feed and the
+        backtester compute identical arithmetic (train/live parity). This method
+        then layers the LIVE-only additions on top: the higher-timeframe swing
+        ATR used for sizing, the multi-timeframe trend context, and the
+        order-book imbalance/spread.
+        """
         cs = self.candles.get(p, [])
         if len(cs) < 60:
             return None
@@ -96,30 +105,10 @@ class MarketData:
         highs = [c[2] for c in cs]
         lows = [c[1] for c in cs]
         vols = [c[5] for c in cs]
-        price = closes[-1]
 
-        def sma(xs, n): return sum(xs[-n:]) / n
-        def ema(xs, n):
-            k = 2 / (n + 1); e = xs[-n]
-            for x in xs[-n + 1:]: e = x * k + e * (1 - k)
-            return e
-
-        # RSI(14)
-        gains, losses = [], []
-        for a, b in zip(closes[-15:-1], closes[-14:]):
-            d = b - a
-            gains.append(max(d, 0)); losses.append(max(-d, 0))
-        avg_g, avg_l = sum(gains) / 14, sum(losses) / 14
-        rsi = 100.0 if avg_l == 0 else 100 - 100 / (1 + avg_g / avg_l)
-
-        # ATR(14) on the native 5m bar — used for SHORT-horizon signal
-        # normalization (e.g. MACD-delta scaling), NOT for sizing.
-        trs = []
-        for i in range(-14, 0):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]),
-                     abs(lows[i] - closes[i - 1]))
-            trs.append(tr)
-        atr = sum(trs) / 14
+        feat = features_from_ohlcv(closes, highs, lows, vols)
+        if feat is None:
+            return None
 
         # ATR(14) on an aggregated HIGHER-TIMEFRAME bar (default 1h = 12x5m).
         # Stops / targets / trailing are sized off THIS so a swing trade can
@@ -127,18 +116,12 @@ class MarketData:
         # made every trade a scalp whose target could never honestly beat fees;
         # the fix is the HORIZON, not looser fees. Configurable via the
         # `swing_atr_bars` tunable (12 = 1h, 3 = 15m, 1 = native 5m).
-        atr_swing = self._swing_atr(highs, lows, closes)
+        feat["atr_swing"] = self._swing_atr(highs, lows, closes)
 
-        # MACD
-        macd = ema(closes, 12) - ema(closes, 26)
-        macd_prev = ema(closes[:-1], 12) - ema(closes[:-1], 26)
-
-        rets = [math.log(b / a) for a, b in zip(closes[-61:-1], closes[-60:])]
-        vol = statistics.stdev(rets) if len(rets) > 2 else 0.0
-
-        hi20, lo20 = max(highs[-20:]), min(lows[-20:])
-        vol_ratio = vols[-1] / (sum(vols[-20:]) / 20) if sum(vols[-20:]) else 1.0
+        # order-book imbalance/spread (live only; 0.0 placeholders in backtest)
         book = self.books.get(p, {})
+        feat["imbalance"] = book.get("imbalance", 0.0)
+        feat["spread_bps"] = book.get("spread_bps", 0.0)
 
         # MULTI-TIMEFRAME context (Tier-2): aggregate the native 5m bars into
         # 15m / 1h / 4h bars and read the trend + RSI on each. A trade with
@@ -146,22 +129,12 @@ class MarketData:
         # `mtf_align` in [-1,1] is the mean trend agreement across timeframes,
         # exposed both to the strategies (trend confirmation) and the ML model.
         mtf = self._mtf(highs, lows, closes)
-
-        return {
-            "price": price, "rsi": rsi, "atr": atr, "atr_swing": atr_swing,
-            "sma20": sma(closes, 20), "sma50": sma(closes, 50),
-            "ema12": ema(closes, 12), "ema26": ema(closes, 26),
-            "macd": macd, "macd_delta": macd - macd_prev,
-            "volatility": vol, "hi20": hi20, "lo20": lo20,
-            "vol_ratio": vol_ratio,
-            "mom_1h": price / closes[-13] - 1 if len(closes) >= 13 else 0,
-            "mom_4h": price / closes[-49] - 1 if len(closes) >= 49 else 0,
-            "imbalance": book.get("imbalance", 0.0),
-            "spread_bps": book.get("spread_bps", 0.0),
-            "mtf_align": mtf["align"], "mtf_trend_15m": mtf["t15"],
-            "mtf_trend_1h": mtf["t1h"], "mtf_trend_4h": mtf["t4h"],
-            "mtf_rsi_1h": mtf["rsi_1h"],
-        }
+        feat["mtf_align"] = mtf["align"]
+        feat["mtf_trend_15m"] = mtf["t15"]
+        feat["mtf_trend_1h"] = mtf["t1h"]
+        feat["mtf_trend_4h"] = mtf["t4h"]
+        feat["mtf_rsi_1h"] = mtf["rsi_1h"]
+        return feat
 
     @staticmethod
     def _mtf(highs, lows, closes):

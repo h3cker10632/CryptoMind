@@ -22,6 +22,7 @@ import math
 import statistics
 from ..tunables import tv
 from ..signals.engine import strat_trend, strat_meanrev, strat_breakout, _clip
+from ..data.features import features_from_ohlcv
 from . import stats as st
 from .engine import fetch_history
 
@@ -39,8 +40,15 @@ def _ema(xs, n):
 
 
 def _features_at(candles, i):
-    """Recompute the same technical features market.features() produces, but
-    at historical bar i (no look-ahead: uses candles[:i+1])."""
+    """The same OHLCV-derivable features market.features() produces, at
+    historical bar i (no look-ahead: uses candles[:i+1]).
+
+    Delegates to the SHARED core (app/data/features.features_from_ohlcv) so the
+    backtest and the live feed can never drift apart — train/live parity is
+    enforced by construction, not by keeping two hand-written copies in sync.
+    The live-only extras (atr_swing, mtf_*, book imbalance/spread) are absent
+    here on purpose: they need live feeds and are neutral in backtest.
+    """
     cs = candles[:i + 1]
     if len(cs) < 60:
         return None
@@ -48,39 +56,7 @@ def _features_at(candles, i):
     highs = [c[2] for c in cs]
     lows = [c[1] for c in cs]
     vols = [c[5] for c in cs]
-    price = closes[-1]
-
-    gains, losses = [], []
-    for a, b in zip(closes[-15:-1], closes[-14:]):
-        d = b - a
-        gains.append(max(d, 0)); losses.append(max(-d, 0))
-    avg_g, avg_l = sum(gains) / 14, sum(losses) / 14
-    rsi = 100.0 if avg_l == 0 else 100 - 100 / (1 + avg_g / avg_l)
-
-    trs = []
-    for k in range(-14, 0):
-        tr = max(highs[k] - lows[k], abs(highs[k] - closes[k - 1]),
-                 abs(lows[k] - closes[k - 1]))
-        trs.append(tr)
-    atr = sum(trs) / 14
-
-    macd = _ema(closes, 12) - _ema(closes, 26)
-    macd_prev = _ema(closes[:-1], 12) - _ema(closes[:-1], 26)
-    rets = [math.log(b / a) for a, b in zip(closes[-61:-1], closes[-60:])]
-    vol = statistics.stdev(rets) if len(rets) > 2 else 0.0
-    hi20, lo20 = max(highs[-20:]), min(lows[-20:])
-    vol_ratio = vols[-1] / (sum(vols[-20:]) / 20) if sum(vols[-20:]) else 1.0
-
-    return {
-        "price": price, "rsi": rsi, "atr": atr,
-        "sma20": sum(closes[-20:]) / 20, "sma50": sum(closes[-50:]) / 50,
-        "ema12": _ema(closes, 12), "ema26": _ema(closes, 26),
-        "macd": macd, "macd_delta": macd - macd_prev,
-        "volatility": vol, "hi20": hi20, "lo20": lo20, "vol_ratio": vol_ratio,
-        "mom_1h": price / closes[-13] - 1 if len(closes) >= 13 else 0,
-        "mom_4h": price / closes[-49] - 1 if len(closes) >= 49 else 0,
-        "imbalance": 0.0, "spread_bps": 0.0,        # no live book in backtest
-    }
+    return features_from_ohlcv(closes, highs, lows, vols)
 
 
 def _regime(f):
