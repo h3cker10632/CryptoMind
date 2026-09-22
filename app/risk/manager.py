@@ -2,8 +2,9 @@
 and regime-adaptive risk scaling."""
 import time
 from datetime import datetime, timezone
-from ..tunables import tv
+from ..tunables import tv, TUNABLES
 from .. import db
+from .stop_calibrator import StopCalibrator
 
 # The RL agent can dial CONVICTION risk down to this floor but never to zero —
 # a sit-out only skips discretionary probes, never a cost-viable conviction fill.
@@ -36,6 +37,10 @@ class RiskManager:
         self.cooldowns = {}          # product -> ts of last exit/entry
         self.risk_scale = 1.0        # adaptive multiplier
         self.consecutive_losses = 0
+        # CONFORMAL stop calibrator: learns the ATR stop multiple that contains
+        # (1-alpha) of realized adverse excursions, so the stop sits just
+        # outside normal noise instead of at a guessed constant.
+        self.stop_calibrator = StopCalibrator()
         # Was the interval just ending a REAL chance to trade? Set by the
         # orchestrator at the end of each tick (a fill fired, exposure was open,
         # or a signal cleared the cost gate). When False, flat equity reflects a
@@ -52,6 +57,27 @@ class RiskManager:
         self.cooldowns[trade["product"]] = time.time()
         # tighten after loss streaks, relax after wins
         self.risk_scale = max(0.25, min(1.0, 1.0 - 0.2 * self.consecutive_losses))
+        self._feed_stop_calibrator(trade)
+
+    def _feed_stop_calibrator(self, trade):
+        """Fold a closed trade's adverse excursion into the conformal stop
+        calibrator. Stop/liquidation exits are CENSORED (their MAE is capped by
+        the stop itself) so they only count toward the realized stop-rate, never
+        the score set — see stop_calibrator.py."""
+        try:
+            atr = trade.get("atr_at_entry")
+            entry = trade.get("entry")
+            mae_price = trade.get("mae_price")
+            side = trade.get("side", 1)
+            reason = (trade.get("exit_reason") or "").lower()
+            stopped = "stop" in reason or "liquidation" in reason
+            mae_atr = None
+            if atr and atr > 0 and entry and mae_price is not None:
+                adverse = (entry - mae_price) if side > 0 else (mae_price - entry)
+                mae_atr = max(0.0, adverse) / atr
+            self.stop_calibrator.observe(mae_atr, stopped)
+        except Exception:
+            pass      # calibration must never break trade bookkeeping
 
     def update(self, equity, regime):
         from ..learn.rl_risk import agent as rl_agent
@@ -122,7 +148,8 @@ class RiskManager:
                 "regime_scale": regime_scale,
                 "rl_scale": rl_scale,               # raw agent choice (may be 0)
                 "rl_sit_out": rl_sit_out,           # skip probes this tick
-                "streak_scale": self.risk_scale}
+                "streak_scale": self.risk_scale,
+                "stop_calibration": self.stop_calibrator.stats()}
 
     # ---------- gates & sizing ----------
     def can_open(self, product, broker, market, data_healthy):
@@ -244,8 +271,18 @@ class RiskManager:
                         * (0.5 + confidence / 2) * ml_mult * meme_risk_mult)
         # ---- honest ATR-based stop & target ----
         # Size from the REAL volatility horizon, never a fee-floor-inflated one.
-        stop_dist = tv("stop_atr_mult") * atr * meme_stop_mult
-        take_dist = tv("take_profit_atr_mult") * atr * meme_stop_mult
+        # CONFORMAL STOP: the multiple is the (1-alpha) quantile of realized
+        # adverse excursions (ATR units) once enough uncensored trades exist —
+        # a stop wide enough to survive ~(1-alpha) of normal noise — otherwise
+        # the operator's tunable default. The take-profit multiple scales with
+        # it so the risk:reward geometry the operator set is preserved.
+        base_stop = tv("stop_atr_mult")
+        spec = TUNABLES["stop_atr_mult"]
+        stop_mult = self.stop_calibrator.stop_mult(base_stop, spec["min"], spec["max"])
+        rr = tv("take_profit_atr_mult") / base_stop if base_stop else 1.5
+        take_mult = stop_mult * rr
+        stop_dist = stop_mult * atr * meme_stop_mult
+        take_dist = take_mult * atr * meme_stop_mult
         if stop_dist <= 0 or take_dist <= 0:
             return 0, 0, 0
         # ---- cost-viability gate ----

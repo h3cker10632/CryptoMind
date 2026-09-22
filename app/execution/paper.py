@@ -53,7 +53,7 @@ class PaperBroker:
         return money.round_price(product, px) if product else px
 
     def open(self, product, direction, notional, price, stop, take, reason,
-             votes=None, regime_at_entry=None, is_hedge=False):
+             votes=None, regime_at_entry=None, is_hedge=False, atr_at_entry=None):
         """direction: +1 long, -1 short (margin-style).
 
         `votes` (per-strategy vote dict at entry) and `regime_at_entry` are
@@ -66,6 +66,9 @@ class PaperBroker:
         `is_hedge` marks a market-neutral pair-hedge leg. Hedge legs are managed
         as a PAIR by the hedger (both live or neither) and MUST NOT be closed by
         the directional signal-flip exit, so the flag is baked in here too.
+
+        `atr_at_entry` is stamped so the conformal stop calibrator can normalise
+        the trade's realized adverse excursion into ATR units at close.
         """
         fill = self._fill_price(price, "buy" if direction > 0 else "sell", product)
         fee = notional * tv("fee_rate")
@@ -80,6 +83,12 @@ class PaperBroker:
             product=product, side=direction, qty=qty, entry=fill,
             stop=stop, take=take, water=fill, opened=time.time(),
             reason=reason, fees=fee)
+        # MAE tracking: worst adverse price seen since entry, seeded at entry.
+        # `mae_price` is the extreme AGAINST the position (min for long, max for
+        # short); the stop calibrator reads it at close.
+        pos["mae_price"] = fill
+        if atr_at_entry:
+            pos["atr_at_entry"] = atr_at_entry
         # bake the learning-attribution fields in atomically at creation
         pos["votes"] = {k: round(v, 3) for k, v in (votes or {}).items()
                         if abs(v) > 0.05}
@@ -153,6 +162,11 @@ class PaperBroker:
             # migrate pre-shorts positions ("high_water" -> "water")
             water = pos.get("water", pos.get("high_water", pos["entry"]))
             atr = atr_lookup(p)
+            # MAE: track the worst ADVERSE excursion since entry (min px for a
+            # long, max px for a short) so the stop calibrator can measure how
+            # far this trade actually dipped against us, in ATR units, at close.
+            mae = pos.get("mae_price", pos["entry"])
+            pos["mae_price"] = min(mae, px) if side > 0 else max(mae, px)
             if side > 0:
                 pos["water"] = max(water, px)
                 if atr:

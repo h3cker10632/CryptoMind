@@ -127,6 +127,9 @@ def capture():
             "cooldowns": risk.cooldowns,
             "risk_scale": risk.risk_scale,
             "consecutive_losses": risk.consecutive_losses,
+            # conformal stop calibrator (rolling adverse-excursion scores) so
+            # the calibrated stop multiple survives restarts warm.
+            "stop_calibrator": risk.stop_calibrator.to_dict(),
         },
         "learner": {
             "weights": learner.weights,
@@ -306,6 +309,9 @@ def load():
             risk.cooldowns = r.get("cooldowns", {})
             risk.risk_scale = r.get("risk_scale", 1.0)
             risk.consecutive_losses = r.get("consecutive_losses", 0)
+            # conformal stop calibrator (optional — absent on old snapshots, in
+            # which case it starts cold and re-warms from live trade outcomes).
+            risk.stop_calibrator.load_dict(r.get("stop_calibrator"))
         else:
             db.log_event("system", "carry_equity=OFF — fresh $100k paper "
                                    "account (learned state still restored)")

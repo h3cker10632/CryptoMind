@@ -297,7 +297,8 @@ class Orchestrator:
                                   stop, take,
                                   f"composite={sig['composite']} regime={sig['regime']}",
                                   votes=engine.per_strategy.get(p, {}),
-                                  regime_at_entry=sig["regime"])
+                                  regime_at_entry=sig["regime"],
+                                  atr_at_entry=sig.get("atr"))
                 self._audit(sig, "enter" if pos is not None else "reject",
                             "opened" if pos is not None else "broker rejected fill",
                             size_pre=notional,
@@ -352,7 +353,8 @@ class Orchestrator:
                                       f"EXPLORE composite={sig['composite']} "
                                       f"regime={sig['regime']}",
                                       votes=engine.per_strategy.get(p, {}),
-                                      regime_at_entry=sig["regime"])
+                                      regime_at_entry=sig["regime"],
+                                      atr_at_entry=sig.get("atr"))
                     self._audit(sig, "explore" if pos is not None else "reject",
                                 "probe opened" if pos is not None else "broker rejected probe",
                                 size_pre=notional,
