@@ -1,16 +1,71 @@
 """Backtesting & Validation Suite — event-driven bar simulation over real
 historical candles fetched from Coinbase, with fees/slippage, per-strategy
-walk-forward split and overfitting sanity metrics."""
-import math, statistics
+walk-forward split and overfitting sanity metrics.
+
+Historical candles are CACHED (in-memory TTL + optional on-disk) because the
+same OHLCV window is re-fetched constantly: every /api/backtest call, the
+composite report, and the GA feed thread all pull the same bars. Hourly candles
+only change once an hour, so a short TTL removes almost all of the 3x HTTP
+round-trips per report and shrinks our Coinbase rate-limit exposure. (pybroker
+caches downloaded data, indicators, and models for the same reason.)
+"""
+import math, statistics, time, os, json, threading
 import httpx
 from ..tunables import tv
 from . import stats as st
 
 BASE = "https://api.exchange.coinbase.com"
 
+# ---- history cache -------------------------------------------------------
+CACHE_TTL_SEC = 300          # hourly bars change at most once/hour; 5 min is safe
+_CACHE = {}                  # key -> (fetched_at, candles)
+_CACHE_LOCK = threading.Lock()   # GA runs fetch_history from a worker thread
+_DISK_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), ".cache", "history")
 
-async def fetch_history(product, granularity=3600, chunks=3):
-    """Fetch up to ~900 hourly bars (Coinbase returns 300 per call)."""
+
+def _cache_key(product, granularity, chunks):
+    return f"{product}:{granularity}:{chunks}"
+
+
+def _disk_path(key):
+    return os.path.join(_DISK_CACHE_DIR, key.replace(":", "_") + ".json")
+
+
+def _disk_read(key, ttl):
+    """Return cached candles from disk if fresh, else None. Never raises."""
+    try:
+        p = _disk_path(key)
+        if not os.path.exists(p):
+            return None
+        if time.time() - os.path.getmtime(p) > ttl:
+            return None
+        with open(p) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _disk_write(key, candles):
+    """Persist candles to disk (best-effort; failures are swallowed)."""
+    try:
+        os.makedirs(_DISK_CACHE_DIR, exist_ok=True)
+        tmp = _disk_path(key) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(candles, f)
+        os.replace(tmp, _disk_path(key))
+    except Exception:
+        pass
+
+
+def clear_history_cache():
+    """Drop the in-memory history cache (used by tests / manual refresh)."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+async def _fetch_history_raw(product, granularity=3600, chunks=3):
+    """Fetch up to ~900 hourly bars (Coinbase returns 300 per call). No cache."""
     out = []
     async with httpx.AsyncClient(headers={"User-Agent": "CryptoMind/1.0"}) as c:
         end = None
@@ -32,6 +87,50 @@ async def fetch_history(product, granularity=3600, chunks=3):
         if b[0] not in seen:
             seen.add(b[0]); res.append(b)
     return sorted(res, key=lambda x: x[0])
+
+
+async def fetch_history(product, granularity=3600, chunks=3,
+                        use_cache=True, ttl=CACHE_TTL_SEC):
+    """Cached wrapper around _fetch_history_raw.
+
+    Lookup order: in-memory (fast, per-process) -> on-disk (survives restart) ->
+    network. A successful network fetch backfills both layers. A network FAILURE
+    falls back to any stale cached copy rather than propagating, so a transient
+    Coinbase outage degrades gracefully instead of killing a backtest.
+    """
+    if not use_cache:
+        return await _fetch_history_raw(product, granularity, chunks)
+
+    key = _cache_key(product, granularity, chunks)
+    now = time.time()
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        if hit and now - hit[0] <= ttl:
+            return hit[1]
+
+    disk = _disk_read(key, ttl)
+    if disk is not None:
+        with _CACHE_LOCK:
+            _CACHE[key] = (now, disk)
+        return disk
+
+    try:
+        candles = await _fetch_history_raw(product, granularity, chunks)
+    except Exception:
+        # network failed — serve a stale copy if we have one anywhere
+        with _CACHE_LOCK:
+            stale = _CACHE.get(key)
+        if stale is not None:
+            return stale[1]
+        stale_disk = _disk_read(key, ttl=math.inf)
+        if stale_disk is not None:
+            return stale_disk
+        raise
+
+    with _CACHE_LOCK:
+        _CACHE[key] = (time.time(), candles)
+    _disk_write(key, candles)
+    return candles
 
 
 def _atr(candles, i, n=14):
