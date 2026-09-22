@@ -45,6 +45,41 @@ def test_cut_works_for_shorts_position_frame():
     assert action == "cut"
 
 
+def test_conformal_guard_blocks_cut_when_upper_band_positive():
+    """Even a confidently-negative point estimate must NOT cut while the
+    optimistic edge of the CALIBRATED interval still clears the ceiling — the
+    band says a bounce is genuinely plausible."""
+    tunables.update({"exit_cut_threshold": 0.004, "exit_min_loss_pct": 0.003,
+                     "exit_ml_weight": 1.0, "exit_conformal_ceiling": 0.0})
+    ea = ExitAdvisor()
+    action, why, _ = ea.decide("BTC-USD", side=1, unrealized_pct=-0.01,
+                               ml_pos=-0.008, regime=_regime(), atr_pct=0.005,
+                               ml_pos_hi=0.006)      # calibrated upper edge > 0
+    assert action == "hold"
+    assert "conformal" in why
+
+
+def test_conformal_guard_allows_cut_when_whole_band_adverse():
+    """When even the optimistic edge is at/below the ceiling the cut proceeds."""
+    tunables.update({"exit_cut_threshold": 0.004, "exit_min_loss_pct": 0.003,
+                     "exit_ml_weight": 1.0, "exit_conformal_ceiling": 0.0})
+    ea = ExitAdvisor()
+    action, _, _ = ea.decide("BTC-USD", side=1, unrealized_pct=-0.01,
+                             ml_pos=-0.008, regime=_regime(), atr_pct=0.005,
+                             ml_pos_hi=-0.001)        # whole interval adverse
+    assert action == "cut"
+
+
+def test_conformal_guard_absent_preserves_legacy_behaviour():
+    """No calibrated band supplied (ml_pos_hi=None) → identical to before."""
+    tunables.update({"exit_cut_threshold": 0.004, "exit_min_loss_pct": 0.003,
+                     "exit_ml_weight": 1.0})
+    ea = ExitAdvisor()
+    action, _, _ = ea.decide("BTC-USD", side=1, unrealized_pct=-0.01,
+                             ml_pos=-0.008, regime=_regime(), atr_pct=0.005)
+    assert action == "cut"
+
+
 def test_counterfactual_learning_updates_state_value():
     tunables.update({"exit_horizon_sec": 1800})
     ea = ExitAdvisor()

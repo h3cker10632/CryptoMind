@@ -423,20 +423,29 @@ class Orchestrator:
             atr_pct = (f.get("atr_swing") or f.get("atr") or 0.0) / px if px else 0.0
             # model forward view, rotated into the POSITION frame
             ml_pos = 0.0
+            ml_pos_hi = None
             if model.n_updates >= 40:
                 acc = model.stats().get("directional_accuracy")
                 if acc is not None and acc > 0.50:
                     asset_sent, _ = nlp.asset_score(p)
                     x = build_x(f, asset_sent, nlp.market_sentiment,
                                 derivatives.features(p))
-                    raw = committee.predict(x)
-                    ml_pos = side * raw * 0.004      # scale units -> ~return
+                    u = committee.predict_with_uncertainty(x)
+                    ml_pos = side * u["mean"] * 0.004    # scale units -> ~return
+                    # rotate the CALIBRATED interval into the position frame and
+                    # take its optimistic (upper) edge; only trust it once the
+                    # conformal calibrator actually carries a coverage guarantee.
+                    if u.get("calibrated"):
+                        lo = side * u["lo"] * 0.004
+                        hi = side * u["hi"] * 0.004
+                        ml_pos_hi = max(lo, hi)         # side<0 flips the ends
             # record context for counterfactual learning, then decide (both use
             # the SAME position-frame ml view so the learned state matches)
             exit_advisor.record(p, side, px, unrealized_pct, ml_pos,
                                 regime, atr_pct)
             action, reason, _ = exit_advisor.decide(
-                p, side, unrealized_pct, ml_pos, regime, atr_pct)
+                p, side, unrealized_pct, ml_pos, regime, atr_pct,
+                ml_pos_hi=ml_pos_hi)
             if action == "cut":
                 t = broker.sell(p, px, f"exit-advisor cut: {reason}")
                 if t:

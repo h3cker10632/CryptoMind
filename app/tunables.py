@@ -137,6 +137,14 @@ TUNABLES = {
     "exit_ml_weight":    T(1.0, 0.0, 3.0, 0.1, "learning", "Loss-cut model weight",
                            "How strongly the ML forward view counts vs the learned "
                            "state value in the cut decision"),
+    "exit_conformal_ceiling": T(0.0, -0.02, 0.02, 0.001, "learning",
+                           "Loss-cut conformal ceiling",
+                           "Once the online model's uncertainty band is conformally "
+                           "CALIBRATED, only cut when even the optimistic (upper) end "
+                           "of the position-frame forward-return interval is at/below "
+                           "this. Blocks premature cuts of losers the calibrated band "
+                           "still gives a real chance of bouncing. 0 = require the "
+                           "whole interval non-positive; higher = cut more readily"),
     "exit_horizon_sec":  T(1800, 300, 14400, 60, "learning", "Loss-cut learn horizon (s)",
                            "Forward window used to score hold-vs-cut decisions "
                            "against what price actually did next", True),

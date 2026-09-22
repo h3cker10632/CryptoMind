@@ -92,12 +92,20 @@ class ExitAdvisor:
         return min(1.0, rec[0] / 20.0)
 
     # ---------------- decision ----------------
-    def decide(self, product, side, unrealized_pct, ml_pos, regime, atr_pct):
+    def decide(self, product, side, unrealized_pct, ml_pos, regime, atr_pct,
+               ml_pos_hi=None):
         """Return (action, reason, expected_return). action is 'cut' or 'hold'.
 
         `ml_pos` is the ML committee's forward-return prediction already rotated
         into the POSITION frame (side * raw_pred), so >0 means the model expects
         the position to keep working and <0 means it expects it to keep losing.
+
+        `ml_pos_hi`, when provided, is the OPTIMISTIC (upper) end of the model's
+        CONFORMALLY-CALIBRATED forward-return interval, also in the position
+        frame. It is only supplied once the calibrator has a coverage guarantee.
+        We use it as a one-sided safety guard: never cut a loser while even the
+        optimistic end of its calibrated interval is still above the ceiling —
+        i.e. the band says a bounce is genuinely plausible, not just hoped for.
         """
         state = self._state(side, unrealized_pct, ml_pos, regime, atr_pct)
         # record this consultation for later counterfactual scoring (throttled
@@ -116,10 +124,20 @@ class ExitAdvisor:
         # only when the blended expectation is confidently negative — so we cut
         # losers we expect to keep bleeding, not winners or noise.
         if unrealized_pct <= -min_loss and expected <= -thresh:
+            # CONFORMAL GUARD: if a calibrated interval is available and its
+            # optimistic edge still clears the ceiling, the band gives this loser
+            # a real (coverage-backed) chance of recovering — hold instead of
+            # cutting into what may be noise.
+            ceiling = self._tv("exit_conformal_ceiling", 0.0)
+            if ml_pos_hi is not None and ml_pos_hi > ceiling:
+                reason = (f"conformal hold: calibrated upper return "
+                          f"{ml_pos_hi:+.3%} > {ceiling:+.3%} (bounce plausible)")
+                return "hold", reason, expected
             action = "cut"
+            guard = "" if ml_pos_hi is None else f", hi={ml_pos_hi:+.3%}"
             reason = (f"expected further adverse move "
                       f"(E[r]={expected:+.3%}, ml={ml_pos:+.3%}, "
-                      f"learned={v:+.3%}@{vc:.0%})")
+                      f"learned={v:+.3%}@{vc:.0%}{guard})")
         return action, reason, expected
 
     def record(self, product, side, price, unrealized_pct, ml_pos, regime, atr_pct):
