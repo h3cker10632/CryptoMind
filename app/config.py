@@ -46,4 +46,13 @@ ALLOC_LOOKBACK = 200                # scored signals kept per strategy
 ALLOC_TEMPERATURE = 4.0             # softmax temperature (percent-return units)
 SIGNAL_EVAL_HORIZON_SEC = 3600      # forward-return horizon for scoring signals
 
+# Reproducibility: a single base seed for every stochastic step in the
+# VALIDATION path (GA search, bootstrap CIs, DSR/PBO). Fixing it makes a
+# promotion decision (dsr>0.95, PBO<0.30, GA champion) reproducible run-to-run —
+# so a champion that goes live can be re-derived and audited. Override with the
+# CRYPTOMIND_VALIDATION_SEED env var; set to a NEGATIVE value for nondeterministic
+# runs (fresh entropy each time). pybroker added the same seed knob to
+# Strategy#backtest / #walkforward for exactly this reason.
+VALIDATION_SEED = int(os.getenv("CRYPTOMIND_VALIDATION_SEED", "1337"))
+
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cryptomind.db")

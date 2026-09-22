@@ -479,6 +479,15 @@ class Evolution:
         self.status = "running"
         self.current_product = product
         self.history = []
+        # Reproducibility: reseed this run deterministically from the global
+        # validation seed + product, so the champion a promotion gate lets live
+        # can be re-derived and audited. Independent per product; nondeterministic
+        # when VALIDATION_SEED < 0. (Falls back to the existing rnd on any error.)
+        try:
+            from ..backtest.seeding import rng as _seed_rng
+            self.rnd = _seed_rng("ga", product)
+        except Exception:
+            pass
         split = int(len(candles) * 0.65)
         train, valid = candles[:split], candles[split - 70:]
 

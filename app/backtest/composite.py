@@ -259,8 +259,18 @@ def walk_forward(candles, n_windows=5, allow_shorts=True):
             "pass": pos / len(results) >= 0.70 and (oos_avg / is_avg if is_avg else 0) > 0.5}
 
 
-async def composite_report(product, weights=None, allow_shorts=True, n_trials=192):
-    """Full validated report: composite vs buy-and-hold, walk-forward, DSR, PBO."""
+async def composite_report(product, weights=None, allow_shorts=True, n_trials=192,
+                           seed=None):
+    """Full validated report: composite vs buy-and-hold, walk-forward, DSR, PBO.
+
+    `seed` makes the bootstrap-based figures reproducible. When None it derives a
+    stable per-product seed from the global validation seed (config.VALIDATION_
+    SEED), so re-running the report yields identical CIs — important because
+    these numbers gate live promotion. Pass an int to override, or set
+    VALIDATION_SEED<0 for nondeterministic runs.
+    """
+    from .seeding import derive as _derive
+    boot_seed = seed if seed is not None else _derive("composite_report", product)
     candles = await fetch_history(product, granularity=3600, chunks=3)
     if len(candles) < 200:
         return {"error": f"insufficient history for {product}"}
@@ -281,7 +291,8 @@ async def composite_report(product, weights=None, allow_shorts=True, n_trials=19
 
     wins = sum(1 for t in full["trades"] if t > 0)
     win_ci = st.wilson_interval(wins, len(full["trades"]))
-    exp_ci = st.bootstrap_ci(full["trades"]) if len(full["trades"]) > 1 else (None, None, None)
+    exp_ci = (st.bootstrap_ci(full["trades"], seed=(boot_seed if boot_seed is not None else 13))
+              if len(full["trades"]) > 1 else (None, None, None))
 
     beat_bench = full["total_return"] > bench["total_return"]
     return {
