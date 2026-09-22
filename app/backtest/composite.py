@@ -91,13 +91,28 @@ def _regime(f):
             "vol_state": vol_state, "vol": f["volatility"]}
 
 
-def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0):
+def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
+                  _use_fast_features=True):
     """Event-driven sim of the composite ensemble with risk sizing, cost gate,
-    ATR stops/targets/trailing — long and (optionally) short."""
+    ATR stops/targets/trailing — long and (optionally) short.
+
+    `_use_fast_features` (default True) precomputes all per-bar features in one
+    pass (Numba kernel when available, pure-Python fallback) instead of the old
+    O(N^2) per-bar `candles[:i+1]` recompute. Output is verified bit-identical
+    to the slow path; the flag exists so tests can compare the two.
+    """
     weights = weights or {k: 1.0 for k in HIST_STRATEGIES}
     fee, slip = tv("fee_rate"), tv("slippage_bps") / 1e4
     cost_mult, gate = tv("cost_multiple"), tv("min_confidence")
     stop_m, take_m, trail_m = tv("stop_atr_mult"), tv("take_profit_atr_mult"), tv("trail_atr_mult")
+
+    fast_feats = None
+    if _use_fast_features:
+        try:
+            from .fast_features import precompute
+            fast_feats = precompute(candles)
+        except Exception:
+            fast_feats = None
 
     cash = start_cash
     side = 0; qty = 0.0; entry = stop = take = water = 0.0; margin = 0.0
@@ -109,7 +124,7 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0)
         bars_total += 1
         if side != 0:
             bars_in_market += 1
-        f = _features_at(candles, i)
+        f = fast_feats[i] if fast_feats is not None else _features_at(candles, i)
         if not f:
             equity_curve.append((ts, cash)); continue
         atr = f["atr"]; regime = _regime(f)
