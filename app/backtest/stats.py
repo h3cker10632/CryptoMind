@@ -152,6 +152,149 @@ def probability_of_backtest_overfitting(matrix, n_splits=10):
     return sum(1 for w in logits if w <= 0) / len(logits)
 
 
+# ---------------------------------------------------------------------------
+# Trade- & equity-quality metrics (pybroker parity).
+#
+# These are the plain-English edge-quality numbers a live book actually steers
+# by. They complement — never replace — the anti-overfitting stats above:
+# DSR/PBO say "is the edge real?", these say "what does the edge feel like?".
+# All are pure functions over data run_composite()/run_backtest() already emit
+# (`trades` = per-trade fractional returns, `returns` = per-bar equity returns,
+# `equity_curve` = [(ts, equity), ...]).
+# ---------------------------------------------------------------------------
+
+def sortino(returns, target=0.0) -> float:
+    """Sortino ratio: mean excess return / DOWNSIDE deviation (per-observation).
+
+    Sharpe punishes upside volatility just as hard as downside; a trend book
+    WANTS upside convexity, so Sortino is the fairer read of it. Returns 0.0
+    when there's no downside (undefined ratio → treat as no measured penalty).
+    """
+    if len(returns) < 2:
+        return 0.0
+    mean = statistics.fmean(returns)
+    downside = [min(0.0, r - target) for r in returns]
+    dd = math.sqrt(sum(d * d for d in downside) / len(returns))
+    if dd == 0:
+        return 0.0
+    return (mean - target) / dd
+
+
+def profit_factor(trades) -> float | None:
+    """Gross profit / gross loss over closed trades — the most intuitive single
+    edge number. >1 makes money, <1 loses. None when there are no trades; inf
+    when there are wins but zero losing $ (a perfect, tiny sample — caller
+    should treat inf with suspicion)."""
+    if not trades:
+        return None
+    gross_win = sum(t for t in trades if t > 0)
+    gross_loss = -sum(t for t in trades if t < 0)
+    if gross_loss == 0:
+        return math.inf if gross_win > 0 else None
+    return gross_win / gross_loss
+
+
+def win_loss_stats(trades) -> dict:
+    """Average win, average loss (as a positive number), their ratio, and the
+    win rate — the shape of the P&L distribution, not just its sign."""
+    if not trades:
+        return {"avg_win": None, "avg_loss": None, "win_loss_ratio": None,
+                "win_rate": None, "n": 0}
+    wins = [t for t in trades if t > 0]
+    losses = [-t for t in trades if t < 0]     # positive magnitudes
+    avg_win = statistics.fmean(wins) if wins else 0.0
+    avg_loss = statistics.fmean(losses) if losses else 0.0
+    ratio = (avg_win / avg_loss) if avg_loss > 0 else (math.inf if avg_win > 0 else None)
+    return {
+        "avg_win": round(avg_win, 6),
+        "avg_loss": round(avg_loss, 6),
+        "win_loss_ratio": (round(ratio, 4) if ratio not in (None, math.inf) else ratio),
+        "win_rate": round(len(wins) / len(trades), 4),
+        "n": len(trades),
+    }
+
+
+def expectancy(trades) -> float | None:
+    """Expected return per trade = win_rate*avg_win - loss_rate*avg_loss. This
+    is the raw per-trade edge; bootstrap_ci() puts error bars on it."""
+    if not trades:
+        return None
+    return statistics.fmean(trades)
+
+
+def _drawdown_series(equity):
+    """Per-point drawdown fraction from the running peak (0 at new highs)."""
+    peak, out = -math.inf, []
+    for e in equity:
+        peak = max(peak, e)
+        out.append(0.0 if peak <= 0 else 1.0 - e / peak)
+    return out
+
+
+def max_drawdown(equity) -> float:
+    """Deepest peak-to-trough equity drop as a fraction (0..1)."""
+    dd = _drawdown_series(equity)
+    return max(dd) if dd else 0.0
+
+
+def max_drawdown_duration(equity) -> int:
+    """Longest run (in bars) the equity spent BELOW a prior peak — how long the
+    strategy stays underwater, which depth alone hides. Counts consecutive
+    below-peak bars; a strategy at fresh highs has duration 0."""
+    peak, cur, longest = -math.inf, 0, 0
+    for e in equity:
+        if e >= peak:
+            peak = e
+            cur = 0
+        else:
+            cur += 1
+            longest = max(longest, cur)
+    return longest
+
+
+def annualized_return(equity, periods_per_year) -> float | None:
+    """Geometric CAGR from an equity curve sampled every 1/periods_per_year of a
+    year (hourly bars → 24*365). None if the curve is too short or wipes out."""
+    if len(equity) < 2 or equity[0] <= 0 or equity[-1] <= 0:
+        return None
+    total = equity[-1] / equity[0]
+    years = (len(equity) - 1) / periods_per_year
+    if years <= 0:
+        return None
+    try:
+        return total ** (1.0 / years) - 1.0
+    except OverflowError:
+        # annualizing a very short curve blows up (e.g. doubling in a few bars
+        # -> total**huge). Not a meaningful figure; report it as undefined.
+        return None
+
+
+def calmar(equity, periods_per_year) -> float | None:
+    """Calmar / MAR ratio = annualized return / max drawdown. The number that
+    maps to 'can I stomach running this'. None when there's no drawdown yet."""
+    ann = annualized_return(equity, periods_per_year)
+    mdd = max_drawdown(equity)
+    if ann is None or mdd <= 0:
+        return None
+    return ann / mdd
+
+
+def annualized_sharpe(returns, periods_per_year) -> float:
+    """Per-observation Sharpe scaled to an annual figure by sqrt(periods)."""
+    return sharpe(returns) * math.sqrt(periods_per_year)
+
+
+def trade_quality(trades) -> dict:
+    """Bundle of the trade-distribution metrics for a report block."""
+    wl = win_loss_stats(trades)
+    pf = profit_factor(trades)
+    return {
+        "profit_factor": (round(pf, 4) if pf not in (None, math.inf) else pf),
+        "expectancy": (round(expectancy(trades), 6) if trades else None),
+        **wl,
+    }
+
+
 def wilson_interval(wins: int, n: int, z=1.96):
     """95% Wilson score interval for a win rate — honest small-sample bounds."""
     if n == 0:

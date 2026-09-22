@@ -4,6 +4,7 @@ walk-forward split and overfitting sanity metrics."""
 import math, statistics
 import httpx
 from ..tunables import tv
+from . import stats as st
 
 BASE = "https://api.exchange.coinbase.com"
 
@@ -52,6 +53,7 @@ def run_backtest(candles, strategy="trend", start_cash=10_000.0):
     """Long-only event-driven simulation on [ts, low, high, open, close, vol] bars."""
     cash, qty, entry, stop, take = start_cash, 0.0, 0.0, 0.0, 0.0
     equity_curve, trades = [], []
+    bars_total = bars_in_market = 0        # exposure / time-in-market
     # read LIVE-tuned costs/risk so the backtester matches the running system
     FEE_RATE = tv("fee_rate")
     SLIPPAGE_BPS = tv("slippage_bps")
@@ -98,6 +100,9 @@ def run_backtest(candles, strategy="trend", start_cash=10_000.0):
             cash -= notional * (1 + FEE_RATE)
             entry, stop, take = px, px - STOP_ATR_MULT * atr, px + TAKE_PROFIT_ATR_MULT * atr
 
+        bars_total += 1
+        if qty > 0:
+            bars_in_market += 1
         equity_curve.append((ts, cash + qty * cl))
 
     if qty > 0:
@@ -107,17 +112,24 @@ def run_backtest(candles, strategy="trend", start_cash=10_000.0):
     eq = [e for _, e in equity_curve]
     rets = [b / a - 1 for a, b in zip(eq[:-1], eq[1:]) if a > 0]
     total = eq[-1] / start_cash - 1 if eq else 0.0
-    sharpe = (statistics.mean(rets) / statistics.stdev(rets) * math.sqrt(24 * 365)
-              if len(rets) > 2 and statistics.stdev(rets) > 0 else 0.0)
-    peak, maxdd = 0.0, 0.0
-    for e in eq:
-        peak = max(peak, e)
-        maxdd = max(maxdd, 1 - e / peak)
+    PPY = 24 * 365
     wins = [t for t in trades if t > 0]
+    tq = st.trade_quality(trades)
+    ann = st.annualized_return(eq, PPY)
+    cal = st.calmar(eq, PPY)
     return {
         "total_return": round(total, 4),
-        "sharpe_annualized": round(sharpe, 2),
-        "max_drawdown": round(maxdd, 4),
+        "sharpe_annualized": round(st.annualized_sharpe(rets, PPY), 2),
+        "sortino_annualized": round(st.sortino(rets) * math.sqrt(PPY), 2),
+        "max_drawdown": round(st.max_drawdown(eq), 4),
+        "max_drawdown_bars": st.max_drawdown_duration(eq),
+        "annualized_return": round(ann, 4) if ann is not None else None,
+        "calmar": round(cal, 3) if cal is not None else None,
+        "profit_factor": tq["profit_factor"],
+        "expectancy": tq["expectancy"],
+        "avg_win": tq["avg_win"], "avg_loss": tq["avg_loss"],
+        "win_loss_ratio": tq["win_loss_ratio"],
+        "exposure": round(bars_in_market / bars_total, 4) if bars_total else 0.0,
         "n_trades": len(trades),
         "win_rate": round(len(wins) / len(trades), 3) if trades else None,
         "final_equity": round(eq[-1], 2) if eq else start_cash,

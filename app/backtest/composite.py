@@ -102,9 +102,13 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0)
     cash = start_cash
     side = 0; qty = 0.0; entry = stop = take = water = 0.0; margin = 0.0
     equity_curve, trades = [], []
+    bars_total = bars_in_market = 0        # exposure / time-in-market
 
     for i in range(60, len(candles)):
         ts, lo, hi, op, cl, vol = candles[i]
+        bars_total += 1
+        if side != 0:
+            bars_in_market += 1
         f = _features_at(candles, i)
         if not f:
             equity_curve.append((ts, cash)); continue
@@ -182,14 +186,26 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0)
     eq = [e for _, e in equity_curve]
     rets = [b / a - 1 for a, b in zip(eq[:-1], eq[1:]) if a > 0]
     total = eq[-1] / start_cash - 1 if eq else 0.0
-    sharpe = (statistics.mean(rets) / statistics.stdev(rets) * math.sqrt(24 * 365)
-              if len(rets) > 2 and statistics.stdev(rets) > 0 else 0.0)
-    peak = maxdd = 0.0
-    for e in eq:
-        peak = max(peak, e); maxdd = max(maxdd, 1 - e / peak if peak else 0)
+    PPY = 24 * 365                       # hourly bars per year
     wins = [t for t in trades if t > 0]
-    return {"total_return": round(total, 4), "sharpe_annualized": round(sharpe, 2),
-            "max_drawdown": round(maxdd, 4), "n_trades": len(trades),
+    # richer, pybroker-parity metrics (all pure functions over eq / trades)
+    tq = st.trade_quality(trades)
+    exposure = round(bars_in_market / bars_total, 4) if bars_total else 0.0
+    return {"total_return": round(total, 4),
+            "sharpe_annualized": round(st.annualized_sharpe(rets, PPY), 2),
+            "sortino_annualized": round(st.sortino(rets) * math.sqrt(PPY), 2),
+            "max_drawdown": round(st.max_drawdown(eq), 4),
+            "max_drawdown_bars": st.max_drawdown_duration(eq),
+            "annualized_return": (round(st.annualized_return(eq, PPY), 4)
+                                  if st.annualized_return(eq, PPY) is not None else None),
+            "calmar": (round(st.calmar(eq, PPY), 3)
+                       if st.calmar(eq, PPY) is not None else None),
+            "profit_factor": tq["profit_factor"],
+            "expectancy": tq["expectancy"],
+            "avg_win": tq["avg_win"], "avg_loss": tq["avg_loss"],
+            "win_loss_ratio": tq["win_loss_ratio"],
+            "exposure": exposure,
+            "n_trades": len(trades),
             "win_rate": round(len(wins) / len(trades), 3) if trades else None,
             "final_equity": round(eq[-1], 2) if eq else start_cash,
             "returns": rets, "trades": trades,
