@@ -9,6 +9,8 @@ inflation so promotion decisions use honest numbers:
   * deflated_sharpe_ratio (DSR)        — PSR corrected for N trials + fat tails
   * probability_of_backtest_overfitting (PBO) via CSCV
   * wilson_interval / bootstrap_ci     — honest error bars on win-rate/expectancy
+                                         (bootstrap_ci uses the BCa method, which
+                                         corrects for the skew of crypto returns)
 
 References: Bailey & López de Prado, "The Deflated Sharpe Ratio" (2014) and
 "The Probability of Backtest Overfitting" (2017).
@@ -307,16 +309,73 @@ def wilson_interval(wins: int, n: int, z=1.96):
             round(min(1.0, centre + margin), 4))
 
 
-def bootstrap_ci(values, n_boot=2000, ci=0.95, seed=13):
-    """Bootstrap CI for the mean (e.g. per-trade expectancy)."""
+def bootstrap_ci(values, n_boot=2000, ci=0.95, seed=13, method="bca"):
+    """Bootstrap CI for the mean (e.g. per-trade expectancy).
+
+    Defaults to the BIAS-CORRECTED AND ACCELERATED (BCa) bootstrap (Efron 1987),
+    the same method pybroker uses. Crypto per-trade returns are heavily SKEWED
+    (small frequent wins, rare large losses), and the naive PERCENTILE bootstrap
+    is biased on skewed samples — its interval sits off-centre from the true
+    mean. BCa corrects two things:
+
+      * z0  (bias correction): where the observed statistic falls in the
+             bootstrap distribution — nonzero when the bootstrap is skewed.
+      * a   (acceleration): how fast the statistic's variance changes with the
+             true value, estimated by jackknife skewness.
+
+    Falls back to the percentile method (`method="percentile"`) or automatically
+    when the acceleration is degenerate (all jackknife values identical).
+    Signature and (point, lo, hi) return shape are unchanged, so existing
+    callers are unaffected; the interval is simply more honest.
+    """
     n = len(values)
     if n < 2:
         return (None, None, None)
     rnd = random.Random(seed)
-    means = []
+    point = statistics.fmean(values)
+    boot = []
     for _ in range(n_boot):
-        means.append(sum(rnd.choice(values) for _ in range(n)) / n)
-    means.sort()
-    lo = means[int((1 - ci) / 2 * n_boot)]
-    hi = means[int((1 + ci) / 2 * n_boot) - 1]
-    return (round(statistics.fmean(values), 6), round(lo, 6), round(hi, 6))
+        boot.append(sum(rnd.choice(values) for _ in range(n)) / n)
+    boot.sort()
+    alpha = 1 - ci
+
+    def _percentile(p):
+        idx = min(n_boot - 1, max(0, int(round(p * (n_boot - 1)))))
+        return boot[idx]
+
+    if method != "bca":
+        return (round(point, 6), round(_percentile(alpha / 2), 6),
+                round(_percentile(1 - alpha / 2), 6))
+
+    # --- bias correction z0: Φ⁻¹(fraction of boot means below the point) ---
+    n_less = sum(1 for b in boot if b < point)
+    prop = n_less / n_boot
+    # guard the degenerate tails where Φ⁻¹ is ±inf
+    if prop <= 0.0 or prop >= 1.0:
+        return (round(point, 6), round(_percentile(alpha / 2), 6),
+                round(_percentile(1 - alpha / 2), 6))
+    z0 = _norm_ppf(prop)
+
+    # --- acceleration a via jackknife (leave-one-out means) ---
+    total = sum(values)
+    jack = [(total - v) / (n - 1) for v in values]     # mean without sample i
+    jbar = statistics.fmean(jack)
+    diff = [jbar - j for j in jack]
+    num = sum(d ** 3 for d in diff)
+    den = 6.0 * (sum(d * d for d in diff) ** 1.5)
+    if den == 0:                       # no variability -> fall back to percentile
+        return (round(point, 6), round(_percentile(alpha / 2), 6),
+                round(_percentile(1 - alpha / 2), 6))
+    a = num / den
+
+    z_lo, z_hi = _norm_ppf(alpha / 2), _norm_ppf(1 - alpha / 2)
+
+    def _adjust(z):
+        denom = 1 - a * (z0 + z)
+        if denom == 0:
+            return 0.5
+        return _norm_cdf(z0 + (z0 + z) / denom)
+
+    return (round(point, 6),
+            round(_percentile(_adjust(z_lo)), 6),
+            round(_percentile(_adjust(z_hi)), 6))
