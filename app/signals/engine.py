@@ -309,6 +309,7 @@ class SignalEngine:
                      else round(f["price"] + 2 * f["atr_swing"], 6),
                 price=f["price"], atr=f["atr_swing"], rsi=round(f["rsi"], 1),
                 sentiment=round(sent[0], 3), regime=regime["label"],
+                mtf_align=round(mtf_align, 4),
                 ts=time.time(),
             )
         self.latest = out

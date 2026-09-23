@@ -41,6 +41,11 @@ TUNABLES = {
                            "Daily loss that halts new entries until tomorrow"),
     "cooldown_sec":      T(900, 0, 7200, 60, "risk", "Re-entry cooldown (s)",
                            "Seconds before re-entering a product after an exit", True),
+    "max_spread_bps":    T(0, 0, 200, 1, "risk", "Max entry spread (bps)",
+                           "Skip a NEW entry when the live bid/ask spread is wider "
+                           "than this (basis points) — a wide spread eats the edge "
+                           "before the trade even moves. 0 = disabled (freqtrade "
+                           "SpreadFilter idea).", True),
     "min_hold_sec":      T(300, 0, 14400, 30, "risk", "Minimum hold (s)",
                            "A position younger than this is exempt from signal-flip "
                            "and trailing-giveback exits (its hard stop/target still "
@@ -131,6 +136,18 @@ TUNABLES = {
                            "Chance per decision tick of firing one probe trade"),
     "explore_size_factor": T(0.4, 0.05, 1.0, 0.05, "signals", "Probe size factor",
                            "Probe size as a fraction of a normal position"),
+    # ---- performance-weighted universe (freqtrade PerformanceFilter idea) ----
+    "perf_filter_enabled": T(1, 0, 1, 1, "signals", "Performance filter",
+                           "Weight discovered-coin universe ranking by each coin's "
+                           "own realized trade performance (winners up, chronic "
+                           "losers down). 0 = rank by heat only.", True),
+    "perf_filter_lookback_sec": T(604800, 3600, 2592000, 3600, "signals",
+                           "Performance lookback (s)",
+                           "Rolling window of closed trades used to score a coin's "
+                           "realized edge (default 7 days)", True),
+    "perf_filter_min_trades": T(3, 1, 20, 1, "signals", "Performance min trades",
+                           "Minimum closed trades for a coin before its realized "
+                           "edge adjusts its universe ranking", True),
     # ---- learning ----
     "bandit_decay_gamma": T(0.995, 0.90, 1.0, 0.001, "learning", "Bandit forgetting γ",
                            "Per-cycle decay on bandit n, variance, AND mean (idle "

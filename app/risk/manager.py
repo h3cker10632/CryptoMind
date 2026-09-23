@@ -190,6 +190,18 @@ class RiskManager:
         ok, why = self.price_sane(product, market)
         if not ok:
             return False, why
+        # ---- spread gate (freqtrade SpreadFilter idea) ----
+        # A wide bid/ask spread is a round-trip cost paid up front; entering into
+        # one hands the edge to the market maker. Skip the entry when the live
+        # spread exceeds the cap (0 = disabled). Only gates when we actually have
+        # a fresh book reading, so a missing book never blocks trading.
+        max_spread = tv("max_spread_bps")
+        if max_spread > 0:
+            book = getattr(market, "books", {}).get(product)
+            if book is not None:
+                spread = book.get("spread_bps", 0.0)
+                if spread > max_spread:
+                    return False, f"spread too wide ({spread:.0f}bps > {max_spread}bps)"
         # ---- meme blast-radius caps ----
         # Memes are high-variance; keep them from taking over the book. Two
         # independent caps: a limit on CONCURRENT meme positions and a limit on

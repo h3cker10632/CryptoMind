@@ -29,6 +29,11 @@ class DirectionLearner:
         self.n_updates = 0
         self.n_flips = 0
         self.n_vetoes = 0
+        self.n_conformal_vetoes = 0
+        # CONFORMAL direction gate: a calibrated prediction set over {long,short}
+        # that replaces the hard mtf_align threshold once it has enough evidence.
+        from .direction_conformal import DirectionConformalGate
+        self.conformal = DirectionConformalGate()
 
     @staticmethod
     def _tv(key, default):
@@ -54,6 +59,11 @@ class DirectionLearner:
         mean = mean + a * (net - mean)
         self.edge[key] = (n, mean)
         self.n_updates += 1
+        # feed the conformal direction gate with (mtf_at_entry, favored side)
+        try:
+            self.conformal.observe_trade(trade)
+        except Exception:
+            pass
 
     def edge_for(self, regime, direction):
         rec = self.edge.get((regime, direction))
@@ -93,9 +103,24 @@ class DirectionLearner:
 
     # ---------------- multi-timeframe veto ----------------
     def veto(self, direction, mtf_align):
-        """True if `direction` fights a strongly-aligned higher-timeframe trend
-        and should NOT be taken. Only fires on clear cases (|align| past the
-        gate), so ordinary chop is unaffected."""
+        """True if `direction` fights the higher-timeframe trend and should NOT
+        be taken.
+
+        Once the CONFORMAL direction gate is calibrated it drives the decision:
+        veto only when the proposed side is confidently EXCLUDED from the
+        prediction set (a coverage-backed judgement) instead of a hand-picked
+        alignment constant. Until then — or when the gate abstains on an
+        ambiguous set — we fall back to the original hard-threshold check so
+        behaviour is unchanged cold-start."""
+        try:
+            cv, cwhy = self.conformal.veto(direction, mtf_align)
+        except Exception:
+            cv, cwhy = False, ""
+        if cv:
+            self.n_vetoes += 1
+            self.n_conformal_vetoes += 1
+            return True, cwhy
+        # legacy hard-threshold fallback (also active while the gate warms up)
         gate = self._tv("mtf_veto_align", 0.75)
         if direction < 0 and mtf_align >= gate:
             self.n_vetoes += 1
@@ -115,6 +140,8 @@ class DirectionLearner:
             "updates": self.n_updates,
             "flips": self.n_flips,
             "vetoes": self.n_vetoes,
+            "conformal_vetoes": self.n_conformal_vetoes,
+            "conformal": self.conformal.stats(),
             "regime_edge": table,
         }
 
@@ -123,6 +150,8 @@ class DirectionLearner:
             "edge": {f"{r}||{d}": [n, m] for (r, d), (n, m) in self.edge.items()},
             "n_updates": self.n_updates, "n_flips": self.n_flips,
             "n_vetoes": self.n_vetoes,
+            "n_conformal_vetoes": self.n_conformal_vetoes,
+            "conformal": self.conformal.to_dict(),
         }
 
     def restore(self, d):
@@ -137,6 +166,8 @@ class DirectionLearner:
             self.n_updates = d.get("n_updates", 0)
             self.n_flips = d.get("n_flips", 0)
             self.n_vetoes = d.get("n_vetoes", 0)
+            self.n_conformal_vetoes = d.get("n_conformal_vetoes", 0)
+            self.conformal.load_dict(d.get("conformal"))
         except Exception:
             pass
 

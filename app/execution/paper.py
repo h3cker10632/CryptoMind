@@ -53,7 +53,8 @@ class PaperBroker:
         return money.round_price(product, px) if product else px
 
     def open(self, product, direction, notional, price, stop, take, reason,
-             votes=None, regime_at_entry=None, is_hedge=False, atr_at_entry=None):
+             votes=None, regime_at_entry=None, is_hedge=False, atr_at_entry=None,
+             mtf_at_entry=None):
         """direction: +1 long, -1 short (margin-style).
 
         `votes` (per-strategy vote dict at entry) and `regime_at_entry` are
@@ -89,6 +90,10 @@ class PaperBroker:
         pos["mae_price"] = fill
         if atr_at_entry:
             pos["atr_at_entry"] = atr_at_entry
+        # multi-timeframe alignment at entry, for the conformal direction gate's
+        # counterfactual labelling at close.
+        if mtf_at_entry is not None:
+            pos["mtf_at_entry"] = mtf_at_entry
         # bake the learning-attribution fields in atomically at creation
         pos["votes"] = {k: round(v, 3) for k, v in (votes or {}).items()
                         if abs(v) > 0.05}

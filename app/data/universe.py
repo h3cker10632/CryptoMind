@@ -51,6 +51,14 @@ class Universe:
         self.sources = {}          # SYM -> set of source tags that surfaced it
         self.last_update = 0.0
 
+    @staticmethod
+    def _perf_min_trades():
+        try:
+            from ..tunables import tv
+            return int(tv("perf_filter_min_trades"))
+        except Exception:
+            return 3
+
     # -------------------- reference data --------------------
     async def _load_coinbase_products(self, client):
         r = await client.get(f"{CB}/products", timeout=20)
@@ -194,9 +202,35 @@ class Universe:
                 self.mention_heat[s] += 0.5 * (len(tags) - 1)
 
         core_syms = {p.split("-")[0] for p in CORE}
+        # PERFORMANCE-WEIGHTED RANKING (freqtrade PerformanceFilter idea): rank
+        # discovered coins by heat SCALED by how each has actually traded for us
+        # — a proven winner gets nudged up into the contested slots, a chronic
+        # loser demoted out — so the universe isn't driven by crowd noise alone.
+        # CORE coins are never affected (they're excluded below regardless).
+        perf_scores = {}
+        try:
+            from ..tunables import tv as _tv
+            if _tv("perf_filter_enabled"):
+                from .performance import performance_scores
+                from ..execution.paper import broker as _broker
+                perf_scores = performance_scores(
+                    getattr(_broker, "closed_trades", []),
+                    _tv("perf_filter_lookback_sec"), time.time(),
+                    min_trades=_tv("perf_filter_min_trades"))
+        except Exception as e:
+            db.log_event("warn", f"Performance ranking unavailable: {e}")
+
+        def _eff_heat(sym, heat):
+            if not perf_scores:
+                return heat
+            from .performance import rank_multiplier
+            return heat * rank_multiplier(
+                perf_scores, sym,
+                min_trades=self._perf_min_trades())
+
         candidates = sorted(
             ((s, h) for s, h in self.mention_heat.items() if s not in core_syms),
-            key=lambda kv: -kv[1])
+            key=lambda kv: -_eff_heat(kv[0], kv[1]))
 
         self.rejected = {}
         chosen = []
@@ -268,7 +302,26 @@ class Universe:
             "coinbase_listed": len(self.cb_products),
             "max_universe": MAX_UNIVERSE,
             "last_update": self.last_update,
+            "performance": self._performance_stats(),
         }
+
+    @staticmethod
+    def _performance_stats():
+        """Per-coin realized-performance table (winners/untested/losers) that
+        drives the performance-weighted ranking — surfaced for the dashboard."""
+        try:
+            from ..tunables import tv
+            if not tv("perf_filter_enabled"):
+                return {"enabled": False, "coins": []}
+            from .performance import performance_table
+            from ..execution.paper import broker
+            rows = performance_table(
+                getattr(broker, "closed_trades", []),
+                tv("perf_filter_lookback_sec"), time.time(),
+                min_trades=int(tv("perf_filter_min_trades")))
+            return {"enabled": True, "coins": rows[:20]}
+        except Exception:
+            return {"enabled": True, "coins": []}
 
 
 universe = Universe()
