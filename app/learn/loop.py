@@ -612,6 +612,7 @@ class Learner:
             "skip_attributions": self.skip_attributions,
             "evolution": evolution.stats(),
             "llm_advisor": self._llm_advisor_stats(),
+            "model_advisor": self._model_advisor_stats(),
             "exit_advisor": self._exit_advisor_stats(),
             "direction": self._direction_stats(),
             "last_run": self.last_run,
@@ -638,6 +639,14 @@ class Learner:
     def _llm_advisor_stats():
         try:
             from .llm_advisor import advisor
+            return advisor.stats()
+        except Exception:
+            return {"enabled": False}
+
+    @staticmethod
+    def _model_advisor_stats():
+        try:
+            from .model_advisor import advisor
             return advisor.stats()
         except Exception:
             return {"enabled": False}

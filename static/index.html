@@ -120,6 +120,10 @@
     <div class="sw"></div>
     <span>LLM advisor: <b id="tg-llm-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-model" title="Optional ML-model advisor: adds ONE directional vote from a trained crypto_ml_lab model, weighted by the bandit like any other strategy (never the driver). Needs a validated artifact at model_artifact/ (or $CRYPTOMIND_MODEL_DIR) plus the crypto_ml package — without them it stays inert.">
+    <div class="sw"></div>
+    <span>ML-model advisor: <b id="tg-model-label">off</b></span>
+  </div>
   <div class="toggle" id="tg-exit" title="Predictive loss-cut: cuts a losing position early when the system confidently expects it to keep moving against you, instead of waiting for the hard stop. Learns hold-vs-cut per market state from what price actually did next.">
     <div class="sw"></div>
     <span>loss-cut advisor: <b id="tg-exit-label">on</b></span>
@@ -785,6 +789,8 @@ function renderToggles(){
   $('#tg-hedge-label').textContent=s.hedge_enabled?'on':'off';
   $('#tg-llm').classList.toggle('on', s.llm_advisor_enabled);
   $('#tg-llm-label').textContent=s.llm_advisor_enabled?'on (needs API key)':'off';
+  $('#tg-model').classList.toggle('on', s.model_advisor_enabled);
+  $('#tg-model-label').textContent=s.model_advisor_enabled?'on (needs artifact)':'off';
   $('#tg-exit').classList.toggle('on', s.exit_advisor_enabled!==false);
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
   $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
@@ -821,6 +827,7 @@ document.querySelectorAll('#seg-mode button').forEach(b=>
   b.onclick=()=>setSetting('trade_mode', b.dataset.mode));
 $('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).hedge_enabled);
 $('#tg-llm').onclick=()=>setSetting('llm_advisor_enabled',!(window._settings||{}).llm_advisor_enabled);
+$('#tg-model').onclick=()=>setSetting('model_advisor_enabled',!(window._settings||{}).model_advisor_enabled);
 $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
 $('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
 $('#tg-autoexport').onclick=()=>setSetting('auto_export_enabled',(window._settings||{}).auto_export_enabled===false);

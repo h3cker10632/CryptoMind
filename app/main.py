@@ -67,6 +67,7 @@ async def startup():
     asyncio.create_task(orch.watchdog())
     asyncio.create_task(orch.reconcile_loop())
     asyncio.create_task(orch.llm_advisor_loop())
+    asyncio.create_task(orch.model_advisor_loop())   # crypto_ml_lab model vote
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     from .export import auto_export_loop

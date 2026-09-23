@@ -26,6 +26,11 @@ DEFAULTS = {
     # directional vote that the bandit weights like any other strategy — it is
     # never the driver. Off by default: no key, no cost, no effect.
     "llm_advisor_enabled": False,
+    # Optional ML-model advisor sleeve. When True (and a validated crypto_ml_lab
+    # artifact exists at model_artifact/ or $CRYPTOMIND_MODEL_DIR) the advisor
+    # contributes ONE directional vote that the bandit weights like any other
+    # strategy — never the driver. Off by default: no artifact, no effect.
+    "model_advisor_enabled": False,
     # Predictive, self-learning early loss-cut. When True, a losing position the
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.

@@ -232,6 +232,19 @@ TUNABLES = {
     "llm_lean_ttl_sec":  T(3600, 300, 21600, 60, "learning", "LLM lean TTL (s)",
                            "A cached LLM lean expires (→ no vote) after this long, "
                            "so a stale opinion can't dominate the ensemble", True),
+    "model_refresh_sec": T(300, 30, 3600, 30, "learning", "Model advisor cadence (s)",
+                           "Seconds between ML-model-advisor inference refreshes "
+                           "(only when enabled + a validated artifact is loaded)", True),
+    "model_lean_ttl_sec": T(1800, 120, 21600, 60, "learning", "Model lean TTL (s)",
+                            "A cached model lean expires (→ no vote) after this "
+                            "long, so a stale prediction can't dominate the ensemble",
+                            True),
+    "model_rug_veto":    T(0.65, 0.10, 0.99, 0.01, "learning", "Model rug/risk veto",
+                           "The model vote is forced to 0 when its rug/risk "
+                           "probability is at or above this threshold"),
+    "model_return_scale": T(20.0, 1.0, 100.0, 1.0, "learning", "Model return→lean scale",
+                            "The predicted short-horizon return is multiplied by "
+                            "this before tanh() to shape it into a [-1,1] lean"),
     # ---- stance presets ----
     "stance_passive_risk": T(0.5, 0.1, 1.0, 0.05, "stance", "Passive risk mult",
                            "Position-size multiplier at full passive"),

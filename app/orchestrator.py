@@ -109,6 +109,22 @@ class Orchestrator:
                 db.log_event("warn", f"LLM advisor loop error: {e}")
             await asyncio.sleep(30)
 
+    async def model_advisor_loop(self):
+        """Refresh the optional ML-model advisor's lean cache OFF the hot
+        decision path. No-ops entirely (and cheaply) unless the advisor is
+        enabled and a validated crypto_ml_lab artifact is loadable; a failure
+        here can never affect trading."""
+        from .learn.model_advisor import advisor as model_advisor
+        from .config import PRODUCTS
+        await asyncio.sleep(35)
+        while True:
+            try:
+                if model_advisor.configured():
+                    await model_advisor.refresh(market, list(PRODUCTS))
+            except Exception as e:
+                db.log_event("warn", f"Model advisor loop error: {e}")
+            await asyncio.sleep(30)
+
     async def reconcile_loop(self):
         """Periodically reconcile the shadow OMS against its venue (source of
         truth) and prune the equity table. Runs off the hot decision path."""

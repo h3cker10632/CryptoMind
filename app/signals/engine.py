@@ -152,6 +152,18 @@ def strat_llm(f, sent, regime):
     return _clip(advisor.lean(_cur_product()))
 
 
+def strat_model(f, sent, regime):
+    """Optional ML-model advisor vote — a trained crypto_ml_lab model as ONE
+    opinion among many, weighted by the bandit like every other sleeve (NOT the
+    driver). Returns the cached directional lean in [-1, 1], or 0.0 when the
+    advisor is disabled / no validated artifact is loaded / its prediction has
+    expired — in which case the engine's active-strategy renorm excludes it. The
+    (latency-heavy) inference happens out of band; this hot path only reads the
+    cache."""
+    from ..learn.model_advisor import advisor as model_advisor
+    return _clip(model_advisor.lean(_cur_product()))
+
+
 def _evolved_vote(g, f):
     """Score a single evolved genome's rule set on the current features."""
     score = 0.0
@@ -210,6 +222,7 @@ STRATEGIES = {
     "ml": strat_ml,
     "evolved": strat_evolved,
     "llm": strat_llm,
+    "model": strat_model,
 }
 
 

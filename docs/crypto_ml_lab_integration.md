@@ -146,13 +146,38 @@ Add a **training-grade** export to CryptoMind (new function + endpoint, e.g.
 This alone unblocks honest training and is self-contained — **no trading-core changes,
 stable APIs preserved.** Fits the "own code / incremental patch" rule.
 
-### Phase 2 — model-advisor round-trip (medium, touches the ensemble)
-Add a loader so a validated `crypto_ml_lab` artifact (`model.joblib`) contributes **one
-bandit-weighted advisory vote** to the signal ensemble — same governance pattern as the
-existing LLM advisor (never the driver; off by default; degrades to inert without an
-artifact). Requires: a settings toggle, a features→model-matrix shim matching
-`features.BASE`, and a vote adapter in `app/signals/engine.py`. Only promote after the
-lab's own gates pass (purged OOS, calibrated, fee/slippage stress).
+### Phase 2 — model-advisor round-trip (medium, touches the ensemble) ✅ DONE
+
+**Shipped** in `app/learn/model_advisor.py` (`ModelAdvisor`, singleton `advisor`) +
+`strat_model` in `app/signals/engine.py`. A validated `crypto_ml_lab` artifact contributes
+**one bandit-weighted advisory vote** (the `model` arm) — never the driver. Same governance
+as the LLM advisor:
+
+- **Off by default** (`model_advisor_enabled` setting; dashboard toggle "ML-model advisor").
+- **Inert** unless a model artifact exists AND its deps import — never blocks/raises into the
+  decision loop. `lean()` reads a cache; a background `orchestrator.model_advisor_loop`
+  (registered in `main.py`) does inference out of band.
+- Leans clamped to [-1, 1], expire after `model_lean_ttl_sec`; decay to 0 on any error.
+- **No train/serve skew:** features are built with crypto_ml_lab's OWN
+  `features.make_features` + `model_matrix` (columns aligned to the artifact's saved feature
+  list from `metadata.json`). If `crypto_ml` isn't importable the advisor stays inert and
+  says so in stats — it never guesses with a divergent feature set.
+
+Artifact: `<model_dir>/model.joblib` + `<model_dir>/metadata.json` (default `model_artifact/`,
+override `CRYPTOMIND_MODEL_DIR`). Signal shaping mirrors the lab's backtest:
+`lean = tanh(E[r_shortest] * model_return_scale)`, forced to 0 when rug/risk ≥
+`model_rug_veto`. Four tunables added: `model_refresh_sec`, `model_lean_ttl_sec`,
+`model_rug_veto`, `model_return_scale`. Stats surface at
+`learner.full_stats()["model_advisor"]` (→ `/api/learning`).
+
+Round-trip verified end-to-end: train a real `MultiTaskBaseline` via `crypto_ml`
+prepare/train → advisor loads it via joblib → aligns to the saved 23-feature list →
+produces a valid bounded lean; rug-veto and TTL/clamp paths confirmed. 13 tests in
+`tests/test_model_advisor.py`. Suite: 350 passed (was 337).
+
+**Promotion bar (unchanged):** only enable after the lab's own gates pass — purged OOS,
+calibrated probabilities, fee/slippage stress. Enabling the toggle without a validated
+artifact simply does nothing.
 
 ### Phase 3 — formalize the contract / optionally vendor
 Either keep the lab a separate repo and version the export schema as the API between them,

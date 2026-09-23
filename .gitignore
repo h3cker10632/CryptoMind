@@ -44,3 +44,6 @@ reports/
 
 # ML dataset exports
 cryptomind_ml_dataset*.json
+
+# trained crypto_ml_lab model artifact (loaded by the model advisor)
+model_artifact/
