@@ -18,9 +18,14 @@ string for that key instead of breaking the whole dump. History depth is capped
 per section (and overridable) so the file stays a reasonable size, but by default
 the export is EXHAUSTIVE.
 """
+import asyncio
 import json
 import math
+import os
 import time
+
+# Where periodic auto-exports are written. Kept out of git (see .gitignore).
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports")
 
 
 # ------------------------------------------------------------------ utilities
@@ -390,6 +395,92 @@ def build_export(history_limit=1000, include_features=True, include_analytics=Tr
     })
 
     return out
+
+
+def write_report(directory=None, history_limit=1000, include_features=True,
+                 include_analytics=True, compact=False):
+    """Build a full-state export and write it to a timestamped file in
+    `directory` (default: reports/). Returns the path written."""
+    directory = directory or REPORTS_DIR
+    os.makedirs(directory, exist_ok=True)
+    data = build_export(history_limit=history_limit,
+                        include_features=include_features,
+                        include_analytics=include_analytics)
+    fname = time.strftime("cryptomind_report_%Y%m%d_%H%M%S.json", time.gmtime())
+    path = os.path.join(directory, fname)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        if compact:
+            json.dump(data, f, separators=(",", ":"), default=str)
+        else:
+            json.dump(data, f, indent=2, default=str)
+    os.replace(tmp, path)   # atomic — a reader never sees a half-written file
+    return path
+
+
+def prune_reports(directory=None, keep=288):
+    """Keep only the most recent `keep` report files (default 288 = 24h at the
+    5-minute default cadence) so the folder doesn't grow without bound."""
+    directory = directory or REPORTS_DIR
+    try:
+        files = sorted(
+            (os.path.join(directory, f) for f in os.listdir(directory)
+             if f.startswith("cryptomind_report_") and f.endswith(".json")),
+            key=os.path.getmtime)
+    except FileNotFoundError:
+        return 0
+    removed = 0
+    for old in files[:-keep] if keep > 0 else []:
+        try:
+            os.remove(old)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+async def auto_export_loop():
+    """Background task: periodically write a full-state report to reports/.
+
+    The cadence is read fresh from settings EVERY cycle, so moving the
+    dashboard slider changes how often reports are written without a restart.
+    When the feature is toggled off the loop idles (polling once a minute) and
+    resumes cleanly when re-enabled. Errors never kill the loop.
+    """
+    from . import db, settings as app_settings
+    db.log_event("system", "Auto-export loop started (periodic full-state reports)")
+    # small initial delay so the first report reflects a warmed-up system
+    await asyncio.sleep(15)
+    while True:
+        try:
+            if not app_settings.get("auto_export_enabled"):
+                await asyncio.sleep(60)     # idle poll while disabled
+                continue
+            path = await asyncio.to_thread(write_report)
+            await asyncio.to_thread(prune_reports)
+            db.log_event("export", f"Auto-export wrote {os.path.basename(path)}")
+            interval = int(app_settings.get("auto_export_interval_sec"))
+        except Exception as e:   # pragma: no cover - defensive; never die
+            interval = 300
+            try:
+                db.log_event("export", f"Auto-export error: {e}")
+            except Exception:
+                pass
+        # Sleep in short slices, re-reading the interval each slice so a slider
+        # change (shorter OR longer) is honoured promptly instead of only on the
+        # next cycle. Also bail early if the feature is toggled off mid-wait.
+        waited = 0
+        while True:
+            await asyncio.sleep(10)
+            waited += 10
+            try:
+                if not app_settings.get("auto_export_enabled"):
+                    break
+                interval = max(30, int(app_settings.get("auto_export_interval_sec")))
+            except Exception:
+                interval = max(30, interval)
+            if waited >= interval:
+                break
 
 
 def _prime_from_snapshot():

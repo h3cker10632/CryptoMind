@@ -128,6 +128,15 @@
     <div class="sw"></div>
     <span>meme trading: <b id="tg-meme-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-autoexport" title="Auto-export: periodically writes a full-state JSON report (same as the Export button / GET /api/export) to the reports/ folder. Use the slider to set how often.">
+    <div class="sw"></div>
+    <span>auto-export: <b id="tg-autoexport-label">off</b></span>
+  </div>
+  <div id="autoexport-slider-wrap" title="How often the full-state report is written. Takes effect on the next cycle — no restart." style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);min-width:230px">
+    <span>every</span>
+    <input type="range" id="autoexport-interval" min="30" max="3600" step="30" value="300" style="flex:1;min-width:110px">
+    <b id="autoexport-interval-label" style="color:var(--text);white-space:nowrap;min-width:52px;text-align:right">5m 0s</b>
+  </div>
   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
     <span style="color:var(--dim)">stance:</span>
     <button data-mode="passive">🛡 passive</button>
@@ -774,6 +783,22 @@ function renderToggles(){
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
   $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
   $('#tg-meme-label').textContent=s.meme_trading_enabled?'on':'off';
+  const ae=s.auto_export_enabled!==false;
+  $('#tg-autoexport').classList.toggle('on', ae);
+  $('#tg-autoexport-label').textContent=ae?'on':'off';
+  const sl=$('#autoexport-interval');
+  // don't fight the user while they're dragging the slider
+  if(document.activeElement!==sl){
+    const v=s.auto_export_interval_sec||300;
+    sl.value=v; $('#autoexport-interval-label').textContent=fmtInterval(v);
+  }
+  $('#autoexport-slider-wrap').style.opacity=ae?'1':'.45';
+}
+function fmtInterval(sec){
+  sec=Number(sec)||0;
+  if(sec<60)return sec+'s';
+  const m=Math.floor(sec/60), s=sec%60;
+  return s?m+'m '+s+'s':m+'m';
 }
 async function loadSettings(){
   try{window._settings=await j('/api/settings');renderToggles();}catch(e){}
@@ -792,6 +817,10 @@ $('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).he
 $('#tg-llm').onclick=()=>setSetting('llm_advisor_enabled',!(window._settings||{}).llm_advisor_enabled);
 $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
 $('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
+$('#tg-autoexport').onclick=()=>setSetting('auto_export_enabled',(window._settings||{}).auto_export_enabled===false);
+// live label while dragging; persist only on release (avoids a POST per pixel)
+$('#autoexport-interval').oninput=e=>{$('#autoexport-interval-label').textContent=fmtInterval(e.target.value);};
+$('#autoexport-interval').onchange=e=>setSetting('auto_export_interval_sec',parseInt(e.target.value,10));
 loadSettings();
 
 // ===== alerts =====

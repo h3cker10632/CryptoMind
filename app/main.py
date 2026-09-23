@@ -69,6 +69,8 @@ async def startup():
     asyncio.create_task(orch.llm_advisor_loop())
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
+    from .export import auto_export_loop
+    asyncio.create_task(auto_export_loop())         # periodic full-state reports
     alerts.alert("info", "System started",
                  "CryptoMind is up (paper mode). State restored." )
 

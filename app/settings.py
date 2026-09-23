@@ -37,9 +37,21 @@ DEFAULTS = {
     # High variance by nature. Enabled per the operator's request to "see how
     # it plays out"; toggle off any time on the dashboard.
     "meme_trading_enabled": True,
+    # Periodic full-state export. When True, the system writes a timestamped
+    # JSON report (the same document as GET /api/export) to the reports/ folder
+    # every `auto_export_interval_sec` seconds. The interval is operator-tunable
+    # from the dashboard slider and takes effect on the next cycle (no restart).
+    "auto_export_enabled": True,
+    "auto_export_interval_sec": 300,   # default: every 5 minutes
 }
 
 STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}
+
+# Integer settings: (min, max) inclusive clamp. Everything else is treated as
+# a boolean toggle.
+INT_KEYS = {
+    "auto_export_interval_sec": (30, 86400),   # 30s .. 24h
+}
 
 _settings = None
 
@@ -58,11 +70,23 @@ def load():
                     if k in STR_KEYS:
                         if v in STR_KEYS[k]:
                             _settings[k] = v
+                    elif k in INT_KEYS:
+                        _settings[k] = _coerce_int(k, v)
                     else:
                         _settings[k] = bool(v)
         except Exception:
             pass
     return _settings
+
+
+def _coerce_int(key, v):
+    """Clamp an integer setting to its [min, max] range; fall back to the
+    default on garbage input."""
+    lo, hi = INT_KEYS[key]
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return DEFAULTS[key]
 
 
 def get(key):
@@ -77,6 +101,8 @@ def update(changes: dict):
         if k in STR_KEYS:
             if v in STR_KEYS[k]:
                 s[k] = v
+        elif k in INT_KEYS:
+            s[k] = _coerce_int(k, v)
         else:
             s[k] = bool(v)
     try:

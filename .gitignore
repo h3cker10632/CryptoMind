@@ -38,3 +38,6 @@ backups/
 
 # generated full-state exports
 cryptomind_export*.json
+
+# periodic auto-export reports
+reports/

@@ -131,6 +131,50 @@ def test_cli_compact(tmp_path):
     assert "analytics" not in json.loads(txt)
 
 
+def test_write_report_creates_timestamped_file(tmp_path):
+    _init()
+    path = export.write_report(directory=str(tmp_path), history_limit=10)
+    assert os.path.exists(path)
+    assert os.path.basename(path).startswith("cryptomind_report_")
+    d = json.loads(open(path).read())
+    assert d["schema"] == "cryptomind.export.v2"
+    # atomic write leaves no .tmp behind
+    assert not any(f.endswith(".tmp") for f in os.listdir(tmp_path))
+
+
+def test_prune_reports_keeps_newest(tmp_path):
+    for i in range(6):
+        p = tmp_path / f"cryptomind_report_2020010{i}_000000.json"
+        p.write_text("{}")
+        time.sleep(0.01)
+    removed = export.prune_reports(directory=str(tmp_path), keep=2)
+    assert removed == 4
+    left = [f for f in os.listdir(tmp_path) if f.startswith("cryptomind_report_")]
+    assert len(left) == 2
+
+
+def test_prune_reports_missing_dir_is_safe():
+    assert export.prune_reports(directory="/nonexistent/x/y/z", keep=5) == 0
+
+
+def test_auto_export_settings_exist_and_clamp():
+    from app import settings
+    settings._settings = None
+    assert "auto_export_enabled" in settings.DEFAULTS
+    assert settings.DEFAULTS["auto_export_interval_sec"] == 300
+    # clamps to [30, 86400]
+    settings.update({"auto_export_interval_sec": 5})
+    assert settings.get("auto_export_interval_sec") == 30
+    settings.update({"auto_export_interval_sec": 10 ** 9})
+    assert settings.get("auto_export_interval_sec") == 86400
+    settings.update({"auto_export_interval_sec": 450})
+    assert settings.get("auto_export_interval_sec") == 450
+    # garbage falls back to default
+    settings.update({"auto_export_interval_sec": "nope"})
+    assert settings.get("auto_export_interval_sec") == 300
+    settings._settings = None
+
+
 def test_history_limit_caps_rows():
     _init()
     for i in range(10):
