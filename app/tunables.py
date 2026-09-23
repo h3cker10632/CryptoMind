@@ -56,6 +56,45 @@ TUNABLES = {
                            "Peak unrealized gain (as a fraction of entry price) "
                            "required before the peak-giveback exit can trigger — "
                            "prevents arming on noise"),
+    # ---- protections (time-boxed circuit breakers) ----
+    "protect_stopguard_trades": T(4, 0, 30, 1, "protections", "StoplossGuard trades",
+                           "Lock ALL pairs when at least this many losing stop-outs "
+                           "occur inside the lookback window. 0 disables.", True),
+    "protect_stopguard_lookback_sec": T(3600, 300, 86400, 300, "protections",
+                           "StoplossGuard lookback (s)",
+                           "Rolling window scanned for clustered stop-outs", True),
+    "protect_stopguard_lock_sec": T(3600, 300, 86400, 300, "protections",
+                           "StoplossGuard lock (s)",
+                           "How long trading is halted for ALL pairs once the "
+                           "stop-out cluster trips the guard", True),
+    "protect_lowprofit_trades": T(3, 0, 30, 1, "protections", "LowProfitPairs trades",
+                           "Minimum trades for a single coin inside the window before "
+                           "its net edge is judged. 0 disables.", True),
+    "protect_lowprofit_lookback_sec": T(86400, 300, 604800, 300, "protections",
+                           "LowProfitPairs lookback (s)",
+                           "Rolling window over which a coin's net PnL is summed", True),
+    "protect_lowprofit_required": T(0.0, -0.20, 0.20, 0.005, "protections",
+                           "LowProfitPairs required net",
+                           "Lock a coin whose net PnL over the window (as a fraction "
+                           "of staked notional) is BELOW this. 0 = lock net-losers."),
+    "protect_lowprofit_lock_sec": T(21600, 300, 604800, 300, "protections",
+                           "LowProfitPairs lock (s)",
+                           "How long the under-performing coin is locked out", True),
+    "protect_maxdd_trades": T(10, 0, 100, 1, "protections", "MaxDrawdown trades",
+                           "Minimum trades in the window before the temporary "
+                           "drawdown halt can arm. 0 disables.", True),
+    "protect_maxdd_lookback_sec": T(43200, 300, 604800, 300, "protections",
+                           "MaxDrawdown lookback (s)",
+                           "Rolling window whose realized-PnL curve is measured", True),
+    "protect_maxdd_fraction": T(0.10, 0.02, 0.50, 0.01, "protections",
+                           "MaxDrawdown fraction",
+                           "Realized peak-to-trough drawdown over the window that "
+                           "trips a TEMPORARY, auto-recovering halt (softer tier "
+                           "below the permanent kill switch)"),
+    "protect_maxdd_lock_sec": T(7200, 300, 86400, 300, "protections",
+                           "MaxDrawdown lock (s)",
+                           "How long trading is halted after the temporary "
+                           "drawdown halt trips", True),
     # ---- decider-health guardian (safe mode / preflight) ----
     "safe_mode_fail_threshold": T(4, 1, 20, 1, "risk", "Safe-mode fail threshold",
                            "Consecutive decision-loop failures that engage safe "

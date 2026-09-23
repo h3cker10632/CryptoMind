@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from ..tunables import tv, TUNABLES
 from .. import db
 from .stop_calibrator import StopCalibrator
+from .protections import ProtectionManager
 
 # The RL agent can dial CONVICTION risk down to this floor but never to zero —
 # a sit-out only skips discretionary probes, never a cost-viable conviction fill.
@@ -41,6 +42,9 @@ class RiskManager:
         # (1-alpha) of realized adverse excursions, so the stop sits just
         # outside normal noise instead of at a guessed constant.
         self.stop_calibrator = StopCalibrator()
+        # PROTECTIONS: time-boxed, self-healing circuit breakers derived from
+        # recent trade outcomes (StoplossGuard / LowProfitPairs / MaxDrawdown).
+        self.protections = ProtectionManager()
         # Was the interval just ending a REAL chance to trade? Set by the
         # orchestrator at the end of each tick (a fill fired, exposure was open,
         # or a signal cleared the cost gate). When False, flat equity reflects a
@@ -149,7 +153,8 @@ class RiskManager:
                 "rl_scale": rl_scale,               # raw agent choice (may be 0)
                 "rl_sit_out": rl_sit_out,           # skip probes this tick
                 "streak_scale": self.risk_scale,
-                "stop_calibration": self.stop_calibrator.stats()}
+                "stop_calibration": self.stop_calibrator.stats(),
+                "protections": self.protections.stats()}
 
     # ---------- gates & sizing ----------
     def can_open(self, product, broker, market, data_healthy):
@@ -176,6 +181,12 @@ class RiskManager:
         last = self.cooldowns.get(product, 0)
         if time.time() - last < tv("cooldown_sec"):
             return False, "cooldown"
+        # PROTECTIONS: self-healing circuit breakers over recent outcomes — a
+        # global halt after a stop-out cluster / temporary drawdown, or a
+        # per-coin lockout for a chronic under-performer.
+        locked, why = self.protections.is_locked(product)
+        if locked:
+            return False, why
         ok, why = self.price_sane(product, market)
         if not ok:
             return False, why

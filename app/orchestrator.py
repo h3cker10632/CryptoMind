@@ -217,6 +217,19 @@ class Orchestrator:
                 except Exception as e:
                     db.log_event("error", f"shadow close mirror failed: {e}")
 
+        # PROTECTIONS: refresh the time-boxed circuit breakers from the recent
+        # trade history (cheap tail scan) so a stop-out cluster, a chronic
+        # losing coin, or a temporary drawdown benches the relevant pairs before
+        # the entry loop below consults risk.can_open.
+        try:
+            newly_locked_before = risk.protections.stats()["global_locked"]
+            risk.protections.evaluate(broker.closed_trades, equity=equity)
+            if risk.protections.stats()["global_locked"] and not newly_locked_before:
+                db.log_event("risk", "🛑 PROTECTION engaged (all pairs): "
+                             + risk.protections.stats()["global_reason"])
+        except Exception as e:
+            db.log_event("error", f"protections evaluate failed: {e}")
+
         # 5b. PREDICTIVE LOSS-CUT — after the hard stops/targets, ask the exit
         # advisor whether any losing position is expected to keep going against
         # us; if so, cut it early. This runs AFTER broker.manage so the hard

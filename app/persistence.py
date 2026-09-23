@@ -130,6 +130,9 @@ def capture():
             # conformal stop calibrator (rolling adverse-excursion scores) so
             # the calibrated stop multiple survives restarts warm.
             "stop_calibrator": risk.stop_calibrator.to_dict(),
+            # active protection locks (StoplossGuard/LowProfitPairs/MaxDrawdown)
+            # so a halt survives a restart instead of silently lifting.
+            "protections": risk.protections.to_dict(),
         },
         "learner": {
             "weights": learner.weights,
@@ -312,6 +315,8 @@ def load():
             # conformal stop calibrator (optional — absent on old snapshots, in
             # which case it starts cold and re-warms from live trade outcomes).
             risk.stop_calibrator.load_dict(r.get("stop_calibrator"))
+            # active protection locks (optional on old snapshots)
+            risk.protections.load_dict(r.get("protections"))
         else:
             db.log_event("system", "carry_equity=OFF — fresh $100k paper "
                                    "account (learned state still restored)")
