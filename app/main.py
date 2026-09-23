@@ -240,6 +240,23 @@ def events():
     return {"events": db.recent("events", 100)}
 
 
+@app.get("/api/export")
+def export_all(history: int = 200, features: bool = True, download: bool = True):
+    """Aggregate EVERY data surface (status, trades, equity, signals, market,
+    derivatives, universe, research, full learning stack, decision/order audit
+    trails, config) into ONE JSON document. `download=true` returns it as a
+    timestamped file attachment; `features=false` omits per-product features to
+    shrink it; `history` caps rows per history section."""
+    from .export import build_export
+    data = build_export(history_limit=min(max(history, 1), 2000),
+                        include_features=features)
+    if download:
+        fname = time.strftime("cryptomind_export_%Y%m%d_%H%M%S.json", time.gmtime())
+        return JSONResponse(data, headers={
+            "Content-Disposition": f'attachment; filename="{fname}"'})
+    return data
+
+
 @app.post("/api/control/pause")
 def pause():
     orch.running = False

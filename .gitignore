@@ -35,3 +35,6 @@ cryptomind-*.patch
 
 # --- local data backups ---
 backups/
+
+# generated full-state exports
+cryptomind_export*.json
