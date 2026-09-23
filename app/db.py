@@ -209,6 +209,42 @@ def strategy_scores(lookback):
         return [dict(r) for r in rows]
 
 
+def labeled_signals(limit=100000):
+    """Scored signals that HAVE a realized forward-return label — the only rows
+    fit for supervised learning. Unlike strategy_scores() this keeps ts/product/
+    regime so an offline ML pipeline can join them to decision context and align
+    them in time. Ordered oldest->newest for chronological (walk-forward) use."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT ts, strategy, product, direction, confidence, fwd_return, "
+            "regime FROM signal_scores WHERE scored=1 AND fwd_return IS NOT NULL "
+            "ORDER BY ts ASC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def all_decisions(limit=200000, since_ts=None):
+    """Full decision-audit rows (oldest->newest) for offline joining. Parses the
+    votes JSON. Optionally bounded by a start timestamp."""
+    q = "SELECT * FROM decisions"
+    params = []
+    if since_ts is not None:
+        q += " WHERE ts >= ?"
+        params.append(since_ts)
+    q += " ORDER BY ts ASC LIMIT ?"
+    params.append(limit)
+    with _lock, _conn() as c:
+        rows = c.execute(q, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["votes"] = json.loads(d.get("votes") or "{}")
+            except Exception:
+                d["votes"] = {}
+            out.append(d)
+        return out
+
+
 def recent(table, limit=100):
     with _lock, _conn() as c:
         rows = c.execute(f"SELECT * FROM {table} ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()

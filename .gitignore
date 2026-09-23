@@ -41,3 +41,6 @@ cryptomind_export*.json
 
 # periodic auto-export reports
 reports/
+
+# ML dataset exports
+cryptomind_ml_dataset*.json

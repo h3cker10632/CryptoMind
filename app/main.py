@@ -265,6 +265,23 @@ def export_all(history: int = 1000, features: bool = True,
     return data
 
 
+@app.get("/api/ml_dataset")
+def ml_dataset(limit: int = 100000, download: bool = True):
+    """Emit a TRAINING-GRADE dataset for offline ML (crypto_ml_lab). Unlike
+    /api/export (a snapshot with mostly-unlabelled newest signals), this returns
+    `events` (a leakage-free per-bar time series in the lab's contract) plus
+    `labels` (only signals with a realized fwd_return, joined to decision-time
+    context and trade outcomes). `download=true` returns it as a file attachment;
+    `limit` caps labelled rows (max 500000). See docs/crypto_ml_lab_integration.md."""
+    from .ml_export import build_ml_dataset
+    data = build_ml_dataset(limit=min(max(limit, 1), 500000))
+    if download:
+        fname = time.strftime("cryptomind_ml_dataset_%Y%m%d_%H%M%S.json", time.gmtime())
+        return JSONResponse(data, headers={
+            "Content-Disposition": f'attachment; filename="{fname}"'})
+    return data
+
+
 @app.post("/api/control/pause")
 def pause():
     orch.running = False
