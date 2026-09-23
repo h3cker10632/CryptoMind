@@ -241,15 +241,21 @@ def events():
 
 
 @app.get("/api/export")
-def export_all(history: int = 200, features: bool = True, download: bool = True):
-    """Aggregate EVERY data surface (status, trades, equity, signals, market,
-    derivatives, universe, research, full learning stack, decision/order audit
-    trails, config) into ONE JSON document. `download=true` returns it as a
-    timestamped file attachment; `features=false` omits per-product features to
-    shrink it; `history` caps rows per history section."""
+def export_all(history: int = 1000, features: bool = True,
+               analytics: bool = True, download: bool = True):
+    """Aggregate EVERY data surface into ONE JSON document: meta/config, status,
+    trades (full ledger), computed analytics (Sharpe/Sortino/profit-factor/
+    streaks + per-product/per-exit-reason/per-strategy breakdowns), equity curves,
+    signals, market (+features/closes), a consolidated per-product cross-section,
+    derivatives, universe, memes, calendar, research/sentiment, the full learning
+    stack, guardian/stance/risk/hedge/shadow, decision/order/trade/signal audit
+    trails, settings, tunables, alerts, and security posture. `download=true`
+    returns it as a timestamped file attachment; `features=false`/`analytics=false`
+    shrink it; `history` caps rows per history section (max 5000)."""
     from .export import build_export
-    data = build_export(history_limit=min(max(history, 1), 2000),
-                        include_features=features)
+    data = build_export(history_limit=min(max(history, 1), 5000),
+                        include_features=features,
+                        include_analytics=analytics)
     if download:
         fname = time.strftime("cryptomind_export_%Y%m%d_%H%M%S.json", time.gmtime())
         return JSONResponse(data, headers={

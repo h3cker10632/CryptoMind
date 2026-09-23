@@ -9,24 +9,28 @@ def _init():
     db.init()
 
 
+ALL_SECTIONS = (
+    "meta", "status", "trades", "analytics", "equity", "signals", "market",
+    "per_product", "derivatives", "universe", "memes", "calendar", "research",
+    "learning", "guardian", "stance", "risk", "hedge", "decisions",
+    "order_events", "events", "db_trades", "signal_scores", "db_counts",
+    "settings", "tunables", "alerts", "security",
+)
+
+
 def test_build_export_has_all_sections():
     _init()
     d = export.build_export(history_limit=10)
-    for key in ("schema", "generated_at", "status", "trades", "equity",
-                "signals", "market", "derivatives", "universe", "calendar",
-                "research", "learning", "guardian", "decisions", "order_events",
-                "events", "db_counts", "settings", "tunables", "alerts"):
+    for key in ALL_SECTIONS:
         assert key in d, f"missing section: {key}"
-    assert d["schema"] == "cryptomind.export.v1"
+    assert d["schema"] == "cryptomind.export.v2"
 
 
 def test_export_is_json_serialisable():
     _init()
     d = export.build_export(history_limit=10)
-    # default=str mirrors the CLI/endpoint dump; must not raise
     s = json.dumps(d, default=str)
     assert len(s) > 100
-    # round-trips back to a dict
     assert isinstance(json.loads(s), dict)
 
 
@@ -36,10 +40,17 @@ def test_no_features_flag_shrinks_market():
     without_f = export.build_export(include_features=False)
     assert "features" in with_f["market"]
     assert "features" not in without_f["market"]
+    assert "per_product" in with_f
+    assert "per_product" not in without_f
 
 
-def test_section_failure_is_isolated(monkeypatch):
-    """A blowing-up producer records an error string, not a crash."""
+def test_no_analytics_flag():
+    _init()
+    assert "analytics" in export.build_export(include_analytics=True)
+    assert "analytics" not in export.build_export(include_analytics=False)
+
+
+def test_section_failure_is_isolated():
     boom = export._safe(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert isinstance(boom, dict) and "boom" in boom["error"]
 
@@ -48,10 +59,57 @@ def test_learning_section_carries_internals():
     _init()
     d = export.build_export()
     learning = d["learning"]
-    # tolerate an isolated-error dict, else assert the rich keys exist
     if "error" not in learning:
         for k in ("weights", "online_model", "bandit_posteriors", "direction"):
             assert k in learning
+
+
+def test_meta_carries_config_and_products():
+    _init()
+    meta = export.build_export()["meta"]
+    assert "products" in meta and isinstance(meta["products"], list)
+    assert "config" in meta and "risk_per_trade" in meta["config"]
+    assert "strategies" in meta
+
+
+def test_security_omits_token_value():
+    _init()
+    sec = export.build_export()["security"]
+    # only reports whether a token is configured, never the value
+    assert "auth_token_configured" in sec
+    assert not any("token" == k for k in sec if k not in
+                   ("auth_token_configured",)) or "note" in sec
+    # the actual token string must not leak anywhere obvious
+    assert isinstance(sec["auth_token_configured"], bool)
+
+
+def test_trade_analytics_math():
+    now = time.time()
+    closed = [
+        {"product": "BTC-USD", "side": 1, "pnl": 100.0,
+         "opened": now - 7200, "closed": now - 3600, "exit_reason": "take_profit"},
+        {"product": "BTC-USD", "side": 1, "pnl": -50.0,
+         "opened": now - 3600, "closed": now - 1800, "exit_reason": "stop_loss"},
+        {"product": "ETH-USD", "side": -1, "pnl": 30.0,
+         "opened": now - 900, "closed": now - 60, "exit_reason": "trail"},
+    ]
+    a = export._trade_analytics(closed)
+    assert a["trades"] == 3
+    assert a["wins"] == 2 and a["losses"] == 1
+    assert a["total_pnl"] == 80.0
+    assert a["gross_profit"] == 130.0
+    assert a["profit_factor"] == round(130.0 / 50.0, 3)
+    # per-product + per-exit breakdowns
+    pp = export._per_product_trades(closed)
+    assert pp["BTC-USD"]["trades"] == 2
+    assert pp["ETH-USD"]["short"] == 1
+    pe = export._per_exit_reason(closed)
+    assert pe["take_profit"]["count"] == 1
+
+
+def test_empty_analytics_is_safe():
+    a = export._trade_analytics([])
+    assert a["trades"] == 0
 
 
 def test_cli_writes_file(tmp_path):
@@ -60,13 +118,21 @@ def test_cli_writes_file(tmp_path):
     assert rc == 0
     assert out.exists()
     d = json.loads(out.read_text())
-    assert d["schema"] == "cryptomind.export.v1"
+    assert d["schema"] == "cryptomind.export.v2"
     assert "features" not in d["market"]
+
+
+def test_cli_compact(tmp_path):
+    out = tmp_path / "dump.json"
+    rc = export.main([str(out), "--compact", "--no-analytics"])
+    assert rc == 0
+    txt = out.read_text()
+    assert "\n" not in txt.strip()  # minified
+    assert "analytics" not in json.loads(txt)
 
 
 def test_history_limit_caps_rows():
     _init()
-    # push a bunch of events, then cap the export at 3
     for i in range(10):
         db.log_event("test", f"evt{i}")
     db.flush()
