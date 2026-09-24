@@ -94,6 +94,13 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
     side = 0; qty = 0.0; entry = stop = take = water = 0.0; margin = 0.0
     equity_curve, trades = [], []
     bars_total = bars_in_market = 0        # exposure / time-in-market
+    # ---- EXACT cost accounting (dollars actually charged, not estimated) ----
+    # Accumulated at every execution so the report can decompose net edge into
+    # the fee and slippage drag it hides, plus turnover. Idea borrowed from
+    # qanat's net-edge headline; numbers are measured on THIS run's real fills.
+    fees_paid = 0.0            # $ paid in fees across all fills
+    slippage_paid = 0.0        # $ lost to slippage (adverse fill vs reference px)
+    traded_notional = 0.0      # $ transacted (entries + exits) → turnover
 
     for i in range(60, len(candles)):
         ts, lo, hi, op, cl, vol = candles[i]
@@ -112,9 +119,13 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
                 stop = max(stop, water - trail_m * atr)
                 if lo <= stop:
                     px = stop * (1 - slip); cash += qty * px * (1 - fee)
+                    fees_paid += qty * px * fee; slippage_paid += qty * stop * slip
+                    traded_notional += qty * px
                     trades.append(px / entry - 1); side = 0; qty = 0.0
                 elif hi >= take:
                     px = take * (1 - slip); cash += qty * px * (1 - fee)
+                    fees_paid += qty * px * fee; slippage_paid += qty * take * slip
+                    traded_notional += qty * px
                     trades.append(px / entry - 1); side = 0; qty = 0.0
             else:
                 water = min(water, lo)
@@ -122,10 +133,14 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
                 if hi >= stop:
                     px = stop * (1 + slip)
                     cash += margin + qty * (entry - px) - qty * px * fee
+                    fees_paid += qty * px * fee; slippage_paid += qty * stop * slip
+                    traded_notional += qty * px
                     trades.append((entry - px) / entry); side = 0; qty = 0.0; margin = 0.0
                 elif lo <= take:
                     px = take * (1 + slip)
                     cash += margin + qty * (entry - px) - qty * px * fee
+                    fees_paid += qty * px * fee; slippage_paid += qty * take * slip
+                    traded_notional += qty * px
                     trades.append((entry - px) / entry); side = 0; qty = 0.0; margin = 0.0
 
         # ---- composite signal from the REAL strategy functions ----
@@ -154,12 +169,16 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
             notional = cash * 0.95
             if direction > 0:
                 px = cl * (1 + slip); qty = notional / px; cash -= notional * (1 + fee)
+                fees_paid += notional * fee; slippage_paid += qty * cl * slip
+                traded_notional += qty * px
                 entry, side, water = px, 1, px
                 stop, take = px - stop_dist, px + take_dist
             else:
                 px = cl * (1 - slip); qty = notional / px
                 margin = notional                  # reserve margin from cash
                 cash -= margin + qty * px * fee
+                fees_paid += qty * px * fee; slippage_paid += qty * cl * slip
+                traded_notional += qty * px
                 entry, side, water = px, -1, px
                 stop, take = px + stop_dist, px - take_dist
 
@@ -168,11 +187,14 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
         equity_curve.append((ts, mtm))
 
     if side > 0:
-        cash += qty * candles[-1][4] * (1 - fee); trades.append(candles[-1][4] / entry - 1)
+        _fpx = candles[-1][4]
+        cash += qty * _fpx * (1 - fee); trades.append(_fpx / entry - 1)
+        fees_paid += qty * _fpx * fee; traded_notional += qty * _fpx
     elif side < 0:
         px = candles[-1][4]
         cash += margin + qty * (entry - px) - qty * px * fee
         trades.append((entry - px) / entry)
+        fees_paid += qty * px * fee; traded_notional += qty * px
 
     eq = [e for _, e in equity_curve]
     rets = [b / a - 1 for a, b in zip(eq[:-1], eq[1:]) if a > 0]
@@ -182,7 +204,31 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
     # richer, pybroker-parity metrics (all pure functions over eq / trades)
     tq = st.trade_quality(trades)
     exposure = round(bars_in_market / bars_total, 4) if bars_total else 0.0
+    # ---- cost decomposition: expose the drag that `net` hides ----
+    total_costs = fees_paid + slippage_paid
+    fees_pct = fees_paid / start_cash
+    slip_pct = slippage_paid / start_cash
+    cost_pct = total_costs / start_cash
+    cost_analysis = {
+        # exact dollars charged on THIS run's fills
+        "fees_paid": round(fees_paid, 2),
+        "slippage_paid": round(slippage_paid, 2),
+        "total_costs": round(total_costs, 2),
+        # drag as a fraction of starting capital (exact)
+        "fees_pct": round(fees_pct, 4),
+        "slippage_pct": round(slip_pct, 4),
+        "total_cost_pct": round(cost_pct, 4),
+        # turnover = total notional transacted (entries+exits) / starting capital
+        "turnover": round(traded_notional / start_cash, 2) if start_cash else 0.0,
+        "cost_per_trade_pct": round(cost_pct / len(trades), 5) if trades else None,
+        # gross = net + cost drag. Additive reconstruction (ignores the fact that
+        # a dollar paid early can't compound), so it's labelled _approx — the
+        # exact, trustworthy figures above are the dollars and per-cent drags.
+        "gross_return_approx": round(total + cost_pct, 4),
+        "net_return": round(total, 4),
+    }
     return {"total_return": round(total, 4),
+            "cost_analysis": cost_analysis,
             "sharpe_annualized": round(st.annualized_sharpe(rets, PPY), 2),
             "sortino_annualized": round(st.sortino(rets) * math.sqrt(PPY), 2),
             "max_drawdown": round(st.max_drawdown(eq), 4),
