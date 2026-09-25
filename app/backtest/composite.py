@@ -68,7 +68,7 @@ def _regime(f):
 
 
 def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
-                  _use_fast_features=True):
+                  _use_fast_features=True, scale_out=None):
     """Event-driven sim of the composite ensemble with risk sizing, cost gate,
     ATR stops/targets/trailing — long and (optionally) short.
 
@@ -76,11 +76,22 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
     pass (Numba kernel when available, pure-Python fallback) instead of the old
     O(N^2) per-bar `candles[:i+1]` recompute. Output is verified bit-identical
     to the slow path; the flag exists so tests can compare the two.
+
+    `scale_out` (default None = off) enables a PROFIT-LADDER runner prototype:
+    once an open position is `arm_atr` ATR in profit, sell `frac` of it (banking
+    the initial risk) and, when `breakeven` is set, ratchet the stop to entry so
+    the remainder rides risk-free. Passed as a dict
+    {"arm_atr": float, "frac": 0-1, "breakeven": bool}; None keeps the classic
+    all-or-nothing behaviour so the two can be A/B'd on net-of-cost returns.
     """
     weights = weights or {k: 1.0 for k in HIST_STRATEGIES}
     fee, slip = tv("fee_rate"), tv("slippage_bps") / 1e4
     cost_mult, gate = tv("cost_multiple"), tv("min_confidence")
     stop_m, take_m, trail_m = tv("stop_atr_mult"), tv("take_profit_atr_mult"), tv("trail_atr_mult")
+    if scale_out:
+        scale_out = {"arm_atr": float(scale_out.get("arm_atr", 1.0)),
+                     "frac": min(0.95, max(0.05, float(scale_out.get("frac", 0.5)))),
+                     "breakeven": bool(scale_out.get("breakeven", True))}
 
     fast_feats = None
     if _use_fast_features:
@@ -92,6 +103,7 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
 
     cash = start_cash
     side = 0; qty = 0.0; entry = stop = take = water = 0.0; margin = 0.0
+    scaled = False                         # has this position banked its runner leg?
     equity_curve, trades = [], []
     bars_total = bars_in_market = 0        # exposure / time-in-market
     # ---- EXACT cost accounting (dollars actually charged, not estimated) ----
@@ -122,11 +134,25 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
                     fees_paid += qty * px * fee; slippage_paid += qty * stop * slip
                     traded_notional += qty * px
                     trades.append(px / entry - 1); side = 0; qty = 0.0
-                elif hi >= take:
-                    px = take * (1 - slip); cash += qty * px * (1 - fee)
-                    fees_paid += qty * px * fee; slippage_paid += qty * take * slip
-                    traded_notional += qty * px
-                    trades.append(px / entry - 1); side = 0; qty = 0.0
+                else:
+                    # profit-ladder: bank a runner leg once far enough in profit
+                    if scale_out and not scaled and qty > 0:
+                        trig = entry + scale_out["arm_atr"] * atr
+                        if hi >= trig:
+                            sq = qty * scale_out["frac"]
+                            spx = trig * (1 - slip)
+                            cash += sq * spx * (1 - fee)
+                            fees_paid += sq * spx * fee; slippage_paid += sq * trig * slip
+                            traded_notional += sq * spx
+                            trades.append(spx / entry - 1)
+                            qty -= sq; scaled = True
+                            if scale_out["breakeven"]:
+                                stop = max(stop, entry)
+                    if hi >= take:
+                        px = take * (1 - slip); cash += qty * px * (1 - fee)
+                        fees_paid += qty * px * fee; slippage_paid += qty * take * slip
+                        traded_notional += qty * px
+                        trades.append(px / entry - 1); side = 0; qty = 0.0
             else:
                 water = min(water, lo)
                 stop = min(stop, water + trail_m * atr)
@@ -136,12 +162,27 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
                     fees_paid += qty * px * fee; slippage_paid += qty * stop * slip
                     traded_notional += qty * px
                     trades.append((entry - px) / entry); side = 0; qty = 0.0; margin = 0.0
-                elif lo <= take:
-                    px = take * (1 + slip)
-                    cash += margin + qty * (entry - px) - qty * px * fee
-                    fees_paid += qty * px * fee; slippage_paid += qty * take * slip
-                    traded_notional += qty * px
-                    trades.append((entry - px) / entry); side = 0; qty = 0.0; margin = 0.0
+                else:
+                    # profit-ladder (short mirror): bank a runner leg on the way down
+                    if scale_out and not scaled and qty > 0:
+                        trig = entry - scale_out["arm_atr"] * atr
+                        if lo <= trig:
+                            sq = qty * scale_out["frac"]
+                            spx = trig * (1 + slip)
+                            fm = margin * scale_out["frac"]
+                            cash += fm + sq * (entry - spx) - sq * spx * fee
+                            fees_paid += sq * spx * fee; slippage_paid += sq * trig * slip
+                            traded_notional += sq * spx
+                            trades.append((entry - spx) / entry)
+                            qty -= sq; margin -= fm; scaled = True
+                            if scale_out["breakeven"]:
+                                stop = min(stop, entry)
+                    if lo <= take:
+                        px = take * (1 + slip)
+                        cash += margin + qty * (entry - px) - qty * px * fee
+                        fees_paid += qty * px * fee; slippage_paid += qty * take * slip
+                        traded_notional += qty * px
+                        trades.append((entry - px) / entry); side = 0; qty = 0.0; margin = 0.0
 
         # ---- composite signal from the REAL strategy functions ----
         raw = {}
@@ -173,6 +214,7 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
                 traded_notional += qty * px
                 entry, side, water = px, 1, px
                 stop, take = px - stop_dist, px + take_dist
+                scaled = False
             else:
                 px = cl * (1 - slip); qty = notional / px
                 margin = notional                  # reserve margin from cash
@@ -181,6 +223,7 @@ def run_composite(candles, weights=None, allow_shorts=True, start_cash=10_000.0,
                 traded_notional += qty * px
                 entry, side, water = px, -1, px
                 stop, take = px + stop_dist, px - take_dist
+                scaled = False
 
         mtm = cash + (qty * cl if side > 0 else
                       (margin + qty * (entry - cl) if side < 0 else 0))
