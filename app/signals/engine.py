@@ -178,6 +178,18 @@ def strat_pattern(f, sent, regime):
     return _clip(rep.get("lean", 0.0))
 
 
+def strat_meme(f, sent, regime):
+    """Meme hype-lifecycle sleeve — votes the current meme's lifecycle lean
+    (accumulation/markup → long; distribution/decay/blow-off → fade/flat).
+    Returns 0.0 for non-memes, when meme trading is off, or on thin history, so
+    the engine's active-strategy renorm simply excludes it. Weighted by the
+    bandit like every other sleeve; a blow-off top produces a strongly negative
+    lean so the ensemble stops chasing a parabolic climax."""
+    from ..data.memes import memes
+    from ..data.market import market
+    return _clip(memes.lean(_cur_product(), market))
+
+
 def _evolved_vote(g, f):
     """Score a single evolved genome's rule set on the current features."""
     score = 0.0
@@ -238,6 +250,7 @@ STRATEGIES = {
     "llm": strat_llm,
     "model": strat_model,
     "pattern": strat_pattern,
+    "meme": strat_meme,
 }
 
 

@@ -136,6 +136,10 @@ class TinyMLP:
         self.replay_pr = deque(maxlen=4000)       # priority (last sq-error + eps)
         self.acc_window = deque(maxlen=300)   # directional accuracy
         self.loss_window = deque(maxlen=300)
+        # live sample stream for the ML-learning dashboard: each matured update
+        # records (predicted, realized-target, correct?) so the UI can show the
+        # model actually learning. Cosmetic only — nothing reads it for control.
+        self.recent = deque(maxlen=150)
         # online input standardization (Welford running mean/var per feature),
         # so feature scaling self-calibrates as the universe/regime changes
         # instead of relying on hand-tuned constants in build_x.
@@ -262,6 +266,10 @@ class TinyMLP:
         target = _clip(fwd_return / 0.004, -1, 1)     # ±0.4% move = full signal
         if pred_at_record is not None and abs(target) > 0.15:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)
+        if pred_at_record is not None:
+            self.recent.append((round(float(pred_at_record), 4),
+                                round(float(target), 4),
+                                bool(pred_at_record * target > 0)))
         # update running feature stats from the raw input, then train
         self._observe_features(x)
         se = self._sgd(x, target)
@@ -342,6 +350,7 @@ class TinyMLP:
         self.replay_pr = deque(maxlen=self.replay_pr.maxlen)
         self.acc_window = deque(maxlen=self.acc_window.maxlen)
         self.loss_window = deque(maxlen=self.loss_window.maxlen)
+        self.recent = deque(maxlen=self.recent.maxlen)
         self.feat_n = 0
         self.feat_mean = list(fresh.feat_mean)
         self.feat_M2 = list(fresh.feat_M2)
@@ -644,6 +653,50 @@ class Committee:
         st["committee_members"] = len(self.members)
         st["conformal"] = self.calibrator.stats()
         return st
+
+    def live_state(self, x=None):
+        """Introspection payload for the ML-learning dashboard tab. Shows the
+        data flowing through the net: feature names, the online standardization
+        stats, the live learning curves, the recent (pred vs realized) stream,
+        and — when a feature row `x` is supplied — that row raw + standardized
+        with the model's current prediction and uncertainty band."""
+        m = self.primary
+        state = {
+            "feature_names": list(FEAT_NAMES),
+            "n_updates": m.n_updates,
+            "directional_accuracy": (round(sum(m.acc_window) / len(m.acc_window), 3)
+                                     if m.acc_window else None),
+            "avg_mse": (round(sum(m.loss_window) / len(m.loss_window), 5)
+                        if m.loss_window else None),
+            "lr_boost": round(m.lr_boost, 3),
+            "warmed_up": m.n_updates >= 40,
+            "replay_buffer": len(m.replay),
+            "committee_members": len(self.members),
+            # learning curves (oldest→newest); rolling directional-accuracy and MSE
+            "acc_curve": [round(sum(list(m.acc_window)[max(0, i - 20):i + 1]) /
+                                len(list(m.acc_window)[max(0, i - 20):i + 1]), 3)
+                          for i in range(len(m.acc_window))][-120:],
+            "loss_curve": [round(v, 5) for v in list(m.loss_window)][-120:],
+            "recent": [{"pred": p, "target": t, "correct": ok}
+                       for (p, t, ok) in list(m.recent)[-40:]],
+            "feat_mean": [round(v, 4) for v in m.feat_mean],
+            "feat_std": [round((m.feat_M2[i] / m.feat_n) ** 0.5, 4)
+                         if m.feat_n > 1 else 0.0 for i in range(len(m.feat_mean))],
+            "conformal": self.calibrator.stats(),
+        }
+        if isinstance(x, (list, tuple)) and len(x) == len(m.feat_mean):
+            u = self.predict_with_uncertainty(x)
+            state["sample"] = {
+                "raw": [round(float(v), 4) for v in x],
+                "standardized": [round(float(v), 3) for v in m._standardize(x)],
+                "prediction": round(u["mean"], 4),
+                "lo": round(u["lo"], 4), "hi": round(u["hi"], 4),
+                "epistemic": round(u["epistemic"], 4),
+                "aleatoric": round(u["aleatoric"], 4),
+                "confidence": round(u["confidence"], 3),
+                "calibrated": u["calibrated"],
+            }
+        return state
 
 
 # `committee` is the live ensemble; `model` aliases its primary member so the

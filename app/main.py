@@ -207,6 +207,50 @@ def learning():
     return learner.full_stats()
 
 
+@app.get("/api/ml_live")
+def ml_live(product: str = None):
+    """Live introspection into the online neural net for the ML-learning tab:
+    the feature row currently flowing in for `product`, the model's prediction +
+    uncertainty on it, the rolling learning curves, and the recent
+    predicted-vs-realized stream so the operator can watch it learn."""
+    from .learn.online_model import committee, build_x
+    from .nlp.sentiment import nlp
+    # choose a product: explicit → open position → first in universe
+    prods = list(PRODUCTS)
+    if product not in prods:
+        product = (next(iter(broker.positions), None)
+                   or (prods[0] if prods else None))
+    x = None
+    f = market.features(product) if product else None
+    if f:
+        try:
+            asset_sent, _ = nlp.asset_score(product)
+            x = build_x(f, asset_sent, nlp.market_sentiment,
+                        derivatives.features(product))
+        except Exception:
+            x = None
+    state = committee.live_state(x)
+    # a compact per-product prediction map ("data being transferred" per coin)
+    per_product = {}
+    for p in prods:
+        pf = market.features(p)
+        if not pf:
+            continue
+        try:
+            a_s, _ = nlp.asset_score(p)
+            px = build_x(pf, a_s, nlp.market_sentiment, derivatives.features(p))
+            per_product[p] = {
+                "prediction": round(committee.predict(px), 4),
+                "held": p in broker.positions,
+            }
+        except Exception:
+            continue
+    state["product"] = product
+    state["products"] = prods
+    state["per_product"] = per_product
+    return state
+
+
 @app.post("/api/control/evolve")
 def trigger_evolution(product: str = None):
     """Manually kick off a genetic-evolution run. With no product,

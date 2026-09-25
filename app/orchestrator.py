@@ -255,6 +255,15 @@ class Orchestrator:
         except Exception as e:
             db.log_event("error", f"exit advisor failed: {e}")
 
+        # 5c. PATTERN-AWARE EXIT — a confirmed reversal chart pattern forming
+        # against an open position tightens its stop, or cuts it when strong.
+        # Runs AFTER the hard stops and the loss-cut advisor, so it only ever
+        # ADDS protection; it never loosens a stop or overrides a hard exit.
+        try:
+            self._manage_pattern_exit(market)
+        except Exception as e:
+            db.log_event("error", f"pattern exit failed: {e}")
+
         # 6. exits on signal flip (direction-aware: close a long on a
         # confident bearish signal, close a short on a confident bullish one)
         for p in list(broker.positions.keys()):
@@ -425,6 +434,66 @@ class Orchestrator:
                 asyncio.get_running_loop().run_in_executor(None, persistence.save)
             except RuntimeError:
                 persistence.save()
+
+    def _manage_pattern_exit(self, market):
+        """Tighten or cut an open position when a confirmed reversal chart
+        pattern forms against it. Additive protection only — layered on top of
+        the hard stop / take-profit / trailing / loss-cut advisor."""
+        from .signals import patterns
+        from . import settings as app_settings
+        if not app_settings.get("pattern_exit_enabled"):
+            return
+        cut_th = tv("pattern_exit_cut")
+        tighten_th = tv("pattern_exit_tighten")
+        tighten_atr = tv("pattern_exit_tighten_atr")
+        for p in list(broker.positions.keys()):
+            pos = broker.positions[p]
+            if pos.get("hedge"):
+                continue
+            if time.time() - pos.get("opened", 0) < tv("min_hold_sec"):
+                continue
+            px = market.price(p)
+            f = market.features(p)
+            if px is None or not f:
+                continue
+            rep = f.get("patterns")
+            if not rep:
+                continue
+            side = pos.get("side", 1)
+            threat, name = patterns.exit_threat(side, rep)
+            if threat < tighten_th:
+                continue
+            label = name or "reversal pattern"
+            if threat >= cut_th:
+                t = broker.sell(p, px, f"pattern reversal ({label})")
+                if t:
+                    risk.on_trade_closed(t)
+                    learner.on_trade_closed(t)
+                    if self.shadow is not None and p in self.shadow.positions:
+                        try:
+                            self.shadow.mirror_close(p, t.get("exit", t["entry"]))
+                        except Exception:
+                            pass
+                    db.log_event("risk", f"✂️ {p}: cut on {label} "
+                                 f"(threat {threat:.2f} ≥ {cut_th:.2f})")
+                continue
+            # tighten: pull the stop to `tighten_atr` swing-ATR from price, but
+            # only ever CLOSER than the current stop (never loosen it).
+            atr = f.get("atr_swing") or f.get("atr")
+            if not atr:
+                continue
+            if side > 0:
+                new_stop = px - tighten_atr * atr
+                if new_stop > pos["stop"]:
+                    pos["stop"] = new_stop
+                    db.log_event("risk", f"⚠️ {p}: stop tightened to {new_stop:.4f} "
+                                 f"on {label} (threat {threat:.2f})")
+            else:
+                new_stop = px + tighten_atr * atr
+                if new_stop < pos["stop"]:
+                    pos["stop"] = new_stop
+                    db.log_event("risk", f"⚠️ {p}: stop tightened to {new_stop:.4f} "
+                                 f"on {label} (threat {threat:.2f})")
 
     def _manage_exit_advisor(self, market, regime, signals):
         """Consult the self-learning exit advisor for every open (non-hedge)

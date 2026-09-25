@@ -35,6 +35,12 @@ DEFAULTS = {
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
     "exit_advisor_enabled": True,
+    # Pattern-aware exits. When True, a CONFIRMED reversal chart pattern forming
+    # against an open position (e.g. a double top / head-&-shoulders / bearish
+    # divergence on a long) tightens that position's stop, and cuts it outright
+    # when the pattern is strong — layered ON TOP of the hard stop / take-profit
+    # / trailing / loss-cut advisor, never replacing them.
+    "pattern_exit_enabled": True,
     # Meme-coin trading. When True, a curated seed of Coinbase-listed meme
     # majors becomes eligible immediately and CoinGecko's meme category is
     # polled so hot new memes surface automatically — all under a tighter risk

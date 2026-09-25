@@ -226,6 +226,17 @@ TUNABLES = {
     "meme_max_exposure": T(0.15, 0.02, 0.60, 0.01, "meme", "Max meme exposure",
                            "Total meme notional cap as a fraction of equity — the "
                            "blast radius if a meme trade goes wrong"),
+    "pattern_exit_cut":  T(0.70, 0.30, 1.0, 0.05, "risk", "Pattern-exit cut threshold",
+                           "Contrary-reversal threat (0-1) at/above which an open "
+                           "position is CUT outright. Higher = only the clearest "
+                           "reversals close a trade early."),
+    "pattern_exit_tighten": T(0.45, 0.20, 1.0, 0.05, "risk", "Pattern-exit tighten threshold",
+                           "Contrary-reversal threat (0-1) at/above which the open "
+                           "position's stop is pulled in (but not closed). Must be "
+                           "below the cut threshold."),
+    "pattern_exit_tighten_atr": T(1.0, 0.3, 3.0, 0.1, "risk", "Pattern-exit stop distance (ATR)",
+                           "When a reversal tightens a stop, place it this many swing-"
+                           "ATR from the current price (smaller = tighter)."),
     "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
                            "Seconds between LLM-advisor lean refreshes (only when "
                            "the advisor is enabled + a key is configured)", True),

@@ -350,3 +350,43 @@ def feature_vector(report):
     zero-vector), for appending to the ML input vector."""
     f = (report or {}).get("features", {}) if isinstance(report, dict) else {}
     return [float(f.get(k, 0.0)) for k in PATTERN_FEATURES]
+
+
+# weights for how much each detector counts toward a THREAT against an open
+# position (reversal patterns dominate; a candle alone is weak evidence).
+_THREAT_W = {"pat_reversal": 0.45, "pat_divergence": 0.30, "pat_candle": 0.25}
+
+
+def exit_threat(side, report):
+    """How strongly the current chart patterns argue AGAINST an open position.
+
+    `side` is +1 for a long, -1 for a short. A bearish reversal (double top,
+    head-&-shoulders, bearish divergence / engulfing) threatens a long; the
+    bullish mirror threatens a short. Returns ``(threat, name)`` where threat is
+    in [0, 1] (0 = no contrary evidence) and name is the strongest contrary
+    pattern's label (or "" when none). Structure/S&R are deliberately excluded —
+    they describe the backdrop, not a reversal event.
+    """
+    if not side or not isinstance(report, dict):
+        return 0.0, ""
+    feats = report.get("features") or {}
+    # contrary = detector score pointing OPPOSITE the position side
+    threat = 0.0
+    for k, w in _THREAT_W.items():
+        v = float(feats.get(k, 0.0))
+        contrary = -side * v            # >0 when the score opposes the position
+        if contrary > 0:
+            threat += w * contrary
+    threat = _clip(threat, 0.0, 1.0)
+    # name the strongest contrary reversal-type pattern for the log/report
+    contrary_dir = "bearish" if side > 0 else "bullish"
+    name = ""
+    best = 0.0
+    for d in report.get("detected", []):
+        if d.get("direction") == contrary_dir and d.get("strength", 0) > best \
+           and d.get("name") not in ("Testing support", "Testing resistance",
+                                     "Range / no clear structure"):
+            best = d["strength"]
+            name = d["name"]
+    return threat, name
+

@@ -18,6 +18,19 @@
   .badge{padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;border:1px solid var(--border)}
   .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
   .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
+  .tabs{display:flex;gap:8px;padding:10px 18px 0}
+  .tab-btn{background:var(--panel2);color:var(--dim);border:1px solid var(--border);
+    border-radius:8px 8px 0 0;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer}
+  .tab-btn.active{background:var(--panel);color:var(--accent);border-color:var(--accent);border-bottom-color:var(--panel)}
+  .chip{display:inline-block;padding:2px 7px;margin:2px;border-radius:6px;font-size:11px;
+    font-variant-numeric:tabular-nums;border:1px solid var(--border)}
+  .chip.ok{background:#12241a;border-color:#2e5a3a;color:#8fd694}
+  .chip.bad{background:#241214;border-color:#5a2e2e;color:#e88f8f}
+  .fbar-row{display:flex;align-items:center;gap:6px;font-size:11px;margin:1px 0}
+  .fbar-name{width:120px;color:var(--dim);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fbar-track{flex:1;height:12px;background:#1a1e28;border-radius:3px;position:relative}
+  .fbar-fill{position:absolute;top:0;bottom:0;border-radius:3px}
+  .fbar-val{width:52px;font-variant-numeric:tabular-nums}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;overflow:auto}
   .span3{grid-column:span 3}.span4{grid-column:span 4}.span6{grid-column:span 6}
   .span8{grid-column:span 8}.span12{grid-column:span 12}
@@ -167,7 +180,12 @@
   </div>
 </div>
 
-<div class="grid">
+<div class="tabs">
+  <button class="tab-btn active" data-view="dash">📊 Dashboard</button>
+  <button class="tab-btn" data-view="ml">🔬 ML Live — watch it learn</button>
+</div>
+
+<div class="grid" id="view-dash">
   <div class="card span3"><div class="kpi" id="k-equity">—<small>Equity (USD)</small></div></div>
   <div class="card span3"><div class="kpi" id="k-pnl">—<small>Realized PnL</small></div></div>
   <div class="card span3"><div class="kpi" id="k-exposure">—<small>Exposure / Cash</small></div></div>
@@ -328,6 +346,53 @@
       <pre id="bt-result">Run a backtest, or "Validate REAL ensemble" for the composite system vs buy-and-hold with Deflated Sharpe / PBO / walk-forward gates…</pre>
       <canvas id="chart-bt" height="150"></canvas>
     </div>
+  </div>
+</div>
+
+<div class="grid" id="view-ml" style="display:none">
+  <div class="card span12">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">🔬 Online neural net — live learning</h2>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+        <span style="color:var(--dim)">feature row for</span>
+        <select id="ml-product"></select>
+        <span id="ml-warm" class="badge"></span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:10px" id="ml-kpis"></div>
+    <div style="color:var(--dim);font-size:11.5px;margin-top:8px">
+      This is the real data flowing through the model each cycle: the standardized feature vector going in, the
+      prediction + calibrated uncertainty coming out, the rolling learning curves, and every matured
+      prediction scored against what price actually did. Updates every 3s while this tab is open.
+    </div>
+  </div>
+
+  <div class="card span6">
+    <h2>Feature vector flowing in <span style="text-transform:none;color:var(--dim);font-size:11px">(standardized, z-scored)</span></h2>
+    <div id="ml-features" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card span6">
+    <h2>Prediction &amp; uncertainty <span style="text-transform:none;color:var(--dim);font-size:11px">(this feature row)</span></h2>
+    <div id="ml-pred" style="font-size:13px;margin-top:6px"></div>
+    <canvas id="ml-gauge" height="90" style="margin-top:8px"></canvas>
+    <div id="ml-pred-note" style="color:var(--dim);font-size:11.5px;margin-top:6px"></div>
+  </div>
+
+  <div class="card span6">
+    <h2>Learning curve <span style="text-transform:none;color:var(--dim);font-size:11px">(accuracy ▲ green · MSE ▼ orange)</span></h2>
+    <canvas id="ml-curve" height="150"></canvas>
+    <div id="ml-curve-note" style="color:var(--dim);font-size:11.5px;margin-top:4px"></div>
+  </div>
+
+  <div class="card span6">
+    <h2>Recent predictions vs realized <span style="text-transform:none;color:var(--dim);font-size:11px">(newest first)</span></h2>
+    <div id="ml-stream" style="margin-top:6px;line-height:1.9"></div>
+  </div>
+
+  <div class="card span12">
+    <h2>Live prediction per coin <span style="text-transform:none;color:var(--dim);font-size:11px">(forward-return lean the net emits right now)</span></h2>
+    <div id="ml-perproduct" style="margin-top:6px"></div>
   </div>
 </div>
 
@@ -988,6 +1053,123 @@ $('#sm-reset').onclick=async()=>{
   const d=await j('/api/tunables/reset',{method:'POST'});
   renderTunables(_tunMeta,d.values);
 };
+// ---------------- ML Live tab ----------------
+let _mlView='dash', _mlProduct=null, _mlLoaded=false;
+function showView(v){
+  _mlView=v;
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
+  $('#view-dash').style.display = v==='dash'?'grid':'none';
+  $('#view-ml').style.display   = v==='ml'?'grid':'none';
+  if(v==='ml') refreshML();
+}
+document.querySelectorAll('.tab-btn').forEach(b=>b.onclick=()=>showView(b.dataset.view));
+
+function fmtPct(x){return (x*100).toFixed(1)+'%';}
+function kpi(label,val,color){
+  return `<div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+    <div style="font-size:18px;font-weight:700;color:${color||'var(--text)'};font-variant-numeric:tabular-nums">${val}</div>
+    <div style="font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px">${label}</div></div>`;
+}
+function drawFeatures(names, vals){
+  const box=$('#ml-features'); if(!box) return;
+  if(!names||!names.length){box.innerHTML='<span style="color:var(--dim)">no feature row yet — waiting for market data…</span>';return;}
+  let html='';
+  for(let i=0;i<names.length;i++){
+    const v=vals[i]||0, mag=Math.min(1,Math.abs(v)/3); // z-scores clip near ±3
+    const w=(mag*50).toFixed(1), pos=v>=0;
+    const col=pos?'#2e86ff':'#e8955a';
+    html+=`<div class="fbar-row"><div class="fbar-name" title="${names[i]}">${names[i]}</div>
+      <div class="fbar-track"><div class="fbar-fill" style="${pos?'left:50%':'right:50%'};width:${w}%;background:${col}"></div>
+      <div style="position:absolute;left:50%;top:-1px;bottom:-1px;width:1px;background:#3a4152"></div></div>
+      <div class="fbar-val" style="color:${col}">${v>=0?'+':''}${v.toFixed(2)}</div></div>`;
+  }
+  box.innerHTML=html;
+}
+function drawGauge(s){
+  const c=$('#ml-gauge'); if(!c) return; const W=c.width=c.clientWidth||300, H=c.height, ctx=c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const midY=H/2, cx=W/2, scale=W*0.42; // maps [-1,1] -> pixels around center
+  // axis
+  ctx.strokeStyle='#2a3040'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cx-scale,midY); ctx.lineTo(cx+scale,midY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx,midY-22); ctx.lineTo(cx,midY+22); ctx.stroke();
+  if(!s){ctx.fillStyle='#5b6472';ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillText('no sample yet',cx,midY-30);return;}
+  const xOf=v=>cx+Math.max(-1,Math.min(1,v))*scale;
+  // uncertainty band
+  ctx.fillStyle='rgba(108,92,231,.25)';
+  ctx.fillRect(xOf(s.lo),midY-14,Math.max(2,xOf(s.hi)-xOf(s.lo)),28);
+  // prediction marker
+  const px=xOf(s.prediction), col=s.prediction>=0?'#2ecc71':'#e74c3c';
+  ctx.fillStyle=col; ctx.beginPath(); ctx.arc(px,midY,6,0,7); ctx.fill();
+  ctx.fillStyle='#8b93a7'; ctx.font='10px system-ui'; ctx.textAlign='center';
+  ctx.fillText('bearish',cx-scale,midY+34); ctx.fillText('bullish',cx+scale,midY+34); ctx.fillText('0',cx,midY+34);
+}
+async function refreshML(){
+  let d; try{ d=await j('/api/ml_live'+(_mlProduct?('?product='+encodeURIComponent(_mlProduct)):'')); }catch(e){return;}
+  _mlProduct=_mlProduct||d.product;
+  // product selector
+  const sel=$('#ml-product');
+  if(sel && sel.options.length!==(d.products||[]).length){
+    sel.innerHTML=(d.products||[]).map(p=>`<option value="${p}"${p===d.product?' selected':''}>${p}</option>`).join('');
+    sel.onchange=()=>{_mlProduct=sel.value;refreshML();};
+  }
+  $('#ml-warm').textContent = d.warmed_up?'✅ warmed up':'⏳ warming up';
+  $('#ml-warm').style.color = d.warmed_up?'#8fd694':'#e8c07c';
+  const acc=d.directional_accuracy, accCol=acc==null?'var(--dim)':(acc>0.5?'#2ecc71':'#e74c3c');
+  $('#ml-kpis').innerHTML =
+    kpi('updates', d.n_updates)+
+    kpi('dir. accuracy', acc==null?'—':fmtPct(acc), accCol)+
+    kpi('avg MSE', d.avg_mse==null?'—':d.avg_mse)+
+    kpi('replay buffer', d.replay_buffer)+
+    kpi('committee', d.committee_members+' nets')+
+    kpi('LR boost', '×'+d.lr_boost);
+  // features (standardized) for the selected product
+  const smp=d.sample;
+  drawFeatures(d.feature_names, smp?smp.standardized:null);
+  // prediction + gauge
+  if(smp){
+    $('#ml-pred').innerHTML =
+      `<b style="font-size:20px;color:${smp.prediction>=0?'#2ecc71':'#e74c3c'}">${smp.prediction>=0?'+':''}${smp.prediction.toFixed(3)}</b>
+       <span style="color:var(--dim)"> scaled forward-return lean · band [${smp.lo.toFixed(2)}, ${smp.hi.toFixed(2)}]</span>
+       &nbsp;·&nbsp; confidence <b>${fmtPct(smp.confidence)}</b> ${smp.calibrated?'<span style="color:#8fd694">(conformal)</span>':'<span style="color:var(--dim)">(uncalibrated)</span>'}`;
+    $('#ml-pred-note').textContent =
+      `epistemic (disagreement) ${smp.epistemic.toFixed(3)} · aleatoric (noise) ${smp.aleatoric.toFixed(3)} — wider band ⇒ the book bets smaller.`;
+    drawGauge(smp);
+  } else { $('#ml-pred').innerHTML='<span style="color:var(--dim)">no feature row available for this coin yet.</span>'; drawGauge(null); }
+  // learning curves
+  const ac=(d.acc_curve||[]).map((v,i)=>[i,v]);
+  const lc=(d.loss_curve||[]);
+  const c=$('#ml-curve'); if(c){
+    const W=c.width=c.clientWidth||400,H=c.height,ctx=c.getContext('2d'); ctx.clearRect(0,0,W,H);
+    // 50% reference line for accuracy
+    ctx.strokeStyle='#2a3040';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#5b6472';ctx.font='10px system-ui';ctx.fillText('50% (coin flip)',4,H/2-3);
+    const plot=(arr,lo,hi,col)=>{if(arr.length<2)return;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.beginPath();
+      arr.forEach((v,i)=>{const x=i/(arr.length-1)*W,y=H-(v-lo)/((hi-lo)||1)*H;i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();};
+    plot(d.acc_curve||[],0,1,'#2ecc71');
+    const lmax=Math.max(0.01,...lc); plot(lc,0,lmax,'#e8955a');
+  }
+  $('#ml-curve-note').textContent = (d.acc_curve&&d.acc_curve.length)
+    ? `${d.acc_curve.length} scored points · accuracy trending ${d.acc_curve[d.acc_curve.length-1]>=d.acc_curve[0]?'up ▲':'down ▼'}`
+    : 'no scored predictions yet — the model labels each prediction once its horizon matures.';
+  // recent stream (newest first)
+  const rec=(d.recent||[]).slice().reverse();
+  $('#ml-stream').innerHTML = rec.length
+    ? rec.map(r=>`<span class="chip ${r.correct?'ok':'bad'}" title="predicted ${r.pred}, realized ${r.target}">${r.correct?'✓':'✗'} ${r.pred>=0?'+':''}${r.pred}→${r.target>=0?'+':''}${r.target}</span>`).join('')
+    : '<span style="color:var(--dim)">no matured predictions yet…</span>';
+  // per-product live predictions
+  const pp=d.per_product||{};
+  const keys=Object.keys(pp);
+  $('#ml-perproduct').innerHTML = keys.length
+    ? '<table style="width:100%"><thead><tr><th style="text-align:left">Coin</th><th style="text-align:right">Prediction</th><th></th></tr></thead><tbody>'+
+      keys.map(p=>{const v=pp[p].prediction,col=v>=0?'#2ecc71':'#e74c3c';
+        return `<tr><td>${p}${pp[p].held?' <span style="color:#8fb4ff">•held</span>':''}</td>
+          <td style="text-align:right;color:${col};font-variant-numeric:tabular-nums">${v>=0?'+':''}${v.toFixed(3)}</td>
+          <td style="width:40%"><div class="fbar-track"><div class="fbar-fill" style="${v>=0?'left:50%':'right:50%'};width:${Math.min(50,Math.abs(v)*50).toFixed(1)}%;background:${col}"></div><div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#3a4152"></div></div></td></tr>`;}).join('')+
+      '</tbody></table>'
+    : '<span style="color:var(--dim)">no live predictions yet.</span>';
+}
+setInterval(()=>{ if(_mlView==='ml') refreshML(); }, 3000);
+
 refresh(); window._refreshTimer=setInterval(refresh,5000);
 </script>
 </body>
