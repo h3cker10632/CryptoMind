@@ -18,7 +18,7 @@ Uncertainty features (Phase 3):
 import math, random
 from collections import deque
 
-N_IN = 18
+N_IN = 24          # 18 core + 6 chart-pattern features (see build_x / FEAT_NAMES)
 N_HID = 16
 
 # quantile levels for the aleatoric band (P10 / P90)
@@ -38,7 +38,10 @@ FEAT_NAMES = ["rsi", "macd", "macd_delta", "mom_1h", "mom_4h", "vol_ratio",
               "imbalance", "spread", "asset_sent", "market_sent",
               "price_vs_sma20", "sma20_vs_sma50", "volatility",
               "funding", "oi_change", "ls_crowding", "taker_aggression",
-              "mtf_align"]
+              "mtf_align",
+              # chart-pattern features (appended last so N_IN migration is clean)
+              "pat_structure", "pat_sr", "pat_reversal",
+              "pat_continuation", "pat_candle", "pat_divergence"]
 
 
 def _clip(x, lo=-3.0, hi=3.0):
@@ -71,7 +74,16 @@ def build_x(f, asset_sent, market_sent, deriv=None):
         # multi-timeframe trend alignment in [-1,1] (mean of 15m/1h/4h trend
         # signs) — a cross-timeframe confirmation feature for the model.
         _clip(f.get("mtf_align", 0.0), -1, 1),
-    ]
+    ] + _pattern_feats(f)
+
+
+def _pattern_feats(f):
+    """The 6 chart-pattern scores (already in [-1,1]) appended to the ML input
+    vector. Defaults to zeros when no pattern report is on the features dict
+    (short history / backtest) so the vector width is always N_IN."""
+    from ..signals.patterns import feature_vector
+    rep = f.get("patterns") if isinstance(f, dict) else None
+    return [_clip(v, -1, 1) for v in feature_vector(rep)]
 
 
 class TinyMLP:

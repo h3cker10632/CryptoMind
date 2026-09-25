@@ -134,6 +134,17 @@ class MarketData:
         feat["mtf_trend_1h"] = mtf["t1h"]
         feat["mtf_trend_4h"] = mtf["t4h"]
         feat["mtf_rsi_1h"] = mtf["rsi_1h"]
+
+        # CHART-PATTERN analysis (live-only, like atr_swing/mtf_*): recognise
+        # market structure, S/R, reversal/continuation patterns, candlesticks
+        # and RSI divergence. Feeds the `pattern` strategy sleeve and the ML
+        # model (build_x reads feat["patterns"]["features"]). Best-effort.
+        opens = [c[3] for c in cs]
+        try:
+            from ..signals import patterns
+            feat["patterns"] = patterns.analyze(highs, lows, closes, vols, opens)
+        except Exception:
+            feat["patterns"] = None
         return feat
 
     @staticmethod

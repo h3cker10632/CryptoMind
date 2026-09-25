@@ -633,6 +633,36 @@ def _cmd_brains():
     except Exception:
         out.append("• (initialising)")
     out.append("")
+    out.append("*Chart patterns*")
+    try:
+        from .data.market import market
+        from .execution.paper import broker
+        held = list(broker.positions.keys())
+        # held positions first (patterns that help or hurt live risk), then a
+        # couple of other active names for context.
+        others = [p for p in list(market.tickers)[:6] if p not in held]
+        shown = 0
+        for p in held + others:
+            if shown >= 5:
+                break
+            f = market.features(p)
+            rep = f.get("patterns") if f else None
+            if not rep or not rep.get("detected"):
+                continue
+            side = broker.positions.get(p, {}).get("side", 0)
+            top = rep["detected"][0]
+            tag = "⚠️ vs open" if (side and (
+                (side > 0 and top["direction"] == "bearish") or
+                (side < 0 and top["direction"] == "bullish"))) else \
+                ("✓ open" if side else "")
+            out.append(f"• {p}: {rep['structure']} — {top['name']} "
+                       f"({top['direction']}) {tag}".rstrip())
+            shown += 1
+        if shown == 0:
+            out.append("• No notable patterns right now")
+    except Exception:
+        out.append("• (initialising)")
+    out.append("")
     out.append("*GA evolution*")
     ports = evolution.champion_portfolios or {}
     if champs:

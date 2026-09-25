@@ -41,9 +41,12 @@ def test_build_x_includes_mtf_and_matches_dims():
     f = m.features("BTC-USD")
     x = build_x(f, 0.0, 0.0, None)
     assert len(x) == N_IN == len(FEAT_NAMES)
-    assert FEAT_NAMES[-1] == "mtf_align"
-    assert -1.0 <= x[-1] <= 1.0
-    assert x[-1] > 0                              # uptrend -> positive alignment
+    # mtf_align is no longer the LAST feature (chart-pattern features are appended
+    # after it), so locate it by name instead of assuming a fixed position.
+    assert "mtf_align" in FEAT_NAMES
+    mi = FEAT_NAMES.index("mtf_align")
+    assert -1.0 <= x[mi] <= 1.0
+    assert x[mi] > 0                              # uptrend -> positive alignment
 
 
 def test_mtf_present_even_with_short_history():

@@ -164,6 +164,20 @@ def strat_model(f, sent, regime):
     return _clip(model_advisor.lean(_cur_product()))
 
 
+def strat_pattern(f, sent, regime):
+    """Chart-pattern sleeve — reads the pre-computed pattern report on the
+    features dict (market.features stamps feat["patterns"]) and votes its
+    blended directional lean in [-1, 1]. Recognises market structure (HH/HL vs
+    LH/LL), support/resistance position, reversal patterns (double top/bottom,
+    head-&-shoulders), continuation patterns (triangles/wedges), candlesticks
+    and RSI divergence. Weighted by the bandit like every other sleeve; returns
+    0.0 when no pattern report is present (short history / backtest)."""
+    rep = f.get("patterns") if isinstance(f, dict) else None
+    if not rep:
+        return 0.0
+    return _clip(rep.get("lean", 0.0))
+
+
 def _evolved_vote(g, f):
     """Score a single evolved genome's rule set on the current features."""
     score = 0.0
@@ -223,6 +237,7 @@ STRATEGIES = {
     "evolved": strat_evolved,
     "llm": strat_llm,
     "model": strat_model,
+    "pattern": strat_pattern,
 }
 
 
