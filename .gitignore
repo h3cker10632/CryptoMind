@@ -47,3 +47,9 @@ cryptomind_ml_dataset*.json
 
 # trained crypto_ml_lab model artifact (loaded by the model advisor)
 model_artifact/
+
+# Invo copy-signal study — collected snapshots (may contain account data)
+invo_snapshots.json
+
+# Operator secrets (Invo token, etc.) — NEVER commit
+.secrets.json

@@ -74,6 +74,14 @@
   .toggle.on .sw{background:#1d3a2a;border-color:#2e5c42}
   .toggle.on .sw::after{left:18px;background:var(--green)}
   .toggle b{color:var(--text);font-weight:600}
+  /* Invo study section */
+  .invo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:8px 12px;padding:4px 0 8px}
+  .invo-grid label{display:flex;flex-direction:column;font-size:11px;color:var(--dim);gap:3px}
+  .invo-grid input{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 7px;font-size:12px}
+  .invo-grid input:focus{outline:none;border-color:var(--accent)}
+  .invo-sub{font-size:12px;color:var(--accent);font-weight:600;margin-top:10px}
+  .invo-hint{font-weight:400;color:var(--dim);font-size:10.5px}
+  #invo-output{background:#0b0e14;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;color:#c7d0de;max-height:340px;overflow:auto;white-space:pre-wrap;margin-top:8px;display:none}
   canvas{width:100%;height:150px}
   .tf-bar{display:flex;gap:4px;align-items:center}
   .tf-bar button{padding:3px 9px;font-size:11px;letter-spacing:.4px}
@@ -420,6 +428,49 @@
         </div>
       </div>
       <div style="color:var(--dim);font-size:11.5px;padding:2px 0 4px">Reports are written to the <code>reports/</code> folder (newest 288 kept); the same document is always available on demand from <code>GET /api/export</code>.</div>
+    </div>
+    <div class="sm-group">
+      <h3>🧪 Invo copy-signal study <b style="font-weight:400;color:var(--dim);font-size:11px">— measurement only, never auto-trades</b></h3>
+      <div style="color:var(--dim);font-size:11.5px;padding:2px 0 6px">Collect Invo top-trader positioning and test whether it predicts forward returns on the coins you trade. The signal is fed to the learner only after the study earns it (a separate step). Your token is stored locally, masked here, and never committed.</div>
+      <div class="toggle" id="tg-invo" title="Enable collecting Invo positioning snapshots and running the edge study from the dashboard. Does NOT wire the signal into live trading.">
+        <div class="sw"></div><span>study: <b id="tg-invo-label">off</b></span>
+      </div>
+      <div id="invo-config" style="margin-top:6px">
+        <div class="invo-sub">Connection</div>
+        <div class="invo-grid">
+          <label>API base URL<input data-invo-key="invo_api_base" placeholder="https://app.invoapp.com"></label>
+          <label>API token (secret)<input data-invo-key="invo_token" type="password" placeholder="bearer token"></label>
+          <label>Leaderboard path<input data-invo-key="invo_leaderboard_path" placeholder="/path/to/ranked/traders"></label>
+          <label>Positions path (optional)<input data-invo-key="invo_positions_tmpl" placeholder="/path/{id}/positions"></label>
+          <label>Top N traders<input data-invo-key="invo_top_n" type="number" min="1" max="200"></label>
+          <label>Interval (seconds)<input data-invo-key="invo_interval_sec" type="number" min="30"></label>
+        </div>
+        <div class="invo-sub">Field map <span class="invo-hint">— run “Peek API” first, then map YOUR response's field names here (dotted paths ok, e.g. data.items)</span></div>
+        <div class="invo-grid">
+          <label>List key<input data-invo-key="invo_map_list" placeholder="data (blank = response is the list)"></label>
+          <label>Trader id<input data-invo-key="invo_map_id" placeholder="id"></label>
+          <label>Score (optional)<input data-invo-key="invo_map_score" placeholder="winRate"></label>
+          <label>Inline positions key<input data-invo-key="invo_map_positions" placeholder="(blank = use positions path)"></label>
+          <label>Asset / symbol<input data-invo-key="invo_map_asset" placeholder="coin"></label>
+          <label>Side / direction<input data-invo-key="invo_map_side" placeholder="side"></label>
+          <label>Long value<input data-invo-key="invo_map_long_value" placeholder="long"></label>
+          <label>Size / notional (USD)<input data-invo-key="invo_map_size" placeholder="sizeUsd"></label>
+          <label>Leverage (optional)<input data-invo-key="invo_map_leverage" placeholder="lev"></label>
+        </div>
+        <div class="invo-sub">Study parameters</div>
+        <div class="invo-grid">
+          <label>Prediction horizon (hours)<input data-invo-key="invo_horizon_hours" type="number" step="0.25" min="0.25"></label>
+          <label>Rank decay (top-trader weight)<input data-invo-key="invo_rank_decay" type="number" step="0.1" min="0"></label>
+          <div class="toggle" id="tg-invo-score" style="align-self:end" title="Also weight each trader's contribution by their quality score field"><div class="sw"></div><span>weight by score: <b id="tg-invo-score-label">off</b></span></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+          <button id="invo-peek" title="Fetch your raw API response so you can fill in the field map">🔍 Peek API</button>
+          <button id="invo-collect" title="Start/stop background snapshot collection">▶ Start collector</button>
+          <button id="invo-study" title="Run the IC / ablation edge study on collected snapshots">📊 Run study</button>
+          <span id="invo-status" style="font-size:11.5px;color:var(--dim)"></span>
+        </div>
+        <pre id="invo-output"></pre>
+      </div>
     </div>
     <div id="sm-groups"></div>
   </div>
@@ -870,7 +921,83 @@ function renderToggles(){
     sl.value=v; $('#autoexport-interval-label').textContent=fmtInterval(v);
   }
   $('#autoexport-slider-wrap').style.opacity=ae?'1':'.45';
+  renderInvo();
 }
+
+// ===== Invo copy-signal study =====
+let invoRunning=false;
+function renderInvo(){
+  const s=window._settings; if(!s||!$('#tg-invo'))return;
+  const on=!!s.invo_enabled;
+  $('#tg-invo').classList.toggle('on', on);
+  $('#tg-invo-label').textContent=on?'on':'off';
+  $('#invo-config').style.display=on?'block':'none';
+  document.querySelectorAll('[data-invo-key]').forEach(inp=>{
+    if(document.activeElement===inp)return;              // don't fight the user
+    const k=inp.dataset.invoKey, v=s[k];
+    inp.value=(v===undefined||v===null)?'':v;
+  });
+  const t=$('[data-invo-key="invo_token"]');
+  if(t&&document.activeElement!==t) t.placeholder=s.invo_token_set?'•••••••• (saved)':'bearer token';
+  $('#tg-invo-score').classList.toggle('on', !!s.invo_use_score);
+  $('#tg-invo-score-label').textContent=s.invo_use_score?'on':'off';
+}
+$('#tg-invo').onclick=()=>setSetting('invo_enabled',!(window._settings||{}).invo_enabled);
+$('#tg-invo-score').onclick=()=>setSetting('invo_use_score',!(window._settings||{}).invo_use_score);
+document.querySelectorAll('[data-invo-key]').forEach(inp=>{
+  inp.addEventListener('change',()=>{
+    let v=inp.value;
+    if(inp.type==='number') v=(v===''?0:Number(v));
+    if(inp.dataset.invoKey==='invo_token' && v==='') return;  // blank = keep saved secret
+    setSetting(inp.dataset.invoKey, v);
+  });
+});
+function invoOut(txt){const o=$('#invo-output');o.style.display='block';o.textContent=txt;}
+async function invoStatus(){
+  try{const st=await j('/api/invo/status');
+    invoRunning=st.running;
+    $('#invo-collect').textContent=st.running?'⏹ Stop collector':'▶ Start collector';
+    const last=st.last_snapshot_ts?new Date(st.last_snapshot_ts*1000).toLocaleTimeString():'—';
+    $('#invo-status').innerHTML=`${st.running?'🟢 collecting':'⚪ idle'} · <b>${st.snapshots}</b> snapshots · last ${last}`
+      +(st.last_error?` · <span style="color:var(--red)">err: ${st.last_error}</span>`:'');
+  }catch(e){}
+}
+$('#invo-peek').onclick=async()=>{
+  $('#invo-peek').disabled=true; invoOut('Fetching your API response…');
+  try{const r=await j('/api/invo/peek',{method:'POST'});
+    if(!r.ok){invoOut('⚠ '+r.error);}
+    else{invoOut('LEADERBOARD SAMPLE:\n'+(r.leaderboard_sample||'—')
+      +'\n\nPOSITIONS SAMPLE:\n'+(r.positions_sample||'(none — inline or not configured)')
+      +'\n\nWHAT THE CURRENT FIELD MAP EXTRACTS:\n'+JSON.stringify(r.mapped_preview,null,2));}
+  }catch(e){invoOut('⚠ '+e);}
+  $('#invo-peek').disabled=false;
+};
+$('#invo-collect').onclick=async()=>{
+  $('#invo-collect').disabled=true;
+  try{const r=await j('/api/invo/collector/'+(invoRunning?'stop':'start'),{method:'POST'});
+    if(r.error) invoOut('⚠ '+r.error);
+  }catch(e){invoOut('⚠ '+e);}
+  await invoStatus(); $('#invo-collect').disabled=false;
+};
+$('#invo-study').onclick=async()=>{
+  $('#invo-study').disabled=true; invoOut('Running edge study…');
+  try{const r=await j('/api/invo/study/run',{method:'POST'});
+    if(!r.ok){invoOut('⚠ '+r.error);}
+    else{
+      let out='VERDICT: '+r.verdict+'\n';
+      const p=r.pooled||{};
+      if(p.n) out+=`\nPOOLED  n=${p.n}  IC=${fmt(p.ic,3)}  p=${fmt(p.p_value,3)}  MI=${fmt(p.mutual_info,3)}\n\nPER ASSET:\n`;
+      for(const [a,m] of Object.entries(r.per_asset||{})){
+        out+=`${a.padEnd(6)} n=${String(m.n).padStart(4)}  IC=${fmt(m.ic,3)}  p=${fmt(m.p_value,3)}`;
+        if(m.partial_ic!=null) out+=`  partIC=${fmt(m.partial_ic,3)}`;
+        if(m.ablation&&m.ablation.d_acc!=null) out+=`  ablation d_acc=${fmt(m.ablation.d_acc,3)}`;
+        out+='\n';
+      }
+      invoOut(out);
+    }
+  }catch(e){invoOut('⚠ '+e);}
+  $('#invo-study').disabled=false;
+};
 function fmtInterval(sec){
   sec=Number(sec)||0;
   if(sec<60)return sec+'s';
@@ -1015,6 +1142,7 @@ async function openSettings(){
   const d=await j('/api/tunables'); _tunMeta=d.meta;
   renderTunables(d.meta,d.values);
   loadSettings();   // refresh the auto-export toggle/slider to current values
+  invoStatus();     // refresh Invo collector status line
   $('#settings-modal').classList.add('open');
 }
 function renderTunables(meta,vals){

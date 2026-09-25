@@ -138,6 +138,28 @@ class InvoPoller:
             traders = self.mapper(lb, fetch_positions, self.cfg.top_n)
         return {"ts": time.time(), "traders": traders}
 
+    def peek(self) -> None:
+        """Fetch the raw leaderboard (and one trader's positions if a template is
+        set) and pretty-print it — so you can see field names before writing the
+        mapper. No mapper required; nothing is written."""
+        with httpx.Client() as client:
+            lb = self._get(client, self.cfg.leaderboard_path)
+            print("=== RAW LEADERBOARD (first 2000 chars) ===")
+            print(json.dumps(lb, indent=2)[:2000])
+            if self.cfg.positions_tmpl:
+                # try to grab an id from common shapes to demo the positions call
+                rows = lb.get("data", lb) if isinstance(lb, dict) else lb
+                tid = None
+                if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                    tid = rows[0].get("id") or rows[0].get("userId") or rows[0].get("trader_id")
+                if tid is not None:
+                    pos = self._get(client, self.cfg.positions_tmpl.format(id=tid))
+                    print(f"\n=== RAW POSITIONS for trader {tid} (first 2000 chars) ===")
+                    print(json.dumps(pos, indent=2)[:2000])
+                else:
+                    print("\n[peek] couldn't auto-detect a trader id field — "
+                          "inspect the leaderboard above for the id key.")
+
     # ---- persistence (atomic append to a JSON list) ----
     def append_snapshot(self, snap: Dict[str, Any]):
         data = []
@@ -184,6 +206,12 @@ class InvoPoller:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Authorized Invo positioning poller")
     ap.add_argument("--once", action="store_true", help="take one snapshot and exit")
+    ap.add_argument("--peek", action="store_true",
+                    help="print the raw API response (no mapper needed) to design your mapper")
     ap.add_argument("--max-iters", type=int, default=None)
     a = ap.parse_args()
-    InvoPoller(PollerConfig.from_env()).run(once=a.once, max_iters=a.max_iters)
+    poller = InvoPoller(PollerConfig.from_env())
+    if a.peek:
+        poller.peek()
+    else:
+        poller.run(once=a.once, max_iters=a.max_iters)

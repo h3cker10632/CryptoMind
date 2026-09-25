@@ -54,17 +54,88 @@ DEFAULTS = {
     # from the dashboard slider and takes effect on the next cycle (no restart).
     "auto_export_enabled": True,
     "auto_export_interval_sec": 300,   # default: every 5 minutes
+
+    # ---------------- Invo copy-signal study (measurement only) ----------------
+    # Master switch for the Invo positioning signal *study*. This NEVER wires the
+    # signal into live trading — it only enables collecting snapshots and running
+    # the edge study from the dashboard. The signal becomes a learner feature
+    # only if/when the study earns it (separate, explicit step).
+    "invo_enabled": False,
+    "invo_api_base": "",              # e.g. https://app.invoapp.com
+    "invo_token": "",                 # SECRET — bearer token for YOUR authorized session
+    "invo_leaderboard_path": "",      # path returning ranked traders
+    "invo_positions_tmpl": "",        # optional per-trader positions path, {id} placeholder
+    "invo_top_n": 25,
+    "invo_interval_sec": 300,
+    # response->schema field map (dotted paths allowed, e.g. "data.items"):
+    "invo_map_list": "",              # key holding the list of traders (blank = response is the list)
+    "invo_map_id": "id",             # trader id field
+    "invo_map_score": "",            # optional quality score field (e.g. winRate)
+    "invo_map_positions": "",        # inline positions field (blank = use positions_tmpl call)
+    "invo_map_asset": "coin",        # position symbol field
+    "invo_map_side": "side",         # position direction field
+    "invo_map_long_value": "long",   # value of the side field that means LONG
+    "invo_map_size": "sizeUsd",      # position notional (USD) field
+    "invo_map_leverage": "",         # optional leverage field
+    # study parameters:
+    "invo_horizon_hours": 4.0,
+    "invo_rank_decay": 1.0,
+    "invo_use_score": False,
 }
 
 STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}
+
+# Free-text string settings (stored verbatim, trimmed).
+TEXT_KEYS = {
+    "invo_api_base", "invo_leaderboard_path", "invo_positions_tmpl",
+    "invo_map_list", "invo_map_id", "invo_map_score", "invo_map_positions",
+    "invo_map_asset", "invo_map_side", "invo_map_long_value",
+    "invo_map_size", "invo_map_leverage",
+}
+
+# Secret settings: stored, but MASKED in the public payload and never clobbered
+# by an empty save (only overwritten when a new non-empty value is supplied).
+SECRET_KEYS = {"invo_token"}
+
+# Float settings: (min, max) inclusive clamp.
+FLOAT_KEYS = {
+    "invo_horizon_hours": (0.25, 168.0),
+    "invo_rank_decay": (0.0, 4.0),
+}
 
 # Integer settings: (min, max) inclusive clamp. Everything else is treated as
 # a boolean toggle.
 INT_KEYS = {
     "auto_export_interval_sec": (30, 86400),   # 30s .. 24h
+    "invo_top_n": (1, 200),
+    "invo_interval_sec": (30, 86400),
 }
 
+
+# Secrets (e.g. the Invo bearer token) are stored SEPARATELY from settings.json —
+# in a git-ignored file — so a tracked config file can never leak a credential.
+SECRETS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".secrets.json")
+
 _settings = None
+
+
+def _load_secrets() -> dict:
+    try:
+        with open(SECRETS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_secrets(d: dict):
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(SECRETS_PATH))
+        with os.fdopen(fd, "w") as f:
+            json.dump(d, f)
+        os.chmod(tmp, 0o600)          # owner-only, like api_token.txt
+        os.replace(tmp, SECRETS_PATH)
+    except Exception:
+        pass
 
 
 def load():
@@ -76,17 +147,16 @@ def load():
                 with open(SETTINGS_PATH) as f:
                     saved = json.load(f)
                 for k, v in saved.items():
-                    if k not in DEFAULTS:
+                    if k not in DEFAULTS or k in SECRET_KEYS:  # secrets never from here
                         continue
-                    if k in STR_KEYS:
-                        if v in STR_KEYS[k]:
-                            _settings[k] = v
-                    elif k in INT_KEYS:
-                        _settings[k] = _coerce_int(k, v)
-                    else:
-                        _settings[k] = bool(v)
+                    _settings[k] = _coerce(k, v)
         except Exception:
             pass
+        # overlay secrets from the git-ignored store
+        secrets = _load_secrets()
+        for k in SECRET_KEYS:
+            if k in secrets:
+                _settings[k] = str(secrets[k])
     return _settings
 
 
@@ -100,26 +170,70 @@ def _coerce_int(key, v):
         return DEFAULTS[key]
 
 
+def _coerce_float(key, v):
+    lo, hi = FLOAT_KEYS[key]
+    try:
+        return max(lo, min(hi, float(v)))
+    except (TypeError, ValueError):
+        return DEFAULTS[key]
+
+
+def _coerce(key, v):
+    """Coerce one setting by its category. Returns None to signal 'ignore'."""
+    if key in STR_KEYS:
+        return v if v in STR_KEYS[key] else None
+    if key in TEXT_KEYS:
+        return str(v).strip()
+    if key in SECRET_KEYS:
+        return str(v)
+    if key in FLOAT_KEYS:
+        return _coerce_float(key, v)
+    if key in INT_KEYS:
+        return _coerce_int(key, v)
+    return bool(v)
+
+
+MASK = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"   # ••••••••
+
+
+def public():
+    """Settings for the API/UI: secrets masked, with a companion '<key>_set'
+    boolean so the UI can show whether a secret is configured."""
+    s = dict(load())
+    for k in SECRET_KEYS:
+        s[k + "_set"] = bool(s.get(k))
+        s[k] = MASK if s.get(k) else ""
+    return s
+
+
 def get(key):
     return load()[key]
 
 
 def update(changes: dict):
     s = load()
+    secret_dirty = False
     for k, v in changes.items():
         if k not in DEFAULTS:
             continue
-        if k in STR_KEYS:
-            if v in STR_KEYS[k]:
-                s[k] = v
-        elif k in INT_KEYS:
-            s[k] = _coerce_int(k, v)
-        else:
-            s[k] = bool(v)
+        if k in SECRET_KEYS:
+            # empty save / the mask never clobber a stored secret
+            if not v or v == MASK:
+                continue
+            s[k] = str(v)
+            secret_dirty = True
+            continue
+        coerced = _coerce(k, v)
+        if coerced is not None:
+            s[k] = coerced
+    # persist secrets to the git-ignored store; strip them from settings.json
+    if secret_dirty:
+        _save_secrets({k: s[k] for k in SECRET_KEYS if s.get(k)})
     try:
+        public_persist = {k: v for k, v in s.items() if k not in SECRET_KEYS}
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(SETTINGS_PATH))
         with os.fdopen(fd, "w") as f:
-            json.dump(s, f)
+            json.dump(public_persist, f)
         os.replace(tmp, SETTINGS_PATH)
     except Exception:
         pass

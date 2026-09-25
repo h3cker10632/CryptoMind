@@ -513,7 +513,7 @@ def restart_server():
 
 @app.get("/api/settings")
 def get_settings():
-    return app_settings.load()
+    return app_settings.public()
 
 
 @app.post("/api/settings")
@@ -522,6 +522,36 @@ async def set_settings(request: Request):
     updated = app_settings.update(changes)
     db.log_event("system", f"Settings updated: {changes}", updated)
     return updated
+
+
+@app.get("/api/invo/status")
+def invo_status():
+    from .data import invo
+    return invo.collector.status()
+
+
+@app.post("/api/invo/peek")
+async def invo_peek():
+    from .data import invo
+    return await asyncio.to_thread(invo.peek_sync)
+
+
+@app.post("/api/invo/collector/start")
+async def invo_collector_start():
+    from .data import invo
+    return invo.collector.start()
+
+
+@app.post("/api/invo/collector/stop")
+async def invo_collector_stop():
+    from .data import invo
+    return invo.collector.stop()
+
+
+@app.post("/api/invo/study/run")
+async def invo_study_run():
+    from .data import invo
+    return await asyncio.to_thread(invo.run_study_sync)
 
 
 @app.get("/api/tunables")
