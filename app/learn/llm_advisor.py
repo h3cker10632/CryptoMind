@@ -227,7 +227,7 @@ class LLMAdvisor:
             "your directional bias (-1 strong short … +1 strong long, 0 = no "
             "edge). Be conservative; prefer 0 when signals conflict."
         )
-        payload_base = {
+        payload = {
             "model": model,
             "temperature": 0.2,
             "max_tokens": 512,          # required by Anthropic's compat layer; harmless elsewhere
@@ -236,54 +236,47 @@ class LLMAdvisor:
                 {"role": "user", "content": json.dumps(ctx)},
             ],
         }
-        # Gemini's OpenAI-compat endpoint often 400s on response_format/json_object.
-        # Try WITH it first (stricter JSON where supported); on a 400 retry WITHOUT
-        # it — _parse tolerates fenced/loose JSON either way. Any HTTP error's real
-        # body is captured into last_error so the operator sees the actual reason.
+        # NOTE: we deliberately do NOT send response_format. Both Gemini and
+        # Anthropic's OpenAI-compat layers reject {"type":"json_object"}
+        # (Anthropic wants a full json_schema), and _parse already tolerates
+        # fenced/loose JSON. A single provider-agnostic request avoids that whole
+        # class of 400s. Any HTTP error's real body is captured into last_error.
+        url = f"{base}/chat/completions"
         async with httpx.AsyncClient(timeout=20) as client:
-            for with_json_mode in (True, False):
-                payload = dict(payload_base)
-                if with_json_mode:
-                    payload["response_format"] = {"type": "json_object"}
-                url = f"{base}/chat/completions"
+            try:
+                r = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self._api_key()}"},
+                    json=payload)
+                r.raise_for_status()
+                content = r.json()["choices"][0]["message"]["content"]
+                self.last_error = ""              # success clears prior error
+                return self._parse(content)
+            except httpx.HTTPStatusError as e:
+                body = ""
                 try:
-                    r = await client.post(
-                        url,
-                        headers={"Authorization": f"Bearer {self._api_key()}"},
-                        json=payload)
-                    r.raise_for_status()
-                    content = r.json()["choices"][0]["message"]["content"]
-                    self.last_error = ""              # success clears prior error
-                    return self._parse(content)
-                except httpx.HTTPStatusError as e:
+                    body = e.response.text[:300]
+                except Exception:
                     body = ""
-                    try:
-                        body = e.response.text[:300]
-                    except Exception:
-                        body = ""
-                    code = e.response.status_code
-                    # include model + URL so a 404 (wrong path/model) is diagnosable
-                    # at a glance instead of a bare status line with no body.
-                    detail = body or "(empty body)"
-                    hint = ""
-                    if code == 404:
-                        hint = (f" — model '{model}' not found, or wrong base URL "
-                                f"({base}). Check Settings → LLM advisor.")
-                    elif code in (401, 403):
-                        src = self._key_source()
-                        hint = (f" — key rejected. Active key came from {src}; note "
-                                "env vars OVERRIDE the Settings key, so unset "
-                                "CRYPTOMIND_LLM_KEY/GEMINI_API_KEY/OPENAI_API_KEY if "
-                                "one is shadowing the key you entered.")
-                    self.last_error = f"HTTP {code} at {url}: {detail}{hint}"
-                    # a 400 while json-mode was on → retry once without it
-                    if code == 400 and with_json_mode:
-                        continue
-                    return None, ""
-                except Exception as e:               # network/timeout/parse
-                    self.last_error = str(e)[:200]
-                    return None, ""
-        return None, ""
+                code = e.response.status_code
+                # include model + URL so a 404 (wrong path/model) is diagnosable
+                # at a glance instead of a bare status line with no body.
+                detail = body or "(empty body)"
+                hint = ""
+                if code == 404:
+                    hint = (f" — model '{model}' not found, or wrong base URL "
+                            f"({base}). Check Settings → LLM advisor.")
+                elif code in (401, 403):
+                    src = self._key_source()
+                    hint = (f" — key rejected. Active key came from {src}; note "
+                            "env vars OVERRIDE the Settings key, so unset "
+                            "CRYPTOMIND_LLM_KEY/GEMINI_API_KEY/OPENAI_API_KEY if "
+                            "one is shadowing the key you entered.")
+                self.last_error = f"HTTP {code} at {url}: {detail}{hint}"
+                return None, ""
+            except Exception as e:               # network/timeout/parse
+                self.last_error = str(e)[:200]
+                return None, ""
 
     @staticmethod
     def _parse(content):

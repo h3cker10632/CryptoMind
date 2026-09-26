@@ -40,20 +40,19 @@ def _ok(content):
     return _Resp(200, {"choices": [{"message": {"content": content}}]})
 
 
-def test_retries_without_json_mode_on_400(monkeypatch):
-    calls = {"with_rf": 0, "without_rf": 0}
+def test_never_sends_response_format(monkeypatch):
+    """response_format is rejected by both Gemini and Anthropic — we must never
+    send it; _parse handles loose JSON instead."""
+    seen = {}
 
     def responder(payload):
-        if "response_format" in payload:
-            calls["with_rf"] += 1
-            return _Resp(400, text="Invalid value at 'response_format'")
-        calls["without_rf"] += 1
+        seen.update(payload)
         return _ok('{"lean": 0.5, "why": "trend up"}')
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client(responder))
     lean, why = asyncio.run(advisor._ask_model({"product": "BTC-USD"}))
     assert lean == 0.5 and why == "trend up"
-    assert calls["with_rf"] == 1 and calls["without_rf"] == 1   # tried strict, then fell back
+    assert "response_format" not in seen                        # never sent
     assert advisor.last_error == ""                             # success clears the error
 
 
