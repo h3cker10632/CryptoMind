@@ -167,7 +167,11 @@ class LLMAdvisor:
             if base.endswith(suffix):
                 base = base[: -len(suffix)]
                 break
-        return base.rstrip("/")
+        base = base.rstrip("/")
+        # Anthropic's OpenAI-compatible API lives under /v1; a bare host 404s.
+        if base.endswith("api.anthropic.com"):
+            base += "/v1"
+        return base
 
     @classmethod
     def _model(cls):
@@ -196,6 +200,7 @@ class LLMAdvisor:
         payload_base = {
             "model": model,
             "temperature": 0.2,
+            "max_tokens": 512,          # required by Anthropic's compat layer; harmless elsewhere
             "messages": [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": json.dumps(ctx)},

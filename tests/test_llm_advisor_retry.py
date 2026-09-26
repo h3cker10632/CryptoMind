@@ -97,3 +97,23 @@ def test_404_error_names_model_and_url(monkeypatch):
     assert "chat/completions" in advisor.last_error      # the actual URL is shown
     assert "not found" in advisor.last_error             # actionable hint
     assert "(empty body)" in advisor.last_error          # empty body made explicit
+
+
+def test_anthropic_base_gets_v1(monkeypatch):
+    from app import settings as s
+    monkeypatch.delenv("CRYPTOMIND_LLM_BASE", raising=False)
+    # bare host, and full-endpoint paste, both normalize to /v1
+    monkeypatch.setattr(s, "get", lambda k: {"llm_api_base": "https://api.anthropic.com"}.get(k, ""))
+    assert advisor._base_url() == "https://api.anthropic.com/v1"
+    monkeypatch.setattr(s, "get", lambda k: {"llm_api_base": "https://api.anthropic.com/v1/chat/completions"}.get(k, ""))
+    assert advisor._base_url() == "https://api.anthropic.com/v1"
+
+
+def test_payload_includes_max_tokens(monkeypatch):
+    seen = {}
+    def responder(payload):
+        seen.update(payload)
+        return _ok('{"lean": 0.1, "why": "ok"}')
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client(responder))
+    asyncio.run(advisor._ask_model({"product": "BTC-USD"}))
+    assert seen.get("max_tokens") == 512
