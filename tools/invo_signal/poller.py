@@ -50,6 +50,8 @@ class PollerConfig:
     token: str
     leaderboard_path: str
     positions_tmpl: Optional[str] = None
+    positions_method: str = "GET"     # per-trader positions request method
+    positions_body: str = ""          # JSON body template for POST positions ({id})
     top_n: int = 25
     interval_sec: float = 300.0
     out_path: str = "invo_snapshots.json"
@@ -227,6 +229,23 @@ class InvoPoller:
         except Exception:
             return None
 
+    def _positions_body_dict(self, tid):
+        """Parse the per-trader positions POST body, substituting the {id}."""
+        if not self.cfg.positions_body:
+            return None
+        try:
+            return json.loads(self.cfg.positions_body.replace("{id}", str(tid)))
+        except Exception:
+            return None
+
+    def fetch_positions_for(self, client, tid):
+        """Fetch one trader's positions using the configured method (GET/POST)."""
+        path = self.cfg.positions_tmpl.format(id=tid)
+        if (self.cfg.positions_method or "GET").upper() == "POST":
+            return self._request(client, path, "POST",
+                                 json_body=self._positions_body_dict(tid))
+        return self._request(client, path, "GET")
+
     def fetch_leaderboard(self, client):
         """Fetch the leaderboard using the configured method + body (GET or POST)."""
         return self._request(client, self.cfg.leaderboard_path,
@@ -238,7 +257,7 @@ class InvoPoller:
             fetch_positions = None
             if self.cfg.positions_tmpl:
                 def fetch_positions(tid, _c=client):
-                    return self._get(_c, self.cfg.positions_tmpl.format(id=tid))
+                    return self.fetch_positions_for(_c, tid)
             traders = self.mapper(lb, fetch_positions, self.cfg.top_n)
         return {"ts": time.time(), "traders": traders}
 

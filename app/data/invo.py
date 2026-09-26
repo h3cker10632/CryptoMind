@@ -102,6 +102,8 @@ def _cfg() -> PollerConfig:
         token=s["invo_token"],
         leaderboard_path=s["invo_leaderboard_path"],
         positions_tmpl=s["invo_positions_tmpl"] or None,
+        positions_method=s.get("invo_positions_method", "GET") or "GET",
+        positions_body=s.get("invo_positions_body", ""),
         top_n=int(s["invo_top_n"]),
         interval_sec=float(s["invo_interval_sec"]),
         out_path=SNAP_PATH,
@@ -161,7 +163,7 @@ def peek_sync() -> dict:
             if rows:
                 tid = _dig(rows[0], s.get("invo_map_id", "id"))
             if s["invo_positions_tmpl"] and tid is not None:
-                sample_positions = p._get(c, s["invo_positions_tmpl"].format(id=tid))
+                sample_positions = p.fetch_positions_for(c, tid)
             # also show what the current field-map extracts, so mapping is verifiable
             mapped = config_mapper(lb, None, 3)
         return {"ok": True, "leaderboard_sample": _truncate(lb),

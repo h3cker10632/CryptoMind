@@ -496,6 +496,8 @@
           <label>Method<select data-invo-key="invo_method"><option value="GET">GET</option><option value="POST">POST</option></select></label>
           <label>Request body (POST, JSON)<input data-invo-key="invo_body" placeholder='{"limit":25} — only for POST endpoints'></label>
           <label>Positions path (optional)<input data-invo-key="invo_positions_tmpl" placeholder="/path/{id}/positions"></label>
+          <label>Positions method<select data-invo-key="invo_positions_method"><option value="GET">GET</option><option value="POST">POST</option></select></label>
+          <label>Positions body (POST, JSON)<input data-invo-key="invo_positions_body" placeholder='{"userId":"{id}"} — only for POST positions'></label>
           <label>Top N traders<input data-invo-key="invo_top_n" type="number" min="1" max="200"></label>
           <label>Interval (seconds)<input data-invo-key="invo_interval_sec" type="number" min="30"></label>
         </div>
