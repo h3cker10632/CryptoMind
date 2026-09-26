@@ -141,3 +141,49 @@ def test_rl_learns_to_sit_out_when_losing():
     # the sit-out (0.0) arm should be the best or near-best; certainly better
     # than pressing full risk in a bleeding regime.
     assert row[0] >= row[-1], f"sit-out not favored over full risk: {row}"
+
+
+# ------------------------------------------------------------------ Fix 6
+def test_abstention_predictions_not_scored_as_directional_miss():
+    """A warmup / just-reset head emits pred==0.0 ("no opinion"). Scoring that
+    as a directional miss (0*target is never > 0) pinned accuracy near zero and
+    drove a reset doom loop that kept the ml sleeve at 0 weight forever.
+    Abstentions must be EXCLUDED from the accuracy window; real directional
+    calls must still be scored."""
+    from app.learn.online_model import TinyMLP, N_IN, ACC_MIN_CONVICTION
+    m = TinyMLP()
+    x = [0.1] * N_IN
+    # 30 abstentions (pred == 0.0) against strongly positive realized moves
+    for _ in range(30):
+        m.update(x, fwd_return=0.01, pred_at_record=0.0)
+    assert len(m.acc_window) == 0, "abstentions must not be scored"
+    assert m.stats()["directional_accuracy"] is None
+    assert m.stats()["acc_samples"] == 0
+    # a real, correct directional call IS scored (pred and move same sign)
+    m.update(x, fwd_return=0.01, pred_at_record=0.5)
+    assert len(m.acc_window) == 1 and sum(m.acc_window) == 1
+    # a real, wrong directional call is scored as a miss
+    m.update(x, fwd_return=0.01, pred_at_record=-0.5)
+    assert len(m.acc_window) == 2 and sum(m.acc_window) == 1
+
+
+def test_poisoned_all_wrong_accuracy_window_dropped_on_load():
+    """An all-zeros accuracy window (every sample wrong — impossible for a real
+    head) is a pre-fix artifact and must be discarded on restore so a good,
+    already-trained head is NOT reset destructively."""
+    from app.learn.online_model import TinyMLP
+    from app.persistence import _dump_mlp, _load_mlp
+    src = TinyMLP()
+    src.n_updates = 40
+    d = _dump_mlp(src)
+    d["acc_window"] = [0] * 40            # poisoned: every sample scored wrong
+    dst = TinyMLP()
+    assert _load_mlp(dst, d) is True
+    assert dst.n_updates == 40            # weights/updates preserved
+    assert len(dst.acc_window) == 0       # poisoned history dropped
+    assert dst.stats()["directional_accuracy"] is None
+    # a legitimate mixed window is preserved
+    d["acc_window"] = [1, 0, 1, 1] * 6
+    dst2 = TinyMLP()
+    _load_mlp(dst2, d)
+    assert len(dst2.acc_window) == 24

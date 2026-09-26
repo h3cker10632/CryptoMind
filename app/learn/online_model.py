@@ -21,6 +21,13 @@ from collections import deque
 N_IN = 24          # 18 core + 6 chart-pattern features (see build_x / FEAT_NAMES)
 N_HID = 16
 
+# Minimum |prediction| (on the scaled ±1 return axis) for a recorded prediction
+# to count toward DIRECTIONAL accuracy. A warmup / just-reset head emits 0.0
+# ("no opinion"); scoring 0.0 as a directional miss (0*target is never > 0)
+# pinned accuracy near zero and triggered perpetual resets, which kept the ml
+# sleeve at zero weight forever. A near-zero stance is abstention, not a miss.
+ACC_MIN_CONVICTION = 0.05
+
 # quantile levels for the aleatoric band (P10 / P90)
 QUANTILES = (0.10, 0.90)
 
@@ -264,9 +271,14 @@ class TinyMLP:
         if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
             return
         target = _clip(fwd_return / 0.004, -1, 1)     # ±0.4% move = full signal
-        if pred_at_record is not None and abs(target) > 0.15:
+        # Score directional accuracy ONLY on samples where the realized move was
+        # meaningful AND the head actually took a directional stance. Abstentions
+        # (|pred| ~ 0, i.e. warmup / just-reset) are excluded — counting them as
+        # misses is what pinned accuracy at 0 and drove the reset doom loop.
+        scored = (pred_at_record is not None and abs(target) > 0.15
+                  and abs(pred_at_record) > ACC_MIN_CONVICTION)
+        if scored:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)
-        if pred_at_record is not None:
             self.recent.append((round(float(pred_at_record), 4),
                                 round(float(target), 4),
                                 bool(pred_at_record * target > 0)))
@@ -364,6 +376,7 @@ class TinyMLP:
             "n_updates": self.n_updates,
             "replay_buffer": len(self.replay),
             "directional_accuracy": round(acc, 3) if acc is not None else None,
+            "acc_samples": len(self.acc_window),   # scored (non-abstention) preds
             "avg_mse": round(loss, 4) if loss is not None else None,
             "lr_boost": round(self.lr_boost, 3),
             "warmed_up": self.n_updates >= 40,

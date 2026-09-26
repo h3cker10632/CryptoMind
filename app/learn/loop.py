@@ -412,9 +412,16 @@ class Learner:
     def _ml_is_broken(self):
         """Measured directional accuracy at/below a coin flip after warmup.
         Unmeasured (acc is None) is silent for allocation but not a reset —
-        we still need samples to get a reading."""
-        acc = model.stats()["directional_accuracy"]
-        return model.n_updates >= 40 and acc is not None and acc <= 0.50
+        we still need samples to get a reading. We also require a minimum count
+        of SCORED (non-abstention) predictions before declaring the head broken:
+        warmup/just-reset preds are abstentions now, so a near-empty acc_window
+        must not trigger a reset that would wipe a head before it has been fairly
+        measured (this was the ml-sleeve doom loop)."""
+        st = model.stats()
+        acc = st["directional_accuracy"]
+        n_scored = st.get("acc_samples", 0)
+        return (model.n_updates >= 40 and acc is not None
+                and n_scored >= 20 and acc <= 0.50)
 
     def _silent_sleeves(self):
         silent = set()

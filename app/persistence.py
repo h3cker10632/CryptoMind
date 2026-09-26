@@ -83,7 +83,16 @@ def _load_mlp(m, d):
     if len(pr) != len(m.replay):
         pr = [1e-2] * len(m.replay)
     m.replay_pr = deque(pr, maxlen=m.replay_pr.maxlen)
-    m.acc_window = deque(d.get("acc_window", []), maxlen=m.acc_window.maxlen)
+    aw = list(d.get("acc_window", []))
+    # One-time migration: an accuracy window that scored EVERY sample wrong is a
+    # statistical impossibility for a functioning head — it was written by the
+    # pre-fix scorer that counted warmup/abstention (pred==0.0) predictions as
+    # directional misses, which drove the ml-sleeve reset doom loop. Discard it
+    # so the corrected scorer re-measures this (already-trained) head from live
+    # data instead of triggering a destructive reset that wipes good weights.
+    if len(aw) >= 20 and sum(aw) == 0:
+        aw = []
+    m.acc_window = deque(aw, maxlen=m.acc_window.maxlen)
     m.loss_window = deque(d.get("loss_window", []), maxlen=m.loss_window.maxlen)
     if len(d.get("feat_mean", [])) == len(m.feat_mean):
         m.feat_n = d.get("feat_n", 0)
