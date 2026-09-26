@@ -141,3 +141,15 @@ def test_provider_derived_from_base(monkeypatch):
     assert advisor._provider() == "anthropic"
     monkeypatch.setattr(s, "get", lambda k: {"llm_api_base": ""}.get(k, ""))
     assert advisor._provider() == "gemini"
+
+
+def test_clean_key_strips_bearer_and_quotes():
+    a = advisor
+    assert a._clean_key("  sk-ant-abc  ") == "sk-ant-abc"
+    assert a._clean_key('"sk-ant-abc"') == "sk-ant-abc"
+    assert a._clean_key("'sk-ant-abc'") == "sk-ant-abc"
+    assert a._clean_key("Bearer sk-ant-abc") == "sk-ant-abc"
+    assert a._clean_key("bearer  sk-ant-abc") == "sk-ant-abc"
+    assert a._clean_key('"Bearer sk-ant-abc"') == "sk-ant-abc"
+    assert a._clean_key("") is None
+    assert a._clean_key(None) is None

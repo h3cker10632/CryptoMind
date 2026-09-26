@@ -52,6 +52,20 @@ class LLMAdvisor:
         except Exception:
             return None
 
+    @staticmethod
+    def _clean_key(raw):
+        """Defensively normalise a pasted key: strip whitespace, surrounding
+        quotes, and an accidental 'Bearer ' prefix — all of which silently
+        invalidate an otherwise-good key."""
+        if not raw:
+            return None
+        k = str(raw).strip()
+        if len(k) >= 2 and k[0] == k[-1] and k[0] in ("'", '"'):
+            k = k[1:-1].strip()
+        if k[:7].lower() == "bearer ":
+            k = k[7:].strip()
+        return k or None
+
     @classmethod
     def _api_key(cls):
         """Resolution order: env vars → dashboard Settings (.secrets.json) →
@@ -60,16 +74,16 @@ class LLMAdvisor:
                or os.environ.get("GEMINI_API_KEY")
                or os.environ.get("OPENAI_API_KEY"))
         if env:
-            return env.strip()
+            return cls._clean_key(env)
         setting = cls._setting("llm_api_key")
         if setting:
-            return str(setting).strip()
+            return cls._clean_key(setting)
         try:
             if os.path.exists(cls.KEY_PATH):
                 with open(cls.KEY_PATH) as f:
                     t = f.read().strip()
                 if t:
-                    return t
+                    return cls._clean_key(t)
         except OSError:
             pass
         return None
