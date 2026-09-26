@@ -55,6 +55,12 @@ class PollerConfig:
     out_path: str = "invo_snapshots.json"
     timeout: float = 15.0
     max_retries: int = 3
+    # ---- optional auto token-refresh ----
+    refresh_path: str = ""            # refresh endpoint (path or full URL); blank = disabled
+    refresh_token: str = ""           # long-lived refresh token
+    refresh_body: str = ""            # JSON body template w/ {refresh_token}; blank = Bearer header
+    token_json_path: str = "access_token"   # dotted path to the new access token in the response
+    refresh_rotates_path: str = ""    # optional dotted path to a rotated refresh token
 
     @staticmethod
     def from_env() -> "PollerConfig":
@@ -71,6 +77,11 @@ class PollerConfig:
             top_n=int(os.environ.get("INVO_TOP_N", "25")),
             interval_sec=float(os.environ.get("INVO_INTERVAL_SEC", "300")),
             out_path=os.environ.get("INVO_OUT", "invo_snapshots.json"),
+            refresh_path=os.environ.get("INVO_REFRESH_PATH", ""),
+            refresh_token=os.environ.get("INVO_REFRESH_TOKEN", ""),
+            refresh_body=os.environ.get("INVO_REFRESH_BODY", ""),
+            token_json_path=os.environ.get("INVO_TOKEN_PATH", "access_token"),
+            refresh_rotates_path=os.environ.get("INVO_REFRESH_ROTATES_PATH", ""),
         )
 
 
@@ -100,19 +111,78 @@ def default_mapper(leaderboard_raw: Any,
         "    return traders\n")
 
 
+def _dig_path(obj: Any, path: str):
+    """Fetch a possibly-dotted key path from a nested dict; None if missing."""
+    if not path:
+        return None
+    cur = obj
+    for part in str(path).split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
 class InvoPoller:
     def __init__(self, cfg: PollerConfig,
-                 mapper: Callable[..., List[Dict[str, Any]]] = default_mapper):
+                 mapper: Callable[..., List[Dict[str, Any]]] = default_mapper,
+                 on_new_token: Optional[Callable[[str, Optional[str]], None]] = None):
         if httpx is None:
             sys.exit("[poller] httpx not installed — pip install httpx")
         self.cfg = cfg
         self.mapper = mapper
+        # called with (new_access_token, new_refresh_token_or_None) after a
+        # successful refresh, so the caller can persist it (e.g. to settings).
+        self.on_new_token = on_new_token
         self._stop = False
 
-    # ---- transport (reusable; auth + retry + backoff) ----
+    def _refresh_enabled(self) -> bool:
+        return bool(self.cfg.refresh_path and self.cfg.refresh_token)
+
+    # ---- auth: mint a fresh access token from the refresh token ----
+    def _refresh(self, client) -> bool:
+        """POST to the configured refresh endpoint and swap in a new access
+        token. Returns True on success; raises on a hard failure."""
+        cfg = self.cfg
+        url = (cfg.refresh_path if cfg.refresh_path.startswith("http")
+               else cfg.base_url + cfg.refresh_path)
+        headers = {"User-Agent": "invo-signal-study/1.0"}
+        body = None
+        if cfg.refresh_body:
+            tmpl = cfg.refresh_body.replace("{refresh_token}", cfg.refresh_token)
+            try:
+                body = json.loads(tmpl)
+            except Exception:
+                body = {"refresh_token": cfg.refresh_token}
+        else:
+            # no body template → present the refresh token as a Bearer header
+            headers["Authorization"] = f"Bearer {cfg.refresh_token}"
+        r = client.post(url, json=body, headers=headers, timeout=cfg.timeout)
+        r.raise_for_status()
+        data = r.json()
+        new_access = _dig_path(data, cfg.token_json_path or "access_token")
+        if not new_access:
+            raise RuntimeError(
+                f"refresh response had no access token at '{cfg.token_json_path}'")
+        self.cfg.token = str(new_access)
+        new_refresh = (_dig_path(data, cfg.refresh_rotates_path)
+                       if cfg.refresh_rotates_path else None)
+        if new_refresh:
+            self.cfg.refresh_token = str(new_refresh)
+        if self.on_new_token:
+            try:
+                self.on_new_token(self.cfg.token,
+                                  str(new_refresh) if new_refresh else None)
+            except Exception:                               # persistence is best-effort
+                pass
+        return True
+
+    # ---- transport (reusable; auth + retry + backoff + auto-refresh) ----
     def _get(self, client, path: str, params=None):
         url = path if path.startswith("http") else self.cfg.base_url + path
         last = None
+        did_refresh = False
         for attempt in range(self.cfg.max_retries):
             try:
                 r = client.get(url, params=params, timeout=self.cfg.timeout,
@@ -120,6 +190,11 @@ class InvoPoller:
                                         "User-Agent": "invo-signal-study/1.0"})
                 if r.status_code == 429:                    # rate limited — back off
                     time.sleep(2 ** attempt)
+                    continue
+                # expired/invalid token → refresh ONCE, then retry immediately
+                if r.status_code in (401, 403) and self._refresh_enabled() and not did_refresh:
+                    did_refresh = True
+                    self._refresh(client)
                     continue
                 r.raise_for_status()
                 return r.json()

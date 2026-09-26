@@ -505,6 +505,14 @@
           <label>Size / notional (USD)<input data-invo-key="invo_map_size" placeholder="sizeUsd"></label>
           <label>Leverage (optional)<input data-invo-key="invo_map_leverage" placeholder="lev"></label>
         </div>
+        <div class="invo-sub">Auto token refresh <span class="invo-hint">— optional. Paste your refresh token ONCE and the collector mints fresh access tokens on expiry (no password stored). Leave blank to manage the token by hand.</span></div>
+        <div class="invo-grid">
+          <label>Refresh endpoint path<input data-invo-key="invo_refresh_path" placeholder="/api/v1_0/auth/refresh_token"></label>
+          <label>Refresh token (secret)<input data-invo-key="invo_refresh_token" type="password" placeholder="long-lived refresh token"></label>
+          <label>Refresh body template<input data-invo-key="invo_refresh_body" placeholder='{"refresh_token":"{refresh_token}"} (blank = send as Bearer)'></label>
+          <label>New-token JSON path<input data-invo-key="invo_token_path" placeholder="access_token (dotted ok, e.g. data.token)"></label>
+          <label>Rotated refresh-token path (optional)<input data-invo-key="invo_refresh_rotates_path" placeholder="(blank unless the API rotates it)"></label>
+        </div>
         <div class="invo-sub">Study parameters</div>
         <div class="invo-grid">
           <label>Prediction horizon (hours)<input data-invo-key="invo_horizon_hours" type="number" step="0.25" min="0.25"></label>
@@ -1020,6 +1028,8 @@ function renderInvo(){
   });
   const t=$('[data-invo-key="invo_token"]');
   if(t&&document.activeElement!==t) t.placeholder=s.invo_token_set?'•••••••• (saved)':'bearer token';
+  const rt=$('[data-invo-key="invo_refresh_token"]');
+  if(rt&&document.activeElement!==rt) rt.placeholder=s.invo_refresh_token_set?'•••••••• (saved)':'long-lived refresh token';
   $('#tg-invo-score').classList.toggle('on', !!s.invo_use_score);
   $('#tg-invo-score-label').textContent=s.invo_use_score?'on':'off';
 }
@@ -1029,7 +1039,7 @@ document.querySelectorAll('[data-invo-key]').forEach(inp=>{
   inp.addEventListener('change',()=>{
     let v=inp.value;
     if(inp.type==='number') v=(v===''?0:Number(v));
-    if(inp.dataset.invoKey==='invo_token' && v==='') return;  // blank = keep saved secret
+    if((inp.dataset.invoKey==='invo_token'||inp.dataset.invoKey==='invo_refresh_token') && v==='') return;  // blank = keep saved secret
     setSetting(inp.dataset.invoKey, v);
   });
 });

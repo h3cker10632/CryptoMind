@@ -105,7 +105,29 @@ def _cfg() -> PollerConfig:
         top_n=int(s["invo_top_n"]),
         interval_sec=float(s["invo_interval_sec"]),
         out_path=SNAP_PATH,
+        refresh_path=s.get("invo_refresh_path", ""),
+        refresh_token=s.get("invo_refresh_token", ""),
+        refresh_body=s.get("invo_refresh_body", ""),
+        token_json_path=s.get("invo_token_path", "access_token") or "access_token",
+        refresh_rotates_path=s.get("invo_refresh_rotates_path", ""),
     )
+
+
+def _persist_tokens(access: str, refresh: str | None = None):
+    """Persist an auto-refreshed access token (and rotated refresh token, if any)
+    back into the git-ignored secret store, so it survives restarts."""
+    upd = {"invo_token": access}
+    if refresh:
+        upd["invo_refresh_token"] = refresh
+    try:
+        app_settings.update(upd)
+        db.log_event("system", "Invo access token auto-refreshed")
+    except Exception:                               # best-effort
+        pass
+
+
+def _make_poller() -> InvoPoller:
+    return InvoPoller(_cfg(), mapper=config_mapper, on_new_token=_persist_tokens)
 
 
 def _ready() -> str | None:
@@ -126,7 +148,7 @@ def peek_sync() -> dict:
     if err:
         return {"ok": False, "error": err}
     try:
-        p = InvoPoller(_cfg(), mapper=config_mapper)
+        p = _make_poller()
         import httpx
         s = app_settings.load()
         with httpx.Client() as c:
@@ -177,7 +199,7 @@ class _Collector:
                 "path": SNAP_PATH}
 
     async def _loop(self):
-        poller = InvoPoller(_cfg(), mapper=config_mapper)
+        poller = _make_poller()
         db.log_event("system", "Invo collector started")
         while self.running:
             try:

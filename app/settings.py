@@ -85,6 +85,14 @@ DEFAULTS = {
     "invo_map_long_value": "long",   # value of the side field that means LONG
     "invo_map_size": "sizeUsd",      # position notional (USD) field
     "invo_map_leverage": "",         # optional leverage field
+    # ---- optional auto token-refresh (so a short-lived JWT never stalls the
+    # collector). You capture the refresh call ONCE; we mint fresh access tokens
+    # on demand. Only a refresh token is stored — never your password. ----
+    "invo_refresh_path": "",         # refresh endpoint (path or full URL); blank = disabled
+    "invo_refresh_token": "",        # SECRET — long-lived refresh token
+    "invo_refresh_body": "",         # JSON body template w/ {refresh_token}; blank = send it as a Bearer header
+    "invo_token_path": "access_token",   # dotted path to the NEW access token in the refresh response
+    "invo_refresh_rotates_path": "",     # optional dotted path to a rotated refresh token (if the API rotates it)
     # study parameters:
     "invo_horizon_hours": 4.0,
     "invo_rank_decay": 1.0,
@@ -100,11 +108,13 @@ TEXT_KEYS = {
     "invo_map_list", "invo_map_id", "invo_map_score", "invo_map_positions",
     "invo_map_asset", "invo_map_side", "invo_map_long_value",
     "invo_map_size", "invo_map_leverage",
+    "invo_refresh_path", "invo_refresh_body", "invo_token_path",
+    "invo_refresh_rotates_path",
 }
 
 # Secret settings: stored, but MASKED in the public payload and never clobbered
 # by an empty save (only overwritten when a new non-empty value is supplied).
-SECRET_KEYS = {"invo_token", "llm_api_key"}
+SECRET_KEYS = {"invo_token", "invo_refresh_token", "llm_api_key"}
 
 # Float settings: (min, max) inclusive clamp.
 FLOAT_KEYS = {
