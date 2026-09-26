@@ -272,7 +272,7 @@ def run_study_sync() -> dict:
             os.remove(ptmp)
         except OSError:
             pass
-    rep["verdict"] = _study._verdict(rep.get("pooled", {}))
+    rep["verdict"] = _study._verdict(rep.get("pooled", {}), rep.get("diagnostics"))
     db.log_event("system", "Invo edge study run",
                  {"verdict": rep["verdict"], "pooled": rep.get("pooled", {})})
     return {"ok": True, **rep}

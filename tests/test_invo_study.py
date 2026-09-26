@@ -71,3 +71,37 @@ def test_stats_primitives():
     assert study.mutual_info(x, y) > 0.0
     # partial IC of x vs y controlling for y itself -> ~0
     assert abs(study.partial_ic(x, y, y.reshape(-1, 1))) < 0.2
+
+
+def test_verdict_pinpoints_zero_positions(tmp_path):
+    """A leaderboard with traders but no positions must produce a SPECIFIC
+    verdict naming the cause, not an opaque 'NO DATA'."""
+    import json
+    from tools.invo_signal import run_study
+    snaps = [{"ts": 1789435352.0 + i * 60,
+              "traders": [{"id": "t1", "rank": 1, "score": 0.5, "positions": []}]}
+             for i in range(174)]
+    prices = {"BTC": [[1789435352.0 + j * 60, 100 + j * 0.1] for j in range(400)]}
+    sp, pp = str(tmp_path / "s.json"), str(tmp_path / "p.json")
+    json.dump(snaps, open(sp, "w")); json.dump(prices, open(pp, "w"))
+    rep = run_study.run(sp, pp, horizon_hours=1.0)
+    assert rep["diagnostics"]["positions_total"] == 0
+    assert rep["diagnostics"]["aligned_pairs"] == 0
+    v = run_study._verdict(rep["pooled"], rep["diagnostics"])
+    assert "ZERO positions" in v
+
+
+def test_verdict_pinpoints_asset_mismatch(tmp_path):
+    import json
+    from tools.invo_signal import run_study
+    snaps = [{"ts": 1789435352.0 + i * 60,
+              "traders": [{"id": "t1", "rank": 1, "score": 0.8,
+                           "positions": [{"asset": "ETH", "direction": 1,
+                                          "notional": 1000.0}]}]}
+             for i in range(50)]
+    prices = {"BTC": [[1789435352.0 + j * 60, 100 + j * 0.1] for j in range(400)]}
+    sp, pp = str(tmp_path / "s.json"), str(tmp_path / "p.json")
+    json.dump(snaps, open(sp, "w")); json.dump(prices, open(pp, "w"))
+    rep = run_study.run(sp, pp, horizon_hours=1.0)
+    v = run_study._verdict(rep["pooled"], rep["diagnostics"])
+    assert "don't match" in v and "ETH" in v
