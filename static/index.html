@@ -901,6 +901,12 @@ async function refresh(){
       'active gate':(evoRep&&evoRep.gate)
         ?('trades≥'+evoRep.gate.min_oos_trades+', +wins≥'+(evoRep.gate.min_frac_positive*100).toFixed(0)
           +'%, DSR&gt;'+evoRep.gate.dsr_min):'—',
+      'best DSR seen':(evoRep&&evoRep.best_observed_dsr!=null)
+        ?(evoRep.best_observed_dsr.toFixed(3)
+          +(evoRep.gate&&evoRep.best_observed_dsr<=evoRep.gate.dsr_min
+            ?' <span class="warn">(below gate)</span>':'')):'—',
+      'best pooled Sharpe seen':(evoRep&&evoRep.best_observed_pooled_sharpe!=null)
+        ?evoRep.best_observed_pooled_sharpe.toFixed(2):'—',
       'promoted':evoRep?(evoRep.promoted?'<span class="ok">yes</span>':'<span class="bad">no (failed OOS)</span>'):'—'});
 
     $('#bandit-regime').textContent='('+(ln.regime||'unknown')+')';

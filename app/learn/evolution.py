@@ -577,6 +577,11 @@ class Evolution:
         # the operator can SEE which bar is the blocker before lowering it.
         fails = {"too_few_trades": 0, "not_robust": 0,
                  "oos_negative": 0, "weak_sharpe": 0}
+        # best metrics ACTUALLY OBSERVED across the front (even if nothing was
+        # promoted), so the operator can calibrate ga_dsr_min to real data
+        # instead of guessing how far below the bar the challengers landed.
+        best_obs_dsr = None
+        best_obs_pooled = None
         for g in front:
             train_res = simulate(g, train)
             wf = walk_forward_eval(g, candles, n_windows=5, embargo=70)
@@ -596,6 +601,11 @@ class Evolution:
             # the OOS trades, not by a return magnitude threshold.
             dsr_ok = ((dsr is not None and dsr > DSR_MIN) or
                       (dsr is None and wf["pooled_sharpe"] > FALLBACK_SHARPE_MIN and dd_ok))
+            if dsr is not None and (best_obs_dsr is None or dsr > best_obs_dsr):
+                best_obs_dsr = dsr
+            _ps = wf.get("pooled_sharpe")
+            if _ps is not None and (best_obs_pooled is None or _ps > best_obs_pooled):
+                best_obs_pooled = _ps
             if not enough:
                 fails["too_few_trades"] += 1
             elif not robust:
@@ -640,6 +650,10 @@ class Evolution:
                      "fallback_sharpe_min": FALLBACK_SHARPE_MIN,
                      "max_wf_drawdown": MAX_WF_DD},
             "gate_fail_breakdown": fails,
+            "best_observed_dsr": (round(best_obs_dsr, 4)
+                                  if best_obs_dsr is not None else None),
+            "best_observed_pooled_sharpe": (round(best_obs_pooled, 4)
+                                            if best_obs_pooled is not None else None),
             "ts": time.time(),
         }
         if promoted:
