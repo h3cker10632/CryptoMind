@@ -561,9 +561,22 @@ class Evolution:
             if len(front) >= 6:
                 break
 
-        MIN_OOS_TRADES = 20
-        MIN_FRAC_POSITIVE = 0.60          # profitable in >=60% of OOS windows
+        # Promotion-gate thresholds are OPERATOR-TUNABLE (dashboard → Evolution).
+        # They default to strict anti-overfit values; lowering them lets the GA
+        # promote on thinner / less certain evidence — a deliberate, observable
+        # operator choice. The ONE bar that is NOT tunable is oos_ok: a genome
+        # that is net-losing out-of-sample is never promoted, at any setting.
+        from ..tunables import tv
+        MIN_OOS_TRADES = int(tv("ga_min_oos_trades"))
+        MIN_FRAC_POSITIVE = float(tv("ga_min_frac_positive"))   # positive OOS windows
+        DSR_MIN = float(tv("ga_dsr_min"))
+        FALLBACK_SHARPE_MIN = float(tv("ga_fallback_sharpe_min"))
+        MAX_WF_DD = float(tv("ga_max_wf_drawdown"))
         candidates = []                   # (score, genome, wf, train_res, dsr)
+        # per-gate diagnostics: tally the FIRST gate each front genome fails, so
+        # the operator can SEE which bar is the blocker before lowering it.
+        fails = {"too_few_trades": 0, "not_robust": 0,
+                 "oos_negative": 0, "weak_sharpe": 0}
         for g in front:
             train_res = simulate(g, train)
             wf = walk_forward_eval(g, candles, n_windows=5, embargo=70)
@@ -577,12 +590,20 @@ class Evolution:
             enough = wf["total_trades"] >= MIN_OOS_TRADES
             robust = wf["frac_positive"] >= MIN_FRAC_POSITIVE
             oos_ok = wf["median_return"] > 0 and wf["mean_return"] > 0
-            dd_ok = wf["worst_drawdown"] <= 0.15
+            dd_ok = wf["worst_drawdown"] <= MAX_WF_DD
             # SCALE-FREE gate: under risk-parity sizing raw returns are tiny
             # fractions, so we judge quality by the deflated / pooled Sharpe of
             # the OOS trades, not by a return magnitude threshold.
-            dsr_ok = ((dsr is not None and dsr > 0.90) or
-                      (dsr is None and wf["pooled_sharpe"] > 0.5 and dd_ok))
+            dsr_ok = ((dsr is not None and dsr > DSR_MIN) or
+                      (dsr is None and wf["pooled_sharpe"] > FALLBACK_SHARPE_MIN and dd_ok))
+            if not enough:
+                fails["too_few_trades"] += 1
+            elif not robust:
+                fails["not_robust"] += 1
+            elif not oos_ok:
+                fails["oos_negative"] += 1
+            elif not dsr_ok:
+                fails["weak_sharpe"] += 1
             ok = bool(enough and robust and oos_ok and dsr_ok)
             if ok:
                 # rank promotable genomes by pooled OOS Sharpe (scale-free)
@@ -614,7 +635,11 @@ class Evolution:
             "n_candidates_passing": len(candidates),
             "promoted": promoted,
             "gate": {"min_oos_trades": MIN_OOS_TRADES,
-                     "min_frac_positive": MIN_FRAC_POSITIVE},
+                     "min_frac_positive": MIN_FRAC_POSITIVE,
+                     "dsr_min": DSR_MIN,
+                     "fallback_sharpe_min": FALLBACK_SHARPE_MIN,
+                     "max_wf_drawdown": MAX_WF_DD},
+            "gate_fail_breakdown": fails,
             "ts": time.time(),
         }
         if promoted:

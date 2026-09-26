@@ -888,6 +888,19 @@ async function refresh(){
         ?(evoRep.walk_forward.frac_positive*100).toFixed(0)+'%':'—',
       'OOS pooled Sharpe':(evoRep&&evoRep.pooled_oos_sharpe!=null)?evoRep.pooled_oos_sharpe.toFixed(2):'—',
       'portfolio':(evoRep&&evoRep.portfolio_size!=null)?evoRep.portfolio_size:'—',
+      'candidates passing':(evoRep&&evoRep.n_candidates_passing!=null)
+        ?evoRep.n_candidates_passing+' / '+(evoRep.front_size||'?'):'—',
+      'blocked by':(evoRep&&evoRep.gate_fail_breakdown)
+        ?(function(fb){
+            const lbl={too_few_trades:'too few trades',not_robust:'inconsistent OOS',
+                       oos_negative:'net-losing OOS',weak_sharpe:'weak Sharpe'};
+            const parts=Object.entries(fb).filter(([,n])=>n>0)
+              .map(([k,n])=>(lbl[k]||k)+' ×'+n);
+            return parts.length?'<span class="warn">'+parts.join(', ')+'</span>':'—';})(evoRep.gate_fail_breakdown)
+        :'—',
+      'active gate':(evoRep&&evoRep.gate)
+        ?('trades≥'+evoRep.gate.min_oos_trades+', +wins≥'+(evoRep.gate.min_frac_positive*100).toFixed(0)
+          +'%, DSR&gt;'+evoRep.gate.dsr_min):'—',
       'promoted':evoRep?(evoRep.promoted?'<span class="ok">yes</span>':'<span class="bad">no (failed OOS)</span>'):'—'});
 
     $('#bandit-regime').textContent='('+(ln.regime||'unknown')+')';
@@ -1229,6 +1242,7 @@ function drawTwoLines(canvas,a,b,ca,cb){
 // ---------- Settings modal ----------
 const GROUP_TITLES={risk:'🛡 Risk & position limits',costs:'💸 Costs (fees & slippage)',
   signals:'📶 Signals & exploration',learning:'🧠 Learning',
+  evolution:'🧬 Evolution (GA promotion gate)',
   stance:'🎚 Stance presets',hedge:'⚖️ Market-neutral pair hedge'};
 let _tunMeta=null,_tunTimer=null,_tunPending={};
 async function openSettings(){

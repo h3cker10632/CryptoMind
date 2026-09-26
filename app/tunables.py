@@ -155,6 +155,30 @@ TUNABLES = {
                            "half-life). Lower = adapts faster to regime change"),
     "evolve_every_sec":  T(1200, 120, 21600, 60, "learning", "GA cadence (s)",
                            "Seconds between genetic-evolution runs (universe rotates)", True),
+    # ---- evolution (GA champion promotion gate) ----
+    # These are the bars a challenger genome must clear on a purged walk-forward
+    # to be promoted to live voting. They are strict on purpose (anti-overfit);
+    # lower them to evolve more readily, at the cost of promoting on thinner /
+    # less certain evidence. NOTE: a net-LOSING out-of-sample genome is never
+    # promoted regardless of these — that floor is hardcoded.
+    "ga_min_oos_trades": T(20, 4, 100, 1, "evolution", "Min OOS trades",
+                           "A challenger must make at least this many trades across the "
+                           "purged walk-forward windows to be judged (evidence floor). "
+                           "Lower = evolve on thinner evidence.", True),
+    "ga_min_frac_positive": T(0.60, 0.0, 1.0, 0.05, "evolution", "Min positive OOS windows",
+                           "Fraction of out-of-sample windows the challenger must be "
+                           "profitable in (0.6 = 3 of 5). Lower = accept less consistency"),
+    "ga_dsr_min": T(0.90, 0.0, 0.999, 0.01, "evolution", "Deflated-Sharpe gate",
+                           "Probability — after pricing in the GA's multiple-testing bias "
+                           "(all pop×gens genomes) — that the challenger's true OOS Sharpe "
+                           "is positive. 0.90 is strict/anti-overfit; lower to promote more "
+                           "readily"),
+    "ga_fallback_sharpe_min": T(0.5, 0.0, 3.0, 0.1, "evolution", "Fallback Sharpe gate",
+                           "When too few trades exist to compute a deflated Sharpe, require "
+                           "at least this pooled OOS Sharpe instead"),
+    "ga_max_wf_drawdown": T(0.15, 0.02, 0.60, 0.01, "evolution", "Max OOS drawdown",
+                           "Worst-window drawdown a challenger may show under the fallback "
+                           "Sharpe gate"),
     "oi_growth_threshold": T(0.15, 0.02, 1.0, 0.01, "learning", "OI-growth discovery",
                            "24h open-interest growth (as a fraction) that flags a "
                            "coin as a capital-flow discovery candidate and boosts "
