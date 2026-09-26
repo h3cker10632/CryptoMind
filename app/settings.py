@@ -26,6 +26,14 @@ DEFAULTS = {
     # directional vote that the bandit weights like any other strategy — it is
     # never the driver. Off by default: no key, no cost, no effect.
     "llm_advisor_enabled": False,
+    # LLM advisor credentials/config, settable from the dashboard (no file edit).
+    # llm_api_key is a SECRET (stored in .secrets.json, masked in the API, never
+    # committed). Blank model/base fall back to the Gemini defaults in the
+    # advisor. Env vars (CRYPTOMIND_LLM_KEY/GEMINI_API_KEY/OPENAI_API_KEY,
+    # CRYPTOMIND_LLM_MODEL, CRYPTOMIND_LLM_BASE) still override these if set.
+    "llm_api_key": "",                # SECRET
+    "llm_model": "",                  # blank = advisor default (gemini-2.5-flash)
+    "llm_api_base": "",               # blank = advisor default (Gemini OpenAI-compat)
     # Optional ML-model advisor sleeve. When True (and a validated crypto_ml_lab
     # artifact exists at model_artifact/ or $CRYPTOMIND_MODEL_DIR) the advisor
     # contributes ONE directional vote that the bandit weights like any other
@@ -87,6 +95,7 @@ STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}
 
 # Free-text string settings (stored verbatim, trimmed).
 TEXT_KEYS = {
+    "llm_model", "llm_api_base",
     "invo_api_base", "invo_leaderboard_path", "invo_positions_tmpl",
     "invo_map_list", "invo_map_id", "invo_map_score", "invo_map_positions",
     "invo_map_asset", "invo_map_side", "invo_map_long_value",
@@ -95,7 +104,7 @@ TEXT_KEYS = {
 
 # Secret settings: stored, but MASKED in the public payload and never clobbered
 # by an empty save (only overwritten when a new non-empty value is supplied).
-SECRET_KEYS = {"invo_token"}
+SECRET_KEYS = {"invo_token", "llm_api_key"}
 
 # Float settings: (min, max) inclusive clamp.
 FLOAT_KEYS = {

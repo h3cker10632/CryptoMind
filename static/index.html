@@ -137,7 +137,7 @@
     <div class="sw"></div>
     <span>pair hedge: <b id="tg-hedge-label">on</b></span>
   </div>
-  <div class="toggle" id="tg-llm" title="Optional LLM advisor: adds ONE directional vote the bandit weights like any other strategy (never the driver). Uses Gemini (gemini-2.5-flash). Needs a key in llm_key.txt or CRYPTOMIND_LLM_KEY / GEMINI_API_KEY — without a key it stays inert.">
+  <div class="toggle" id="tg-llm" title="Optional LLM advisor: adds ONE directional vote the bandit weights like any other strategy (never the driver). Uses Gemini (gemini-2.5-flash). Set the API key in Settings → LLM advisor (or CRYPTOMIND_LLM_KEY / GEMINI_API_KEY / llm_key.txt) — without a key it stays inert.">
     <div class="sw"></div>
     <span>LLM advisor: <b id="tg-llm-label">off</b></span>
   </div>
@@ -466,6 +466,16 @@
         </div>
       </div>
       <div style="color:var(--dim);font-size:11.5px;padding:2px 0 4px">Reports are written to the <code>reports/</code> folder (newest 288 kept); the same document is always available on demand from <code>GET /api/export</code>.</div>
+    </div>
+    <div class="sm-group">
+      <h3>🧠 LLM advisor <b style="font-weight:400;color:var(--dim);font-size:11px">— one weighted vote, never the driver</b></h3>
+      <div style="color:var(--dim);font-size:11.5px;padding:2px 0 6px">Set the API key here (no file editing). It's stored locally in <code>.secrets.json</code>, masked below, and never committed. Blank model/base use the Gemini defaults. Turn the sleeve on with the <b>LLM advisor</b> toggle at the top of the page; watch what it does on the <b>🧠 LLM Advisor</b> tab. Environment variables, if set, still take precedence.</div>
+      <div class="invo-grid">
+        <label>API key (secret)<input data-llm-key="llm_api_key" type="password" placeholder="paste key"></label>
+        <label>Model<input data-llm-key="llm_model" placeholder="gemini-2.5-flash"></label>
+        <label>API base URL<input data-llm-key="llm_api_base" placeholder="https://generativelanguage.googleapis.com/v1beta/openai"></label>
+      </div>
+      <div id="llm-cfg-status" style="font-size:11.5px;color:var(--dim);padding:6px 0 0"></div>
     </div>
     <div class="sm-group">
       <h3>🧪 Invo copy-signal study <b style="font-weight:400;color:var(--dim);font-size:11px">— measurement only, never auto-trades</b></h3>
@@ -960,7 +970,40 @@ function renderToggles(){
   }
   $('#autoexport-slider-wrap').style.opacity=ae?'1':'.45';
   renderInvo();
+  renderLLMCfg();
 }
+
+// ===== LLM advisor config (key/model/base) =====
+function renderLLMCfg(){
+  const s=window._settings; if(!s||!document.querySelector('[data-llm-key]'))return;
+  document.querySelectorAll('[data-llm-key]').forEach(inp=>{
+    if(document.activeElement===inp)return;            // don't fight the user typing
+    const k=inp.dataset.llmKey;
+    if(k==='llm_api_key'){                              // secret: never echo, just show saved-state
+      inp.value='';
+      inp.placeholder=s.llm_api_key_set?'•••••••• (saved — type to replace)':'paste key';
+    }else{
+      const v=s[k]; inp.value=(v===undefined||v===null)?'':v;
+    }
+  });
+  const st=$('#llm-cfg-status');
+  if(st){
+    const on=!!s.llm_advisor_enabled, keyed=!!s.llm_api_key_set;
+    const model=s.llm_model||'gemini-2.5-flash (default)';
+    st.innerHTML = (keyed?'🔑 key saved':'⚠ no key yet')
+      +' · sleeve '+(on?'<b style="color:var(--green,#6ee7a8)">on</b>':'off')
+      +' · model <code>'+model+'</code>'
+      +(keyed&&!on?' — flip the <b>LLM advisor</b> toggle up top to activate':'');
+  }
+}
+document.querySelectorAll('[data-llm-key]').forEach(inp=>{
+  inp.addEventListener('change',()=>{
+    const k=inp.dataset.llmKey; let v=inp.value;
+    if(k==='llm_api_key'){ if(v.trim()==='') return; v=v.trim(); }  // blank = keep saved secret
+    setSetting(k, v);
+    if(k==='llm_api_key') inp.value='';                             // clear the field after save
+  });
+});
 
 // ===== Invo copy-signal study =====
 let invoRunning=false;

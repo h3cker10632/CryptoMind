@@ -42,14 +42,28 @@ class LLMAdvisor:
     DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
     DEFAULT_MODEL = "gemini-2.5-flash"
 
+    @staticmethod
+    def _setting(key):
+        """Read one setting, returning None (never raising) if unavailable."""
+        try:
+            from .. import settings
+            v = settings.get(key)
+            return v if v not in (None, "") else None
+        except Exception:
+            return None
+
     @classmethod
     def _api_key(cls):
-        """Env first, then llm_key.txt (gitignored, same pattern as api_token.txt)."""
+        """Resolution order: env vars → dashboard Settings (.secrets.json) →
+        llm_key.txt (gitignored, same pattern as api_token.txt)."""
         env = (os.environ.get("CRYPTOMIND_LLM_KEY")
                or os.environ.get("GEMINI_API_KEY")
                or os.environ.get("OPENAI_API_KEY"))
         if env:
             return env.strip()
+        setting = cls._setting("llm_api_key")
+        if setting:
+            return str(setting).strip()
         try:
             if os.path.exists(cls.KEY_PATH):
                 with open(cls.KEY_PATH) as f:
@@ -143,11 +157,15 @@ class LLMAdvisor:
 
     @classmethod
     def _base_url(cls):
-        return (os.environ.get("CRYPTOMIND_LLM_BASE") or cls.DEFAULT_BASE).rstrip("/")
+        return (os.environ.get("CRYPTOMIND_LLM_BASE")
+                or cls._setting("llm_api_base")
+                or cls.DEFAULT_BASE).rstrip("/")
 
     @classmethod
     def _model(cls):
-        return os.environ.get("CRYPTOMIND_LLM_MODEL") or cls.DEFAULT_MODEL
+        return (os.environ.get("CRYPTOMIND_LLM_MODEL")
+                or cls._setting("llm_model")
+                or cls.DEFAULT_MODEL)
 
     async def _ask_model(self, ctx):
         """Query Gemini (OpenAI-compatible chat) for a directional lean.
@@ -167,23 +185,47 @@ class LLMAdvisor:
             "your directional bias (-1 strong short … +1 strong long, 0 = no "
             "edge). Be conservative; prefer 0 when signals conflict."
         )
-        payload = {
+        payload_base = {
             "model": model,
             "temperature": 0.2,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": json.dumps(ctx)},
             ],
         }
+        # Gemini's OpenAI-compat endpoint often 400s on response_format/json_object.
+        # Try WITH it first (stricter JSON where supported); on a 400 retry WITHOUT
+        # it — _parse tolerates fenced/loose JSON either way. Any HTTP error's real
+        # body is captured into last_error so the operator sees the actual reason.
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post(
-                f"{base}/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key()}"},
-                json=payload)
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
-        return self._parse(content)
+            for with_json_mode in (True, False):
+                payload = dict(payload_base)
+                if with_json_mode:
+                    payload["response_format"] = {"type": "json_object"}
+                try:
+                    r = await client.post(
+                        f"{base}/chat/completions",
+                        headers={"Authorization": f"Bearer {self._api_key()}"},
+                        json=payload)
+                    r.raise_for_status()
+                    content = r.json()["choices"][0]["message"]["content"]
+                    self.last_error = ""              # success clears prior error
+                    return self._parse(content)
+                except httpx.HTTPStatusError as e:
+                    body = ""
+                    try:
+                        body = e.response.text[:300]
+                    except Exception:
+                        body = ""
+                    self.last_error = f"HTTP {e.response.status_code}: {body}"
+                    # a 400 while json-mode was on → retry once without it
+                    if e.response.status_code == 400 and with_json_mode:
+                        continue
+                    return None, ""
+                except Exception as e:               # network/timeout/parse
+                    self.last_error = str(e)[:200]
+                    return None, ""
+        return None, ""
 
     @staticmethod
     def _parse(content):
