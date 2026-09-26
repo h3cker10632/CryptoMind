@@ -157,9 +157,17 @@ class LLMAdvisor:
 
     @classmethod
     def _base_url(cls):
-        return (os.environ.get("CRYPTOMIND_LLM_BASE")
+        base = (os.environ.get("CRYPTOMIND_LLM_BASE")
                 or cls._setting("llm_api_base")
-                or cls.DEFAULT_BASE).rstrip("/")
+                or cls.DEFAULT_BASE).strip().rstrip("/")
+        # Be forgiving about a base that already includes the call path: a user
+        # pasting the FULL endpoint (…/chat/completions) is a classic cause of a
+        # bare 404 once we append /chat/completions again. Strip it back off.
+        for suffix in ("/chat/completions", "/completions", "/v1/chat/completions"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        return base.rstrip("/")
 
     @classmethod
     def _model(cls):
@@ -202,9 +210,10 @@ class LLMAdvisor:
                 payload = dict(payload_base)
                 if with_json_mode:
                     payload["response_format"] = {"type": "json_object"}
+                url = f"{base}/chat/completions"
                 try:
                     r = await client.post(
-                        f"{base}/chat/completions",
+                        url,
                         headers={"Authorization": f"Bearer {self._api_key()}"},
                         json=payload)
                     r.raise_for_status()
@@ -217,9 +226,17 @@ class LLMAdvisor:
                         body = e.response.text[:300]
                     except Exception:
                         body = ""
-                    self.last_error = f"HTTP {e.response.status_code}: {body}"
+                    code = e.response.status_code
+                    # include model + URL so a 404 (wrong path/model) is diagnosable
+                    # at a glance instead of a bare status line with no body.
+                    detail = body or "(empty body)"
+                    hint = ""
+                    if code == 404:
+                        hint = (f" — model '{model}' not found, or wrong base URL "
+                                f"({base}). Check Settings → LLM advisor.")
+                    self.last_error = f"HTTP {code} at {url}: {detail}{hint}"
                     # a 400 while json-mode was on → retry once without it
-                    if e.response.status_code == 400 and with_json_mode:
+                    if code == 400 and with_json_mode:
                         continue
                     return None, ""
                 except Exception as e:               # network/timeout/parse

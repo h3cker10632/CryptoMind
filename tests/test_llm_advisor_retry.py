@@ -74,3 +74,26 @@ def test_success_parses_fenced_json(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client(responder))
     lean, why = asyncio.run(advisor._ask_model({"product": "ETH-USD"}))
     assert lean == -0.7 and why == "breakdown"
+
+
+def test_base_url_strips_accidental_call_path(monkeypatch):
+    from app import settings as s
+    # user pastes the FULL endpoint into the base URL field
+    monkeypatch.setattr(s, "get", lambda k: {
+        "llm_api_base": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "llm_model": "", "llm_api_key": "",
+    }.get(k, ""))
+    monkeypatch.delenv("CRYPTOMIND_LLM_BASE", raising=False)
+    assert advisor._base_url() == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
+def test_404_error_names_model_and_url(monkeypatch):
+    def responder(payload):
+        return _Resp(404, text="")           # bare 404, empty body (wrong path signature)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client(responder))
+    lean, why = asyncio.run(advisor._ask_model({"product": "BTC-USD"}))
+    assert lean is None
+    assert "HTTP 404" in advisor.last_error
+    assert "chat/completions" in advisor.last_error      # the actual URL is shown
+    assert "not found" in advisor.last_error             # actionable hint
+    assert "(empty body)" in advisor.last_error          # empty body made explicit
