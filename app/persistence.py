@@ -174,6 +174,7 @@ def capture():
             "champions": evolution.champions,
             "champion_portfolios": evolution.champion_portfolios,
             "champion_reports": evolution.champion_reports,
+            "attempt_reports": evolution.attempt_reports,
             "last_attempt": evolution.last_attempt,
         },
         "exit_advisor": _capture_exit_advisor(),
@@ -413,6 +414,7 @@ def load():
         evolution.champions = e.get("champions", {}) or {}
         evolution.champion_portfolios = e.get("champion_portfolios", {}) or {}
         evolution.champion_reports = e.get("champion_reports", {}) or {}
+        evolution.attempt_reports = e.get("attempt_reports", {}) or {}
         evolution.last_attempt = e.get("last_attempt", {}) or {}
         # migrate old single-champion format
         if not evolution.champions and e.get("champion"):

@@ -241,6 +241,10 @@
       <div>
         <h2>Genetic evolution <button id="btn-evolve" style="padding:2px 8px;font-size:11px">▶ run now</button></h2>
         <div id="evo-stats" style="font-size:12.5px"></div>
+        <h2 style="margin-top:10px">Per-product gate diagnostics <span style="text-transform:none;color:var(--muted);font-weight:400">— best DSR seen vs the gate, across every attempted coin</span></h2>
+        <table id="tbl-evo-attempts" style="font-size:12px"><thead><tr>
+          <th>Product</th><th title="Highest deflated Sharpe observed on the front (probability true OOS Sharpe > 0, after multiple-testing deflation)">Best DSR seen</th><th title="Highest raw pooled OOS Sharpe observed (before deflation)">Best pooled Sharpe</th><th>Blocked by</th><th>Promoted</th>
+        </tr></thead><tbody></tbody></table>
       </div>
     </div>
     <h2 style="margin-top:12px">Bandit posteriors — current regime <span id="bandit-regime" style="text-transform:none;color:var(--accent)"></span></h2>
@@ -908,6 +912,27 @@ async function refresh(){
       'best pooled Sharpe seen':(evoRep&&evoRep.best_observed_pooled_sharpe!=null)
         ?evoRep.best_observed_pooled_sharpe.toFixed(2):'—',
       'promoted':evoRep?(evoRep.promoted?'<span class="ok">yes</span>':'<span class="bad">no (failed OOS)</span>'):'—'});
+
+    // per-product gate diagnostics table (best DSR seen across the whole universe)
+    const attempts=evo.attempt_reports||{};
+    const gateDsr=(evoRep&&evoRep.gate)?evoRep.gate.dsr_min:0.90;
+    const flbl={too_few_trades:'too few trades',not_robust:'inconsistent OOS',
+                oos_negative:'net-losing OOS',weak_sharpe:'weak Sharpe'};
+    const arows=Object.entries(attempts).sort((a,b)=>{
+      const da=a[1].best_observed_dsr, db=b[1].best_observed_dsr;
+      return (db==null?-1:db)-(da==null?-1:da);});
+    $('#tbl-evo-attempts tbody').innerHTML=arows.length?arows.map(([p,r])=>{
+      const d=r.best_observed_dsr;
+      const dCell=(d==null)?'—'
+        :'<span class="'+(d>gateDsr?'ok':(d>=gateDsr*0.8?'warn':'bad'))+'">'+d.toFixed(3)+'</span>';
+      const ps=r.best_observed_pooled_sharpe;
+      const fb=r.gate_fail_breakdown||{};
+      const blk=Object.entries(fb).filter(([,n])=>n>0).map(([k,n])=>(flbl[k]||k)+' ×'+n).join(', ');
+      return `<tr><td>${p.split('-')[0]}</td><td class="mono">${dCell}</td>
+        <td class="mono">${ps==null?'—':ps.toFixed(2)}</td>
+        <td>${r.promoted?'—':(blk||'—')}</td>
+        <td>${r.promoted?'<span class="ok">yes</span>':'<span class="bad">no</span>'}</td></tr>`;
+    }).join(''):'<tr><td colspan="5" style="color:var(--muted)">No GA runs yet — hit ▶ run now to populate.</td></tr>';
 
     $('#bandit-regime').textContent='('+(ln.regime||'unknown')+')';
     const post=ln.bandit_posteriors||{}, sstats=ln.strategy_stats||{};

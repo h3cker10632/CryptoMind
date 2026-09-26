@@ -447,6 +447,9 @@ class Evolution:
         self.champions = {}           # product -> promoted genome (legacy: best)
         self.champion_portfolios = {} # product -> top-k promoted genomes
         self.champion_reports = {}    # product -> validation report
+        self.attempt_reports = {}     # product -> compact LAST-attempt diagnostics
+                                      # (kept for EVERY run, promoted or not, so the
+                                      # operator can compare best-DSR-seen per product)
         self.last_attempt = {}        # product -> ts of last GA run (any outcome)
         self.history = []             # per-generation best fitness (last run)
         self.status = "idle"
@@ -676,6 +679,17 @@ class Evolution:
                          f"(front {len(front)}, 0 candidates cleared the gate); "
                          f"no live vote until a genome re-validates.")
         self.last_run = report
+        # compact per-product diagnostics for EVERY attempt (promoted or not),
+        # so the dashboard can show best-DSR-seen across the whole universe.
+        self.attempt_reports[product] = {
+            "promoted": report["promoted"],
+            "best_observed_dsr": report["best_observed_dsr"],
+            "best_observed_pooled_sharpe": report["best_observed_pooled_sharpe"],
+            "gate_fail_breakdown": report["gate_fail_breakdown"],
+            "n_candidates_passing": report["n_candidates_passing"],
+            "front_size": report["front_size"],
+            "ts": report["ts"],
+        }
         self.status = "done"
         return report
 
@@ -691,6 +705,7 @@ class Evolution:
                 "portfolio_sizes": {p: len(g) for p, g in
                                     self.champion_portfolios.items()},
                 "champion_reports": self.champion_reports,
+                "attempt_reports": self.attempt_reports,
                 "champion": self.champion,                # legacy field
                 "champion_report": self.champion_reports.get("BTC-USD"),
                 "last_run": self.last_run}
