@@ -191,6 +191,7 @@
 <div class="tabs">
   <button class="tab-btn active" data-view="dash">📊 Dashboard</button>
   <button class="tab-btn" data-view="ml">🔬 ML Live — watch it learn</button>
+  <button class="tab-btn" data-view="llm">🧠 LLM Advisor — what it sees</button>
 </div>
 
 <div class="grid" id="view-dash">
@@ -401,6 +402,43 @@
   <div class="card span12">
     <h2>Live prediction per coin <span style="text-transform:none;color:var(--dim);font-size:11px">(forward-return lean the net emits right now)</span></h2>
     <div id="ml-perproduct" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div class="grid" id="view-llm" style="display:none">
+  <div class="card span12">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">🧠 LLM advisor — what it sees &amp; how it votes</h2>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+        <span id="llm-state" class="badge"></span>
+        <span id="llm-model" style="color:var(--dim)"></span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:10px" id="llm-kpis"></div>
+    <div id="llm-inert-note" style="color:#e8c07c;font-size:12px;margin-top:8px;display:none"></div>
+    <div style="color:var(--dim);font-size:11.5px;margin-top:8px">
+      The advisor is ONE vote among many sleeves — the bandit weights it like any other strategy, never the driver.
+      Below is the exact numeric context each coin is shown, the directional lean + reasoning the model returned, how
+      fresh that opinion is, and how much say the bandit is currently giving the <code>llm</code> arm. Updates every 3s while this tab is open.
+    </div>
+  </div>
+
+  <div class="card span5">
+    <h2>What the LLM sees <span style="text-transform:none;color:var(--dim);font-size:11px">(context for <select id="llm-product" style="font-size:11px"></select>)</span></h2>
+    <div id="llm-context" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card span7">
+    <h2>What the LLM said <span style="text-transform:none;color:var(--dim);font-size:11px">(its opinion on this coin)</span></h2>
+    <div id="llm-verdict" style="font-size:13px;margin-top:6px"></div>
+    <canvas id="llm-gauge" height="90" style="margin-top:8px"></canvas>
+    <div id="llm-why" style="color:#cdd6e4;font-size:12px;margin-top:8px;line-height:1.5"></div>
+    <div id="llm-fresh" style="color:var(--dim);font-size:11.5px;margin-top:6px"></div>
+  </div>
+
+  <div class="card span12">
+    <h2>Per-coin lean &amp; trading impact <span style="text-transform:none;color:var(--dim);font-size:11px">(is this opinion currently feeding the bandit?)</span></h2>
+    <div id="llm-table" style="margin-top:6px"></div>
   </div>
 </div>
 
@@ -1188,7 +1226,9 @@ function showView(v){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
   $('#view-dash').style.display = v==='dash'?'grid':'none';
   $('#view-ml').style.display   = v==='ml'?'grid':'none';
+  $('#view-llm').style.display  = v==='llm'?'grid':'none';
   if(v==='ml') refreshML();
+  if(v==='llm') refreshLLM();
 }
 document.querySelectorAll('.tab-btn').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 
@@ -1297,6 +1337,107 @@ async function refreshML(){
     : '<span style="color:var(--dim)">no live predictions yet.</span>';
 }
 setInterval(()=>{ if(_mlView==='ml') refreshML(); }, 3000);
+
+// ===== LLM advisor tab =====
+let _llmProduct=null;
+const LLM_CTX_LABELS={price:'price',rsi:'RSI',macd_delta:'MACD Δ',mom_1h:'momentum 1h',
+  mom_4h:'momentum 4h',mtf_align:'multi-TF align',vol_ratio:'volume ratio',
+  asset_sentiment:'news sentiment',regime:'regime'};
+function llmAge(sec){
+  if(sec==null) return 'never';
+  sec=Math.floor(sec);
+  if(sec<60) return sec+'s ago';
+  const m=Math.floor(sec/60); return m<60?m+'m ago':Math.floor(m/60)+'h ago';
+}
+async function refreshLLM(){
+  let d; try{ d=await j('/api/llm_live'); }catch(e){return;}
+  _llmProduct=_llmProduct||d.product||(d.products||[])[0];
+  // state badge
+  const on=d.enabled, cfg=d.configured;
+  const badge=$('#llm-state');
+  badge.textContent = !on?'OFF (toggle in Settings)':(cfg?'🟢 ON · configured':'🟡 ON · no key');
+  badge.style.color = !on?'#8b93a7':(cfg?'#8fd694':'#e8c07c');
+  $('#llm-model').textContent = (d.provider||'')+' · '+(d.model||'');
+  // inert note
+  const note=$('#llm-inert-note');
+  if(!on){note.style.display='block';note.textContent='⚠ The LLM advisor is OFF. Enable it in ⚙️ Settings → LLM advisor to start collecting opinions.';}
+  else if(!cfg){note.style.display='block';note.textContent='⚠ Enabled but no API key found — put a key in llm_key.txt (or CRYPTOMIND_LLM_KEY) and restart. It stays inert until then.';}
+  else if(d.last_error){note.style.display='block';note.style.color='#e88';note.textContent='⚠ Last API error: '+d.last_error+' — check the key/quota.';}
+  else {note.style.display='none';note.style.color='#e8c07c';}
+  // KPIs
+  const wtxt = d.arm_weight==null?'—':fmtPct(d.arm_weight);
+  const wcol = d.arm_weight==null?'var(--dim)':(d.arm_weight>=(d.arm_weight_avg||0)?'#2ecc71':'#e8955a');
+  const active=Object.values(d.per_product||{}).filter(x=>x.contributing).length;
+  $('#llm-kpis').innerHTML =
+    kpi('status', !on?'off':(cfg?'live':'no key'), !on?'var(--dim)':(cfg?'#2ecc71':'#e8c07c'))+
+    kpi('API calls', d.calls)+
+    kpi('bandit weight', wtxt, wcol)+
+    kpi('arm rank', d.arm_rank?('#'+d.arm_rank+' / '+d.n_arms):'—')+
+    kpi('coins advised', active+' / '+(d.products||[]).length)+
+    kpi('last refresh', llmAge(d.last_refresh?d.now-d.last_refresh:null));
+  // product selector
+  const sel=$('#llm-product');
+  if(sel && sel.options.length!==(d.products||[]).length){
+    sel.innerHTML=(d.products||[]).map(p=>`<option value="${p}"${p===_llmProduct?' selected':''}>${p}</option>`).join('');
+    sel.onchange=()=>{_llmProduct=sel.value;refreshLLM();};
+  }
+  const pp=(d.per_product||{})[_llmProduct]||{};
+  // what it sees (context)
+  const ctx=pp.context, cbox=$('#llm-context');
+  if(!ctx){cbox.innerHTML='<span style="color:var(--dim)">no context yet — waiting for market data for this coin…</span>';}
+  else{
+    cbox.innerHTML='<table style="width:100%;font-size:12.5px"><tbody>'+
+      Object.keys(LLM_CTX_LABELS).filter(k=>k in ctx).map(k=>{
+        let v=ctx[k]; if(typeof v==='number') v=(Math.abs(v)<1&&v!==0)?v.toFixed(4):v;
+        return `<tr><td style="color:var(--dim);padding:3px 0">${LLM_CTX_LABELS[k]}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--text)">${v}</td></tr>`;
+      }).join('')+'</tbody></table>'+
+      '<div style="color:var(--dim);font-size:10.5px;margin-top:6px">This exact JSON is what the model is prompted with — nothing else.</div>';
+  }
+  // what it said (gauge + verdict + why)
+  const lean=pp.lean;
+  if(lean==null){
+    $('#llm-verdict').innerHTML='<span style="color:var(--dim)">no opinion cached for this coin yet.</span>';
+    drawLLMGauge(null); $('#llm-why').textContent=''; $('#llm-fresh').textContent='';
+  } else {
+    const dir=lean>0.05?'LONG':lean<-0.05?'SHORT':'NEUTRAL';
+    const col=lean>0.05?'#2ecc71':lean<-0.05?'#e74c3c':'#8b93a7';
+    $('#llm-verdict').innerHTML=`<b style="font-size:20px;color:${col}">${dir}</b> <span style="color:var(--dim)">lean</span> <b style="color:${col}">${lean>=0?'+':''}${lean.toFixed(2)}</b>`;
+    drawLLMGauge(lean);
+    $('#llm-why').innerHTML = pp.why?('“'+pp.why+'”'):'<span style="color:var(--dim)">(model returned no reasoning text)</span>';
+    const fresh = pp.expired?'<span style="color:#e8955a">stale — excluded from the vote until refreshed</span>'
+                            :'<span style="color:#8fd694">fresh — counted in the bandit vote</span>';
+    $('#llm-fresh').innerHTML=`opinion ${llmAge(pp.age_sec)} · TTL ${Math.round(d.ttl_sec/60)}m · ${fresh}`;
+  }
+  // per-coin table
+  const keys=d.products||[];
+  $('#llm-table').innerHTML =
+    '<table style="width:100%"><thead><tr><th style="text-align:left">Coin</th><th style="text-align:right">Lean</th><th></th><th style="text-align:left;padding-left:12px">Reasoning</th><th style="text-align:center">Fresh</th><th style="text-align:center">Feeding bandit</th></tr></thead><tbody>'+
+    keys.map(p=>{const m=(d.per_product||{})[p]||{};const v=m.lean;
+      const col=v==null?'var(--dim)':(v>0.05?'#2ecc71':v<-0.05?'#e74c3c':'#8b93a7');
+      const bar=v==null?'':`<div class="fbar-track"><div class="fbar-fill" style="${v>=0?'left:50%':'right:50%'};width:${Math.min(50,Math.abs(v)*50).toFixed(1)}%;background:${col}"></div><div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#3a4152"></div></div>`;
+      return `<tr><td>${p}${m.held?' <span style="color:#8fb4ff">•held</span>':''}</td>
+        <td style="text-align:right;color:${col};font-variant-numeric:tabular-nums">${v==null?'—':(v>=0?'+':'')+v.toFixed(2)}</td>
+        <td style="width:22%">${bar}</td>
+        <td style="padding-left:12px;color:#aeb7c6;font-size:11.5px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(m.why||'').replace(/"/g,'&quot;')}">${m.why||'—'}</td>
+        <td style="text-align:center">${v==null?'—':(m.expired?'<span style="color:#e8955a">stale</span>':'<span style="color:#8fd694">✓</span>')}</td>
+        <td style="text-align:center">${m.contributing?'<span style="color:#8fd694">✓ yes</span>':'<span style="color:var(--dim)">no</span>'}</td></tr>`;
+    }).join('')+'</tbody></table>';
+}
+function drawLLMGauge(lean){
+  const c=$('#llm-gauge'); if(!c) return;
+  const W=c.width=c.clientWidth||300,H=c.height,ctx=c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const midY=H/2, cx=W/2, scale=W*0.42;
+  ctx.strokeStyle='#2a3040';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx-scale,midY);ctx.lineTo(cx+scale,midY);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,midY-22);ctx.lineTo(cx,midY+22);ctx.stroke();
+  if(lean==null){ctx.fillStyle='#5b6472';ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillText('no opinion yet',cx,midY-30);return;}
+  const x=cx+Math.max(-1,Math.min(1,lean))*scale, col=lean>=0?'#2ecc71':'#e74c3c';
+  ctx.fillStyle=col;ctx.beginPath();ctx.arc(x,midY,7,0,7);ctx.fill();
+  ctx.fillStyle='#8b93a7';ctx.font='10px system-ui';ctx.textAlign='center';
+  ctx.fillText('strong short',cx-scale,midY+34);ctx.fillText('strong long',cx+scale,midY+34);ctx.fillText('0',cx,midY+34);
+}
+setInterval(()=>{ if(_mlView==='llm') refreshLLM(); }, 3000);
 
 refresh(); window._refreshTimer=setInterval(refresh,5000);
 </script>

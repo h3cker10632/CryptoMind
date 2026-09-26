@@ -251,6 +251,67 @@ def ml_live(product: str = None):
     return state
 
 
+@app.get("/api/llm_live")
+def llm_live():
+    """Live introspection into the LLM advisor for the LLM tab: exactly what the
+    model is shown per coin (the compact numeric context), the directional lean +
+    reasoning it returned, how fresh that opinion is, and how much the bandit is
+    weighting the 'llm' arm — i.e. what it's seeing AND how it's affecting trades."""
+    from .learn.llm_advisor import advisor
+    st = advisor.stats()
+    prods = list(PRODUCTS)
+    now = time.time()
+    ttl = advisor._ttl()
+    cadence = advisor._cadence()
+
+    # bandit weight of the 'llm' arm vs the rest (how much say it has)
+    weights = dict(getattr(learner, "weights", {}) or {})
+    arm_w = weights.get("llm")
+    others = [v for k, v in weights.items() if k != "llm"]
+    avg_w = (sum(weights.values()) / len(weights)) if weights else None
+    rank = None
+    if arm_w is not None and weights:
+        rank = 1 + sum(1 for v in weights.values() if v > arm_w)
+
+    per_product = {}
+    for p in prods:
+        entry = advisor._leans.get(p) or {}
+        lean = entry.get("lean")
+        ts = entry.get("ts", 0.0)
+        age = (now - ts) if ts else None
+        expired = (age is None) or (age > ttl)
+        try:
+            ctx = advisor.build_context(p, market, nlp)
+        except Exception:
+            ctx = None
+        raw = None
+        try:
+            raw = engine.per_strategy.get(p, {}).get("llm")
+        except Exception:
+            raw = None
+        per_product[p] = {
+            "context": ctx,
+            "lean": lean,
+            "why": entry.get("why", ""),
+            "ts": ts,
+            "age_sec": age,
+            "expired": expired,
+            "contributing": bool(st["configured"] and lean not in (None, 0.0)
+                                 and not expired),
+            "engine_raw": raw,
+            "held": p in broker.positions,
+        }
+    return {
+        **st,
+        "now": now, "ttl_sec": ttl, "cadence_sec": cadence,
+        "arm_weight": arm_w, "arm_weight_avg": avg_w,
+        "arm_rank": rank, "n_arms": len(weights),
+        "next_refresh_sec": max(0.0, cadence - (now - st["last_refresh"]))
+                            if st["last_refresh"] else 0.0,
+        "products": prods, "per_product": per_product,
+    }
+
+
 @app.post("/api/control/evolve")
 def trigger_evolution(product: str = None):
     """Manually kick off a genetic-evolution run. With no product,
