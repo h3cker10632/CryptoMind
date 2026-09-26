@@ -510,6 +510,9 @@ class Evolution:
         elite_n = max(2, self.pop_size // 6)
 
         front_genomes = []          # last generation's Pareto front (elite pool)
+        trial_sharpes = []          # EVERY genome's train Sharpe, all generations
+                                    # (the real dispersion of the search, used to
+                                    # deflate the champion's Sharpe honestly)
         for gen in range(self.generations):
             self.generation = gen + 1
             # ADAPTIVE MUTATION: anneal from exploratory (early gens) to fine
@@ -518,6 +521,7 @@ class Evolution:
             mut_rate = 0.45 - 0.30 * frac        # 0.45 -> 0.15
             results = [simulate(g, train) for g in pop]
             objs = [objectives(r) for r in results]
+            trial_sharpes.extend(o[2] for o in objs)   # objectives()[2] = Sharpe
             # NSGA-II: rank the population by Pareto front + crowding, keep the
             # best half as the breeding/elite pool.
             elites, fronts = _nsga2_select(pop, objs, max(elite_n, self.pop_size // 2),
@@ -554,7 +558,25 @@ class Evolution:
         # (the GA evaluated pop_size*generations genomes) via deflated Sharpe on
         # the pooled OOS trades.
         from ..backtest.stats import deflated_sharpe_ratio, sharpe
-        n_trials = self.pop_size * self.generations
+        import statistics as _stats
+        # MULTIPLE-TESTING inputs for the deflated Sharpe, measured from THIS run
+        # rather than assumed. n_trials = the genomes we actually evaluated;
+        # trial_sr_std = the real dispersion of their Sharpes across ALL
+        # generations (including the diverse early ones — NOT just the converged
+        # survivors, which would understate dispersion and be over-lenient).
+        # The old code hard-coded trial_sr_std=0.5, an ~2x over-estimate of the
+        # dispersion for most products, which inflated the expected-max-Sharpe
+        # benchmark so far that no genome could ever clear it (deflated Sharpe
+        # pinned at ~0). Feeding the statistic its true input is a correctness
+        # fix, not a relaxation: it RAISES the bar for products whose trials are
+        # genuinely dispersed and lowers it only where they cluster tightly.
+        n_trials = len(trial_sharpes) or (self.pop_size * self.generations)
+        # floor guards the degenerate case (near-identical trials -> ~0 std ->
+        # no deflation at all, which would be unsafe).
+        TRIAL_STD_FLOOR = 0.05
+        trial_sr_std = max(TRIAL_STD_FLOOR,
+                           _stats.pstdev(trial_sharpes) if len(trial_sharpes) > 1
+                           else TRIAL_STD_FLOOR)
         # de-dup the front and cap how many we fully walk-forward validate
         seen_keys, front = set(), []
         for g in sorted(front_genomes, key=lambda g: -fitness(simulate(g, train))):
@@ -592,7 +614,8 @@ class Evolution:
             dsr = None
             try:
                 if len(pooled) >= 5:
-                    dsr = deflated_sharpe_ratio(pooled, n_trials=n_trials)
+                    dsr = deflated_sharpe_ratio(pooled, n_trials=n_trials,
+                                                trial_sr_std=trial_sr_std)
             except Exception:
                 dsr = None
             enough = wf["total_trades"] >= MIN_OOS_TRADES
@@ -644,6 +667,7 @@ class Evolution:
             "pooled_oos_sharpe": round(best[0], 4) if best else None,
             "deflated_sharpe": round(best[4], 4) if best and best[4] is not None else None,
             "n_trials": n_trials,
+            "trial_sr_std": round(trial_sr_std, 4),
             "front_size": len(front),
             "n_candidates_passing": len(candidates),
             "promoted": promoted,

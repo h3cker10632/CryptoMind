@@ -911,6 +911,8 @@ async function refresh(){
             ?' <span class="warn">(below gate)</span>':'')):'—',
       'best pooled Sharpe seen':(evoRep&&evoRep.best_observed_pooled_sharpe!=null)
         ?evoRep.best_observed_pooled_sharpe.toFixed(2):'—',
+      'DSR multiple-testing':(evoRep&&evoRep.trial_sr_std!=null)
+        ?(evoRep.n_trials+' trials, measured σ='+evoRep.trial_sr_std.toFixed(3)):'—',
       'promoted':evoRep?(evoRep.promoted?'<span class="ok">yes</span>':'<span class="bad">no (failed OOS)</span>'):'—'});
 
     // per-product gate diagnostics table (best DSR seen across the whole universe)

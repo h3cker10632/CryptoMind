@@ -182,3 +182,22 @@ def test_maybe_evolve_worker_logs_without_keyerror(monkeypatch):
     # no error event was logged, and the run reached "done" (not "error")
     assert loop_mod.evolution.status != "error"
     assert not any(a and a[0] == "error" for a in logged), logged
+
+
+def test_dsr_uses_measured_trial_dispersion_not_placeholder():
+    """The deflated-Sharpe multiple-testing correction must use the MEASURED
+    dispersion of the run's trial Sharpes, not the old hard-coded 0.5 placeholder
+    that over-penalised every genome to a deflated Sharpe of ~0. The report must
+    expose the measured trial_sr_std and the real evaluated trial count.
+    """
+    import statistics
+    e = ev.Evolution(pop_size=12, generations=3, seed=9)
+    rep = e.evolve(_synth_candles(n=800, seed=2), product="BTC-USD")
+    assert "trial_sr_std" in rep
+    std = rep["trial_sr_std"]
+    # measured, finite, and driven by the data (not the removed 0.5 constant)
+    assert isinstance(std, float) and std > 0.0
+    assert std >= 0.05                      # respects the safety floor
+    assert std != 0.5                       # not the old placeholder
+    # n_trials is the count actually evaluated (pop_size * generations)
+    assert rep["n_trials"] == 12 * 3
