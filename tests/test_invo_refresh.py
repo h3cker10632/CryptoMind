@@ -27,7 +27,7 @@ class _Client:
     def get(self, url, params=None, timeout=None, headers=None):
         self.gets.append((headers or {}).get("Authorization"))
         return self.get_seq.pop(0)
-    def post(self, url, json=None, headers=None, timeout=None):
+    def post(self, url, json=None, headers=None, timeout=None, params=None):
         self.posts.append({"url": url, "json": json, "headers": headers or {}})
         return self.post_resp
 
@@ -86,3 +86,25 @@ def test_no_refresh_configured_still_raises_on_401():
     with pytest.raises(RuntimeError):
         p._get(client, "/lb")
     assert client.posts == []                          # never attempted a refresh
+
+
+def test_leaderboard_post_sends_json_body():
+    cfg = PollerConfig(base_url="https://api.invoapp.com", token="T",
+                       leaderboard_path="/v1_0/trending/get_users",
+                       method="POST", body='{"limit": 25}', max_retries=2)
+    p = InvoPoller(cfg)
+    client = _Client(get_seq=[], post_resp=_Resp(200, {"users": [{"id": 1}]}))
+    out = p.fetch_leaderboard(client)
+    assert out == {"users": [{"id": 1}]}
+    assert client.posts[0]["json"] == {"limit": 25}                 # body sent
+    assert client.posts[0]["url"].endswith("/v1_0/trending/get_users")
+
+
+def test_leaderboard_get_default_uses_get():
+    cfg = PollerConfig(base_url="https://api.invoapp.com", token="T",
+                       leaderboard_path="/v1_0/lb", max_retries=2)   # method defaults GET
+    p = InvoPoller(cfg)
+    client = _Client(get_seq=[_Resp(200, {"ok": 1})])
+    out = p.fetch_leaderboard(client)
+    assert out == {"ok": 1}
+    assert client.posts == []                                        # never POSTed

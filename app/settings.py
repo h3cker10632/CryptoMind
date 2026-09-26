@@ -71,6 +71,8 @@ DEFAULTS = {
     "invo_enabled": False,
     "invo_api_base": "",              # e.g. https://app.invoapp.com
     "invo_token": "",                 # SECRET — bearer token for YOUR authorized session
+    "invo_method": "GET",             # leaderboard request method: GET or POST (e.g. get_users is POST)
+    "invo_body": "",                  # JSON body sent with a POST leaderboard request
     "invo_leaderboard_path": "",      # path returning ranked traders
     "invo_positions_tmpl": "",        # optional per-trader positions path, {id} placeholder
     "invo_top_n": 25,
@@ -99,11 +101,12 @@ DEFAULTS = {
     "invo_use_score": False,
 }
 
-STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"}}
+STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"},
+            "invo_method": {"GET", "POST"}}
 
 # Free-text string settings (stored verbatim, trimmed).
 TEXT_KEYS = {
-    "llm_model", "llm_api_base",
+    "llm_model", "llm_api_base", "invo_body",
     "invo_api_base", "invo_leaderboard_path", "invo_positions_tmpl",
     "invo_map_list", "invo_map_id", "invo_map_score", "invo_map_positions",
     "invo_map_asset", "invo_map_side", "invo_map_long_value",

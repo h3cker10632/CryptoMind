@@ -486,9 +486,11 @@
       <div id="invo-config" style="margin-top:6px">
         <div class="invo-sub">Connection</div>
         <div class="invo-grid">
-          <label>API base URL<input data-invo-key="invo_api_base" placeholder="https://app.invoapp.com"></label>
+          <label>API base URL<input data-invo-key="invo_api_base" placeholder="https://api.invoapp.com"></label>
           <label>API token (secret)<input data-invo-key="invo_token" type="password" placeholder="bearer token"></label>
-          <label>Leaderboard path<input data-invo-key="invo_leaderboard_path" placeholder="/path/to/ranked/traders"></label>
+          <label>Leaderboard path<input data-invo-key="invo_leaderboard_path" placeholder="/v1_0/trending/get_users"></label>
+          <label>Method<select data-invo-key="invo_method"><option value="GET">GET</option><option value="POST">POST</option></select></label>
+          <label>Request body (POST, JSON)<input data-invo-key="invo_body" placeholder='{"limit":25} — only for POST endpoints'></label>
           <label>Positions path (optional)<input data-invo-key="invo_positions_tmpl" placeholder="/path/{id}/positions"></label>
           <label>Top N traders<input data-invo-key="invo_top_n" type="number" min="1" max="200"></label>
           <label>Interval (seconds)<input data-invo-key="invo_interval_sec" type="number" min="30"></label>

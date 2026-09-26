@@ -61,6 +61,9 @@ class PollerConfig:
     refresh_body: str = ""            # JSON body template w/ {refresh_token}; blank = Bearer header
     token_json_path: str = "access_token"   # dotted path to the new access token in the response
     refresh_rotates_path: str = ""    # optional dotted path to a rotated refresh token
+    # ---- leaderboard request shape ----
+    method: str = "GET"               # GET or POST (some endpoints, e.g. get_users, are POST)
+    body: str = ""                    # JSON body sent with a POST leaderboard request
 
     @staticmethod
     def from_env() -> "PollerConfig":
@@ -77,6 +80,8 @@ class PollerConfig:
             top_n=int(os.environ.get("INVO_TOP_N", "25")),
             interval_sec=float(os.environ.get("INVO_INTERVAL_SEC", "300")),
             out_path=os.environ.get("INVO_OUT", "invo_snapshots.json"),
+            method=os.environ.get("INVO_METHOD", "GET"),
+            body=os.environ.get("INVO_BODY", ""),
             refresh_path=os.environ.get("INVO_REFRESH_PATH", ""),
             refresh_token=os.environ.get("INVO_REFRESH_TOKEN", ""),
             refresh_body=os.environ.get("INVO_REFRESH_BODY", ""),
@@ -179,15 +184,22 @@ class InvoPoller:
         return True
 
     # ---- transport (reusable; auth + retry + backoff + auto-refresh) ----
-    def _get(self, client, path: str, params=None):
+    def _request(self, client, path: str, method: str = "GET",
+                 json_body=None, params=None):
         url = path if path.startswith("http") else self.cfg.base_url + path
+        method = (method or "GET").upper()
         last = None
         did_refresh = False
         for attempt in range(self.cfg.max_retries):
             try:
-                r = client.get(url, params=params, timeout=self.cfg.timeout,
-                               headers={"Authorization": f"Bearer {self.cfg.token}",
-                                        "User-Agent": "invo-signal-study/1.0"})
+                headers = {"Authorization": f"Bearer {self.cfg.token}",
+                           "User-Agent": "invo-signal-study/1.0"}
+                if method == "POST":
+                    r = client.post(url, json=json_body, params=params,
+                                    timeout=self.cfg.timeout, headers=headers)
+                else:
+                    r = client.get(url, params=params,
+                                   timeout=self.cfg.timeout, headers=headers)
                 if r.status_code == 429:                    # rate limited — back off
                     time.sleep(2 ** attempt)
                     continue
@@ -201,11 +213,28 @@ class InvoPoller:
             except Exception as e:                          # noqa: BLE001
                 last = e
                 time.sleep(min(2 ** attempt, 8))
-        raise RuntimeError(f"GET {path} failed after {self.cfg.max_retries} tries: {last}")
+        raise RuntimeError(f"{method} {path} failed after {self.cfg.max_retries} tries: {last}")
+
+    def _get(self, client, path: str, params=None):
+        return self._request(client, path, "GET", params=params)
+
+    def _body_dict(self):
+        """Parse the configured JSON body string for a POST leaderboard request."""
+        if not self.cfg.body:
+            return None
+        try:
+            return json.loads(self.cfg.body)
+        except Exception:
+            return None
+
+    def fetch_leaderboard(self, client):
+        """Fetch the leaderboard using the configured method + body (GET or POST)."""
+        return self._request(client, self.cfg.leaderboard_path,
+                             self.cfg.method, json_body=self._body_dict())
 
     def fetch_once(self) -> Dict[str, Any]:
         with httpx.Client() as client:
-            lb = self._get(client, self.cfg.leaderboard_path)
+            lb = self.fetch_leaderboard(client)
             fetch_positions = None
             if self.cfg.positions_tmpl:
                 def fetch_positions(tid, _c=client):

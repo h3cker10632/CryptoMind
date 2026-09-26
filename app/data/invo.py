@@ -105,6 +105,8 @@ def _cfg() -> PollerConfig:
         top_n=int(s["invo_top_n"]),
         interval_sec=float(s["invo_interval_sec"]),
         out_path=SNAP_PATH,
+        method=s.get("invo_method", "GET") or "GET",
+        body=s.get("invo_body", ""),
         refresh_path=s.get("invo_refresh_path", ""),
         refresh_token=s.get("invo_refresh_token", ""),
         refresh_body=s.get("invo_refresh_body", ""),
@@ -152,7 +154,7 @@ def peek_sync() -> dict:
         import httpx
         s = app_settings.load()
         with httpx.Client() as c:
-            lb = p._get(c, s["invo_leaderboard_path"])
+            lb = p.fetch_leaderboard(c)
             sample_positions = None
             tid = None
             rows = _as_list(lb, s.get("invo_map_list", ""))
