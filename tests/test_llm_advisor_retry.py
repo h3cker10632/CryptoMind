@@ -117,3 +117,27 @@ def test_payload_includes_max_tokens(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client(responder))
     asyncio.run(advisor._ask_model({"product": "BTC-USD"}))
     assert seen.get("max_tokens") == 512
+
+
+def test_401_names_key_source_and_env_shadowing(monkeypatch):
+    from app import settings as s
+    monkeypatch.setattr(s, "get", lambda k: {"llm_api_key": "sk-ant-xxx"}.get(k, ""))
+    for v in ("CRYPTOMIND_LLM_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    def responder(payload):
+        return _Resp(401, text='{"error":{"message":"Invalid Anthropic API Key"}}')
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client(responder))
+    lean, why = asyncio.run(advisor._ask_model({"product": "BTC-USD"}))
+    assert lean is None
+    assert "HTTP 401" in advisor.last_error
+    assert "Settings" in advisor.last_error          # says where the key came from
+    assert "OVERRIDE" in advisor.last_error           # warns about env shadowing
+
+
+def test_provider_derived_from_base(monkeypatch):
+    from app import settings as s
+    monkeypatch.delenv("CRYPTOMIND_LLM_BASE", raising=False)
+    monkeypatch.setattr(s, "get", lambda k: {"llm_api_base": "https://api.anthropic.com/v1"}.get(k, ""))
+    assert advisor._provider() == "anthropic"
+    monkeypatch.setattr(s, "get", lambda k: {"llm_api_base": ""}.get(k, ""))
+    assert advisor._provider() == "gemini"

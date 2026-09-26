@@ -74,6 +74,22 @@ class LLMAdvisor:
             pass
         return None
 
+    @classmethod
+    def _key_source(cls):
+        """Report WHERE the active key comes from — env vars win over the
+        Settings key, so this makes a 'wrong key' due to env shadowing obvious."""
+        for name in ("CRYPTOMIND_LLM_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+            if os.environ.get(name):
+                return f"env:{name}"
+        if cls._setting("llm_api_key"):
+            return "Settings"
+        try:
+            if os.path.exists(cls.KEY_PATH) and open(cls.KEY_PATH).read().strip():
+                return "llm_key.txt"
+        except OSError:
+            pass
+        return None
+
     @staticmethod
     def _ttl():
         from ..tunables import tv
@@ -239,6 +255,12 @@ class LLMAdvisor:
                     if code == 404:
                         hint = (f" — model '{model}' not found, or wrong base URL "
                                 f"({base}). Check Settings → LLM advisor.")
+                    elif code in (401, 403):
+                        src = self._key_source()
+                        hint = (f" — key rejected. Active key came from {src}; note "
+                                "env vars OVERRIDE the Settings key, so unset "
+                                "CRYPTOMIND_LLM_KEY/GEMINI_API_KEY/OPENAI_API_KEY if "
+                                "one is shadowing the key you entered.")
                     self.last_error = f"HTTP {code} at {url}: {detail}{hint}"
                     # a 400 while json-mode was on → retry once without it
                     if code == 400 and with_json_mode:
@@ -272,11 +294,23 @@ class LLMAdvisor:
             return None, ""
         return lean, str(obj.get("why", ""))[:200]
 
+    @classmethod
+    def _provider(cls):
+        b = cls._base_url()
+        if "anthropic.com" in b:
+            return "anthropic"
+        if "openai.com" in b:
+            return "openai"
+        if "googleapis.com" in b or "generativelanguage" in b:
+            return "gemini"
+        return "custom"
+
     def stats(self):
         return {
             "enabled": self.enabled(),
             "configured": self.configured(),
-            "provider": "gemini",
+            "provider": self._provider(),
+            "key_source": self._key_source(),
             "model": self._model(),
             "cached_leans": {p: round(e["lean"], 3)
                              for p, e in self._leans.items()},
