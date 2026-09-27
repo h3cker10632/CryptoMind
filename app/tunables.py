@@ -193,6 +193,19 @@ TUNABLES = {
                            "directly relieves the walk-forward 'too_few_trades' floor that "
                            "blocks regime-filtered strategies. Pair a lower TF with a higher "
                            "ga_history_chunks so the calendar span stays reasonable.", True),
+    "ga_cross_sectional": T(0, 0, 1, 1, "evolution", "Cross-sectional (universe) GA",
+                           "Evolve & validate ONE genome POOLED across the whole product "
+                           "basket instead of per-product. MEASURED (2026-09): the trend edge "
+                           "is low-frequency (a few quality trades per product) so per-product "
+                           "runs die on 'too_few_trades'; pooling meets the evidence floor by "
+                           "BREADTH and validated the FIRST genomes to approach the DSR gate "
+                           "(pooled DSR up to ~0.77-0.90 with the regime filter on). Pair with "
+                           "ga_regime_filter=1. Promotes a universe portfolio applied to every "
+                           "product.", True),
+    "ga_universe_basket": T(6, 2, 20, 1, "evolution", "Universe basket size",
+                           "How many products (from the configured universe) the "
+                           "cross-sectional GA pools over. More = more independent evidence, "
+                           "at the cost of more API calls and slower runs.", True),
     "ga_regime_filter": T(0, 0, 1, 1, "evolution", "Regime filter (efficiency ratio)",
                            "Let evolution add a Kaufman efficiency-ratio entry filter "
                            "(er_n / er_min genes): only trade when the trailing trend is "

@@ -254,10 +254,34 @@ class Learner:
         def _worker():
             try:
                 from ..backtest.engine import fetch_history
+                gran = int(tv("ga_granularity"))
+                chunks = int(tv("ga_history_chunks"))
+                # CROSS-SECTIONAL mode: pool one genome across the whole universe
+                # so a low-frequency edge is validated by breadth, not by
+                # over-trading a single product.
+                if tv("ga_cross_sectional") > 0:
+                    from ..config import PRODUCTS
+                    basket = PRODUCTS[:int(tv("ga_universe_basket"))]
+                    cmap = {}
+                    for p in basket:
+                        c = asyncio.run(fetch_history(p, granularity=gran, chunks=chunks))
+                        if len(c) >= 300:
+                            cmap[p] = c
+                    if len(cmap) < 2:
+                        db.log_event("warn", "Cross-sectional evolution skipped: "
+                                             "fewer than 2 products have enough history")
+                        return
+                    rep = evolution.evolve_universe(cmap)
+                    db.log_event("learn",
+                        f"Cross-sectional evolution finished on {len(cmap)} products: "
+                        f"best_dsr={rep.get('best_observed_dsr')} "
+                        f"pooled_sharpe={rep.get('best_observed_pooled_sharpe')} "
+                        f"promoted={rep.get('promoted')} "
+                        f"portfolio={rep.get('portfolio_size', 0)} "
+                        f"gate_fail={rep.get('gate_fail_breakdown')}", rep.get("genome"))
+                    return
                 candles = asyncio.run(fetch_history(
-                    product,
-                    granularity=int(tv("ga_granularity")),
-                    chunks=int(tv("ga_history_chunks"))))
+                    product, granularity=gran, chunks=chunks))
                 if len(candles) < 300:
                     db.log_event("warn", f"Evolution skipped for {product}: "
                                          f"insufficient history ({len(candles)} bars)")
