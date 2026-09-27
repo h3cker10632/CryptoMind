@@ -67,6 +67,7 @@ class Learner:
         self.skip_attributions = 0
         self.last_evolution_start = 0.0
         self._evo_thread = None
+        self._evo_cycle = 0          # auto-cadence counter (interleaves universe runs)
         self.drift_state = {"drifting": False, "worst_feature": None, "psi": 0.0}
         self.current_regime_label = "unknown"
         self.trade_attributions = 0
@@ -236,73 +237,102 @@ class Learner:
         from ..config import PRODUCTS
         return min(PRODUCTS, key=lambda p: evolution.last_attempt.get(p, 0))
 
-    def maybe_evolve(self, product=None):
+    def _run_universe_ga(self):
+        """Worker body: cross-sectional GA pooled across the universe basket."""
+        from ..tunables import tv
+        from ..backtest.engine import fetch_history
+        from ..config import PRODUCTS
+        gran, chunks = int(tv("ga_granularity")), int(tv("ga_history_chunks"))
+        basket = PRODUCTS[:int(tv("ga_universe_basket"))]
+        cmap = {}
+        for p in basket:
+            c = asyncio.run(fetch_history(p, granularity=gran, chunks=chunks))
+            if len(c) >= 300:
+                cmap[p] = c
+        if len(cmap) < 2:
+            db.log_event("warn", "Cross-sectional evolution skipped: fewer than "
+                                 "2 products have enough history")
+            return
+        rep = evolution.evolve_universe(cmap)
+        db.log_event("learn",
+            f"Cross-sectional evolution finished on {len(cmap)} products: "
+            f"best_dsr={rep.get('best_observed_dsr')} "
+            f"pooled_sharpe={rep.get('best_observed_pooled_sharpe')} "
+            f"promoted={rep.get('promoted')} "
+            f"portfolio={rep.get('portfolio_size', 0)} "
+            f"gate_fail={rep.get('gate_fail_breakdown')}", rep.get("genome"))
+
+    def _run_product_ga(self, product):
+        """Worker body: single-product GA."""
+        from ..tunables import tv
+        from ..backtest.engine import fetch_history
+        gran, chunks = int(tv("ga_granularity")), int(tv("ga_history_chunks"))
+        candles = asyncio.run(fetch_history(product, granularity=gran, chunks=chunks))
+        if len(candles) < 300:
+            db.log_event("warn", f"Evolution skipped for {product}: "
+                                 f"insufficient history ({len(candles)} bars)")
+            return
+        rep = evolution.evolve(candles, product=product)
+        wf = rep.get("walk_forward") or {}
+        db.log_event("learn",
+            f"Evolution finished on {product}: "
+            f"train_fit={rep.get('train_fitness')} "
+            f"pooled_oos_sharpe={rep.get('pooled_oos_sharpe')} "
+            f"oos_windows_positive={wf.get('frac_positive')} "
+            f"promoted={rep.get('promoted')} "
+            f"portfolio={rep.get('portfolio_size', 0)} "
+            f"(champions: {len(evolution.champions)})", rep.get("genome"))
+
+    def maybe_evolve(self, product=None, force_universe=False):
         """Kick off a GA run in a worker thread (never blocks the loop).
-        With no explicit product, rotates through the whole universe."""
+
+        Dispatch:
+          * force_universe=True            -> always a cross-sectional run (the
+                                              dashboard's 'Run cross-sectional now').
+          * ga_cross_sectional off         -> per-product rotation (legacy).
+          * ga_cross_sectional on + N<=1   -> universe every cadence.
+          * ga_cross_sectional on + N>1    -> INTERLEAVE: a universe run every Nth
+                                              cadence, per-product on the others,
+                                              so both run alongside each other.
+        A manual call with an explicit product forces that single product.
+        """
         now = time.time()
         if self._evo_thread and self._evo_thread.is_alive():
             return
         from ..tunables import tv
-        if now - self.last_evolution_start < tv("evolve_every_sec"):
+        # manual calls (explicit product or force_universe) bypass the cadence gate
+        manual = force_universe or product is not None
+        if not manual and now - self.last_evolution_start < tv("evolve_every_sec"):
             return
         self.last_evolution_start = now
-        if product is None:
-            product = self._next_evolution_product()
-        # record the attempt NOW (any outcome), so rotation always advances
-        evolution.last_attempt[product] = now
+
+        # decide this cycle's mode
+        run_universe = force_universe
+        if not force_universe and product is None and tv("ga_cross_sectional") > 0:
+            every_n = int(tv("ga_universe_every_n"))
+            self._evo_cycle += 1
+            run_universe = (every_n <= 1) or (self._evo_cycle % every_n == 0)
+
+        if run_universe:
+            target = "(universe)"
+            worker = self._run_universe_ga
+        else:
+            if product is None:
+                product = self._next_evolution_product()
+            evolution.last_attempt[product] = now   # advance rotation (any outcome)
+            target = product
+            worker = lambda: self._run_product_ga(product)
 
         def _worker():
             try:
-                from ..backtest.engine import fetch_history
-                gran = int(tv("ga_granularity"))
-                chunks = int(tv("ga_history_chunks"))
-                # CROSS-SECTIONAL mode: pool one genome across the whole universe
-                # so a low-frequency edge is validated by breadth, not by
-                # over-trading a single product.
-                if tv("ga_cross_sectional") > 0:
-                    from ..config import PRODUCTS
-                    basket = PRODUCTS[:int(tv("ga_universe_basket"))]
-                    cmap = {}
-                    for p in basket:
-                        c = asyncio.run(fetch_history(p, granularity=gran, chunks=chunks))
-                        if len(c) >= 300:
-                            cmap[p] = c
-                    if len(cmap) < 2:
-                        db.log_event("warn", "Cross-sectional evolution skipped: "
-                                             "fewer than 2 products have enough history")
-                        return
-                    rep = evolution.evolve_universe(cmap)
-                    db.log_event("learn",
-                        f"Cross-sectional evolution finished on {len(cmap)} products: "
-                        f"best_dsr={rep.get('best_observed_dsr')} "
-                        f"pooled_sharpe={rep.get('best_observed_pooled_sharpe')} "
-                        f"promoted={rep.get('promoted')} "
-                        f"portfolio={rep.get('portfolio_size', 0)} "
-                        f"gate_fail={rep.get('gate_fail_breakdown')}", rep.get("genome"))
-                    return
-                candles = asyncio.run(fetch_history(
-                    product, granularity=gran, chunks=chunks))
-                if len(candles) < 300:
-                    db.log_event("warn", f"Evolution skipped for {product}: "
-                                         f"insufficient history ({len(candles)} bars)")
-                    return
-                rep = evolution.evolve(candles, product=product)
-                wf = rep.get("walk_forward") or {}
-                msg = (f"Evolution finished on {product}: "
-                       f"train_fit={rep.get('train_fitness')} "
-                       f"pooled_oos_sharpe={rep.get('pooled_oos_sharpe')} "
-                       f"oos_windows_positive={wf.get('frac_positive')} "
-                       f"promoted={rep.get('promoted')} "
-                       f"portfolio={rep.get('portfolio_size', 0)} "
-                       f"(champions: {len(evolution.champions)})")
-                db.log_event("learn", msg, rep.get("genome"))
+                worker()
             except Exception as e:
                 evolution.status = "error"
-                db.log_event("error", f"Evolution failed on {product}: {e}")
+                db.log_event("error", f"Evolution failed on {target}: {e}")
 
         self._evo_thread = threading.Thread(target=_worker, daemon=True)
         self._evo_thread.start()
-        db.log_event("learn", f"Genetic evolution started on {product} "
+        db.log_event("learn", f"Genetic evolution started on {target} "
                               f"(pop={evolution.pop_size}, gens={evolution.generations})")
 
     # ------------------------------------------------ trade-PnL attribution

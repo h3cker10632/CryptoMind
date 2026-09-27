@@ -241,8 +241,10 @@
       <div>
         <h2>Genetic evolution <button id="btn-evolve" style="padding:2px 8px;font-size:11px">▶ run now</button></h2>
         <div id="evo-stats" style="font-size:12.5px"></div>
-        <div id="evo-universe" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--accent);border-radius:8px">
-          <h2 style="margin:0 0 6px">🌐 Cross-sectional champion <span style="text-transform:none;color:var(--muted);font-weight:400">— one genome validated by BREADTH across the basket</span></h2>
+        <div id="evo-universe" style="margin-top:12px;padding:10px;border:1px solid var(--accent);border-radius:8px">
+          <h2 style="margin:0 0 6px">🌐 Cross-sectional champion
+            <button id="btn-evolve-universe" style="padding:2px 8px;font-size:11px">▶ run cross-sectional now</button>
+            <span style="text-transform:none;color:var(--muted);font-weight:400">— one genome validated by BREADTH across the basket</span></h2>
           <div id="evo-universe-stats" style="font-size:12.5px"></div>
           <h2 style="margin:8px 0 4px;font-size:12px">Per-product breakdown</h2>
           <table id="tbl-evo-universe" style="font-size:12px"><thead><tr>
@@ -927,9 +929,7 @@ async function refresh(){
 
     // cross-sectional (universe-pooled) champion card
     const uni=evo.last_universe_run;
-    const uniBox=$('#evo-universe');
     if(uni){
-      uniBox.style.display='';
       const uwf=uni.walk_forward||{};
       const gmin=(uni.gate&&uni.gate.dsr_min!=null)?uni.gate.dsr_min:0.90;
       const dsr=uni.best_observed_dsr;
@@ -959,7 +959,10 @@ async function refresh(){
          <td class="mono ${cls(r.pooled_sharpe||0)}">${r.pooled_sharpe!=null?r.pooled_sharpe.toFixed(2):'—'}</td>
          <td>${(r.pooled_sharpe||0)>0?'<span class="ok">yes</span>':'<span class="bad">no</span>'}</td></tr>`
       ).join(''):'<tr><td colspan="4" style="color:var(--muted)">—</td></tr>';
-    } else { uniBox.style.display='none'; }
+    } else {
+      $('#evo-universe-stats').innerHTML='<span style="color:var(--muted)">No cross-sectional run yet — hit ▶ run cross-sectional now (or enable it in Settings → Evolution) to pool one genome across the whole basket.</span>';
+      $('#tbl-evo-universe tbody').innerHTML='<tr><td colspan="4" style="color:var(--muted)">—</td></tr>';
+    }
 
     // per-product gate diagnostics table (best DSR seen across the whole universe)
     const attempts=evo.attempt_reports||{};
@@ -1252,6 +1255,14 @@ $('#btn-alert-trades').onclick=async()=>{
 };
 refreshAlerts(); setInterval(refreshAlerts,10000);
 $('#btn-evolve').onclick=()=>j('/api/control/evolve',{method:'POST'}).then(refresh);
+document.addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('#btn-evolve-universe');
+  if(!b)return;
+  b.disabled=true; const t=b.textContent; b.textContent='⏳ running…';
+  j('/api/control/evolve_universe',{method:'POST'}).then(r=>{
+    if(r&&r.started===false)alert(r.reason||'A run is already in progress.');
+  }).finally(()=>{setTimeout(()=>{b.disabled=false; b.textContent=t; refresh();},1500);});
+});
 
 // backtest
 const PRODUCTS=['BTC-USD','ETH-USD','SOL-USD','DOGE-USD','LINK-USD','AVAX-USD'];

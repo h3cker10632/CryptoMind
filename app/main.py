@@ -323,6 +323,16 @@ def trigger_evolution(product: str = None):
     return {"started": True, "product": product or "auto-rotation"}
 
 
+@app.post("/api/control/evolve_universe")
+def trigger_universe_evolution():
+    """Force a cross-sectional (universe-pooled) GA run now, regardless of the
+    ga_cross_sectional tunable — the dashboard's 'Run cross-sectional now'."""
+    if learner._evo_thread and learner._evo_thread.is_alive():
+        return {"started": False, "reason": "an evolution run is already in progress"}
+    learner.maybe_evolve(force_universe=True)
+    return {"started": True, "product": "(universe)"}
+
+
 @app.get("/api/trades")
 def trades():
     return {"open": [dict(p) for p in broker.positions.values()],

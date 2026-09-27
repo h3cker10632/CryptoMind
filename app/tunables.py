@@ -206,6 +206,11 @@ TUNABLES = {
                            "How many products (from the configured universe) the "
                            "cross-sectional GA pools over. More = more independent evidence, "
                            "at the cost of more API calls and slower runs.", True),
+    "ga_universe_every_n": T(3, 1, 20, 1, "evolution", "Universe run cadence (every Nth)",
+                           "When cross-sectional is on, run a universe-pooled GA every Nth "
+                           "auto-evolution cycle and per-product runs on the others, so both "
+                           "run ALONGSIDE each other on a rotation. 1 = universe every cycle "
+                           "(no per-product). Ignored when cross-sectional is off.", True),
     "ga_regime_filter": T(0, 0, 1, 1, "evolution", "Regime filter (efficiency ratio)",
                            "Let evolution add a Kaufman efficiency-ratio entry filter "
                            "(er_n / er_min genes): only trade when the trailing trend is "
