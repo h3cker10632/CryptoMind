@@ -77,6 +77,37 @@ def test_config_mapper_no_code(tmp_path, monkeypatch):
     assert sol["direction"] == -1        # "sell" != long_value "buy"
 
 
+def test_config_mapper_inline_single_trade_feed(tmp_path, monkeypatch):
+    """The fire_moves feed exposes ONE inline trade per item (under 'update')
+    with a BOOLEAN directionLong, not a positions list. The mapper must treat a
+    dict position field as a single position and read the boolean side."""
+    st = _fresh_settings(tmp_path, monkeypatch)
+    st.update({
+        "invo_map_list": "items", "invo_map_id": "owner.id",
+        "invo_map_score": "update.portfolio.winRate",
+        "invo_map_positions": "update", "invo_map_asset": "name",
+        "invo_map_side": "directionLong", "invo_map_long_value": "true",
+        "invo_map_size": "entrySize", "invo_map_leverage": "leverage",
+    })
+    import app.data.invo as invo
+    importlib.reload(invo)
+    raw = {"items": [
+        {"id": "p1", "owner": {"id": "kstn"},
+         "update": {"name": "PUMP", "directionLong": False, "entrySize": 5.0,
+                    "leverage": 7, "portfolio": {"winRate": 98.5}}},
+        {"id": "p2", "owner": {"id": "xyz"},
+         "update": {"name": "BTC", "directionLong": True, "entrySize": 12.3,
+                    "leverage": 3, "portfolio": {"winRate": 61.0}}},
+    ]}
+    traders = invo.config_mapper(raw, None, top_n=25)
+    assert len(traders) == 2
+    assert traders[0]["id"] == "kstn" and traders[0]["score"] == 98.5
+    p = traders[0]["positions"][0]
+    assert p["asset"] == "PUMP" and p["direction"] == -1   # directionLong false = short
+    assert p["notional"] == 5.0
+    assert traders[1]["positions"][0]["direction"] == 1    # directionLong true = long
+
+
 def test_dig_helper_dotted_paths():
     import app.data.invo as invo
     assert invo._dig({"a": {"b": {"c": 7}}}, "a.b.c") == 7

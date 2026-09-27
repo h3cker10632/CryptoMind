@@ -69,14 +69,23 @@ def config_mapper(leaderboard_raw, fetch_positions, top_n):
             score = 0.0
         pos_key = s.get("invo_map_positions", "")
         if pos_key:
-            pos_raw = _as_list(row, pos_key)
+            v = _dig(row, pos_key)
+            if isinstance(v, list):
+                pos_raw = v
+            elif isinstance(v, dict):
+                pos_raw = [v]          # inline SINGLE trade (e.g. feed item's 'update')
+            else:
+                pos_raw = []
         elif fetch_positions and tid is not None:
             pos_raw = _as_list(fetch_positions(tid), s.get("invo_map_list", ""))
         else:
             pos_raw = []
         positions = []
         for p in pos_raw:
-            side = str(_dig(p, s.get("invo_map_side", "side")) or "").lower()
+            # side may be a string ("long"/"short") OR a boolean (directionLong:
+            # true/false). Stringify explicitly so False isn't swallowed by `or`.
+            raw_side = _dig(p, s.get("invo_map_side", "side"))
+            side = (str(raw_side).lower() if raw_side is not None else "")
             try:
                 notional = float(_dig(p, s.get("invo_map_size")) or 0.0)
             except (TypeError, ValueError):
