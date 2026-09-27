@@ -86,11 +86,25 @@ class MLTrainer:
             # primary risk gate (metrics the lab's backtest actually emits)
             "min_return": float(cls._s("ml_gate_min_return", 0.0)),
             "max_drawdown": float(cls._s("ml_gate_max_drawdown", 0.25)),
+            # walk-forward robustness (only enforced when validation ran)
+            "min_frac_folds_positive": float(cls._s("ml_gate_min_frac_folds_positive", 0.75)),
             # optional extra gates — only enforced if the backtest reports them
             "min_oos_sharpe": float(cls._s("ml_gate_min_oos_sharpe", 0.5)),
             "min_oos_trades": int(cls._s("ml_gate_min_oos_trades", 20)),
             "require_beats_baseline": bool(cls._s("ml_gate_require_beats_baseline", False)),
         }
+
+    @classmethod
+    def _val_folds(cls):
+        return int(cls._s("ml_val_folds", 4))
+
+    @classmethod
+    def _val_embargo(cls):
+        return int(cls._s("ml_val_embargo", 24))
+
+    @classmethod
+    def _allow_backtest_fallback(cls):
+        return bool(cls._s("ml_gate_allow_backtest_fallback", False))
 
     # ---------------- paths ----------------
     @staticmethod
@@ -195,6 +209,76 @@ class MLTrainer:
             json.dump({"meta": data["meta"], "labels": data["labels"]}, f, default=str)
         return ev, lb, data["meta"]
 
+    # ---------------- purged walk-forward validation ----------------
+    def _run_purged_validation(self, staging, features_path):
+        """Estimate GENUINE out-of-sample performance via purged, embargoed
+        walk-forward: split the prepared feature table into expanding folds,
+        train a throwaway model per fold, and score it only on the held-out slice
+        it never saw. Returns the pooled gate-metric dict (return/drawdown +
+        frac_folds_positive), or None if it can't run (no pandas, unreadable
+        parquet, or a fold's train/backtest failed) so the caller can decide how
+        to fail closed.
+        """
+        from . import validation
+        try:
+            import pandas as pd
+        except Exception:
+            return None
+        try:
+            df = pd.read_parquet(features_path)
+        except Exception:
+            return None
+        n = len(df)
+        # keep chronological order so folds respect time (prepare usually already
+        # emits time-ordered rows; sort if an obvious time column exists)
+        for tcol in ("date", "timestamp", "ts", "datetime", "time"):
+            if tcol in df.columns:
+                try:
+                    df = df.sort_values(tcol).reset_index(drop=True)
+                except Exception:
+                    pass
+                break
+        folds = validation.walk_forward_folds(n, self._val_folds(), self._val_embargo())
+        if not folds:
+            return None
+        valdir = os.path.join(staging, "val")
+        shutil.rmtree(valdir, ignore_errors=True)
+        os.makedirs(valdir, exist_ok=True)
+        per_fold = []
+        for i, (tr0, tr1, te0, te1) in enumerate(folds):
+            fdir = os.path.join(valdir, f"fold{i}")
+            os.makedirs(fdir, exist_ok=True)
+            train_pq = os.path.join(fdir, "train.parquet")
+            test_pq = os.path.join(fdir, "test.parquet")
+            try:
+                df.iloc[tr0:tr1].to_parquet(train_pq)
+                df.iloc[te0:te1].to_parquet(test_pq)
+            except Exception:
+                return None
+            run_fold = os.path.join(fdir, "run")
+            rc, _out, _err = self._run_cli(
+                ["train", "--input", train_pq, "--output", run_fold], cwd=staging)
+            if rc != 0:
+                return None
+            mpath = os.path.join(fdir, self._metrics_file())
+            rc, out, _err = self._run_cli(
+                ["backtest", "--input", test_pq,
+                 "--model", os.path.join(run_fold, "model.joblib"),
+                 "--output", mpath], cwd=staging)
+            if rc != 0:
+                return None
+            m = self._read_metrics(fdir) or self._parse_stdout_metrics(out)
+            if not m:
+                return None
+            per_fold.append({
+                "fold": i,
+                "train_rows": tr1 - tr0,
+                "test_rows": te1 - te0,
+                "total_return": self._first(m, _RETURN_KEYS),
+                "max_drawdown": self._first(m, _DRAWDOWN_KEYS),
+            })
+        return validation.aggregate_oos(per_fold)
+
     # ---------------- metrics + gate ----------------
     @staticmethod
     def _first(d, keys):
@@ -272,6 +356,13 @@ class MLTrainer:
         checks["max_drawdown"] = {
             "value": dd, "limit": g["max_drawdown"],
             "pass": dd is not None and abs(float(dd)) <= g["max_drawdown"]}
+
+        # --- walk-forward robustness: consistency across OOS folds ---
+        frac = metrics.get("oos_frac_folds_positive")
+        if frac is not None:
+            checks["frac_folds_positive"] = {
+                "value": frac, "min": g["min_frac_folds_positive"],
+                "pass": float(frac) >= g["min_frac_folds_positive"]}
 
         # --- optional: only enforced when the metric is present ---
         if sharpe is not None:
@@ -365,16 +456,13 @@ class MLTrainer:
                 return report
 
             feats = os.path.join(staging, "features.parquet")
-            metrics_path = os.path.join(run_dir, self._metrics_file())
-            # 2..5) lab CLI steps. backtest gets --output so it writes a metrics
-            # file we can read (it also prints the same JSON to stdout).
+            # 2..4) lab CLI steps. We train the FINAL (to-be-promoted) model on
+            # ALL data; the honest gate metric comes from purged walk-forward
+            # validation below, NOT from an in-sample backtest of this model.
             steps = [
                 ("validate", ["validate", "--input", ev]),
                 ("prepare", ["prepare", "--input", ev, "--output", feats]),
                 ("train", ["train", "--input", feats, "--output", run_dir]),
-                ("backtest", ["backtest", "--input", feats,
-                              "--model", os.path.join(run_dir, "model.joblib"),
-                              "--output", metrics_path]),
             ]
             step_out = {}
             for name, args in steps:
@@ -393,10 +481,39 @@ class MLTrainer:
                     self.last_error = f"{name} rc={rc}: {err[-200:]}"
                     return report
 
-            # 6) read metrics (file first, then the backtest's stdout) + gate
-            metrics = self._read_metrics(run_dir)
-            if not metrics:
-                metrics = self._parse_stdout_metrics(step_out.get("backtest", ""))
+            # 5) TRUSTWORTHY GATE: purged, embargoed walk-forward OOS validation.
+            metrics = self._run_purged_validation(staging, feats)
+            if metrics is not None:
+                report["validation"] = {
+                    "source": "purged_walkforward",
+                    "n_folds": metrics.get("oos_n_folds"),
+                    "frac_folds_positive": metrics.get("oos_frac_folds_positive"),
+                    "median_return": metrics.get("total_return"),
+                    "mean_return": metrics.get("mean_return"),
+                    "worst_drawdown": metrics.get("max_drawdown"),
+                    "per_fold": metrics.get("per_fold"),
+                }
+            elif self._allow_backtest_fallback():
+                # explicit opt-in only: gate on the (in-sample!) backtest instead
+                metrics_path = os.path.join(run_dir, self._metrics_file())
+                rc, out, err = self._run_cli(
+                    ["backtest", "--input", feats,
+                     "--model", os.path.join(run_dir, "model.joblib"),
+                     "--output", metrics_path], cwd=staging)
+                report["steps"].append({"step": "backtest", "rc": rc,
+                                        "out_tail": (out or "")[-400:],
+                                        "err_tail": err[-400:] if err else ""})
+                metrics = self._read_metrics(run_dir) or self._parse_stdout_metrics(out or "")
+                report["validation"] = {"source": "raw_backtest_fallback"}
+            else:
+                report["reason"] = "validation_unavailable_not_promoted"
+                report["validation"] = {"source": "none",
+                                        "detail": "purged walk-forward could not "
+                                        "run (need pandas + a readable features "
+                                        "parquet); refusing to promote on an "
+                                        "in-sample backtest. Set "
+                                        "ml_gate_allow_backtest_fallback=1 to override."}
+                return report
             report["metrics"] = {k: v for k, v in (metrics or {}).items()
                                  if k != "_metrics_path"}
             promote, gate = self._evaluate_gates(metrics)

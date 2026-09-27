@@ -54,8 +54,16 @@ DEFAULTS = {
     "ml_backtest_metrics_file": "metrics.json",  # metrics JSON the backtest writes
     # Promotion gate. PRIMARY (required) = profitability + drawdown, the metrics
     # crypto_ml's backtest actually emits (total_return / max_drawdown).
-    "ml_gate_min_return": 0.0,           # gate: min backtest total return (0 = must not lose)
+    "ml_gate_min_return": 0.0,           # gate: min OOS total return (0 = must not lose)
     "ml_gate_max_drawdown": 0.25,        # gate: max |drawdown| allowed (0.25 = 25%)
+    # Purged, embargoed walk-forward validation — the trustworthy gate. The
+    # promoted model is trained on ALL data, but promotion is gated on genuine
+    # out-of-sample performance estimated by training throwaway models per fold
+    # and scoring only on held-out slices. Prevents promoting overfit models.
+    "ml_val_folds": 4,                   # expanding walk-forward folds
+    "ml_val_embargo": 24,                # rows dropped between train/test (purge)
+    "ml_gate_min_frac_folds_positive": 0.75,  # gate: fraction of OOS folds profitable
+    "ml_gate_allow_backtest_fallback": False,  # if val can't run, gate on in-sample backtest (unsafe)
     # OPTIONAL gates — only enforced if the backtest reports them.
     "ml_gate_min_oos_sharpe": 0.5,       # gate: min out-of-sample Sharpe (if present)
     "ml_gate_min_oos_trades": 20,        # gate: min OOS trade count (if present)
@@ -152,6 +160,7 @@ FLOAT_KEYS = {
     "ml_gate_min_oos_sharpe": (-10.0, 10.0),
     "ml_gate_min_return": (-1.0, 1000000.0),
     "ml_gate_max_drawdown": (0.0, 1.0),
+    "ml_gate_min_frac_folds_positive": (0.0, 1.0),
 }
 
 # Integer settings: (min, max) inclusive clamp. Everything else is treated as
@@ -163,6 +172,8 @@ INT_KEYS = {
     "ml_autotrain_min_new_labels": (10, 1000000),
     "ml_autotrain_check_sec": (60, 86400),     # 1min .. 24h
     "ml_gate_min_oos_trades": (0, 1000000),
+    "ml_val_folds": (2, 12),
+    "ml_val_embargo": (0, 1000000),
 }
 
 

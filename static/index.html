@@ -1297,22 +1297,33 @@ async function refreshMLTrain(){
   if(lr){
     const when=lr.finished_at?new Date(lr.finished_at*1000).toLocaleString():'—';
     const promoted=lr.promoted?'<b style="color:#7fe0a7">✅ PROMOTED</b>':'<b style="color:#ff9f43">not promoted</b>';
-    const m=lr.metrics||{};
-    const mstr=Object.keys(m).length?Object.entries(m).map(([k,v])=>k+'='+v).join(', '):'—';
+    const v=lr.validation||{};
+    const vsrc=v.source==='purged_walkforward'?'<b style="color:#7fe0a7">purged walk-forward (OOS)</b>'
+      :(v.source==='raw_backtest_fallback'?'<b style="color:#ff9f43">in-sample backtest (fallback)</b>'
+      :'<b style="color:var(--dim)">'+(v.source||'—')+'</b>');
+    let vdetail='';
+    if(v.source==='purged_walkforward'){
+      const fp=v.per_fold||[];
+      const rows=fp.map(f=>`<tr><td>${f.fold}</td><td>${f.total_return==null?'—':(+f.total_return).toFixed(3)}</td><td>${f.max_drawdown==null?'—':(+f.max_drawdown).toFixed(3)}</td></tr>`).join('');
+      vdetail=`<div class="kv"><span>OOS folds positive</span><b>${Math.round((v.frac_folds_positive||0)*100)}% (${v.n_folds||0} folds)</b></div>
+        <div class="kv"><span>OOS median return / worst DD</span><b>${v.median_return==null?'—':(+v.median_return).toFixed(3)} / ${v.worst_drawdown==null?'—':(+v.worst_drawdown).toFixed(3)}</b></div>
+        ${fp.length?`<table style="font-size:11px;margin-top:4px"><thead><tr><th>Fold</th><th>OOS return</th><th>Max DD</th></tr></thead><tbody>${rows}</tbody></table>`:''}`;
+    }
     last=`<div style="margin-top:8px;padding-top:8px;border-top:1px solid #223">
       <div class="kv"><span>Last run</span><b>${when} · ${lr.duration_sec||0}s</b></div>
       <div class="kv"><span>Outcome</span>${promoted} <span style="color:var(--dim)">(${lr.reason||''})</span></div>
-      <div class="kv"><span>Backtest metrics</span><b style="font-weight:400">${mstr}</b></div>
+      <div class="kv"><span>Gate metric source</span>${vsrc}</div>
+      ${vdetail}
     </div>`;
   } else { last='<div style="margin-top:6px;color:var(--dim)">No run yet.</div>'; }
   el.innerHTML=`
     <div class="kv"><span>Status</span>${state}</div>
     <div class="kv"><span>New matured labels since last train</span><b>${tr.new_since_last_train||0} / ${tr.threshold||0} (${pct}%)</b></div>
     <div class="kv"><span>Total labeled rows</span><b>${tr.labeled_total||0}</b></div>
-    <div class="kv"><span>Promotion gate</span><b style="font-weight:400">return ≥ ${g.min_return}, max drawdown ≤ ${Math.round((g.max_drawdown||0)*100)}%${g.require_beats_baseline?', beats baseline':''}</b></div>
+    <div class="kv"><span>Promotion gate (OOS)</span><b style="font-weight:400">return ≥ ${g.min_return}, max drawdown ≤ ${Math.round((g.max_drawdown||0)*100)}%, ≥ ${Math.round((g.min_frac_folds_positive||0)*100)}% folds positive</b></div>
     <div class="kv"><span>Lab command</span><b style="font-weight:400"><code>${(s.lab_cmd||'')}</code></b></div>
     ${last}
-    <div style="margin-top:6px;color:var(--dim);font-size:11px">Data-driven &amp; metric-gated: it only trains when enough new labels have matured, and only promotes a model whose backtest clears the gate — otherwise it keeps the current model. Needs <code>crypto_ml</code> installed.</div>`;
+    <div style="margin-top:6px;color:var(--dim);font-size:11px">Data-driven &amp; metric-gated: it only trains when enough new labels have matured, and only promotes a model whose <b>purged, embargoed walk-forward</b> out-of-sample performance clears the gate — otherwise it keeps the current model. The in-sample backtest is never trusted for promotion. Needs <code>crypto_ml</code> + <code>pandas</code> installed.</div>`;
 }
 refreshMLTrain(); setInterval(refreshMLTrain,15000);
 

@@ -193,13 +193,38 @@ once `ml_autotrain_min_new_labels` (default 200) NEW labeled rows have matured
 since the last successful train, runs the full pipeline off the hot path:
 
 ```
-export (in-process)  ->  crypto_ml.cli validate  ->  prepare  ->  train  ->  backtest
+export (in-process)  ->  crypto_ml.cli validate  ->  prepare  ->  train (ALL data)
+                      ->  purged walk-forward validation (OOS)  ->  gate  ->  promote
 ```
 
 then **auto-promotes** the fresh `model.joblib`/`metadata.json` into the live
 model dir (atomic temp+os.replace, then `advisor.reload()`) — **only if** the
-backtest gates pass. Governance-preserving: promotion is measurement-gated, never
-on vibes, and unreadable metrics **fail closed** (no promotion).
+**out-of-sample** gate passes. Governance-preserving: promotion is
+measurement-gated, never on vibes, and unreadable metrics **fail closed** (no
+promotion).
+
+**Trustworthy gate = purged, embargoed walk-forward (not an in-sample backtest).**
+The observed in-sample backtest (~3934× / 50% DD, below) is overfit fantasy;
+gating on it would ship overfit models. Instead the trainer estimates GENUINE
+out-of-sample performance in `app/learn/validation.py` +
+`MLTrainer._run_purged_validation`:
+
+- `walk_forward_folds(n_rows, n_folds, embargo)` carves the prepared
+  `features.parquet` into **expanding** folds, each with an **embargo** gap
+  between train and test so a label's forward-return horizon can't leak across
+  the boundary (rows are sorted by a detected time column first if present);
+- per fold a **throwaway** model is trained on the train slice and backtested on
+  the held-out test slice it never saw (lab CLI, on OUR splits);
+- `aggregate_oos` pools folds → **median** fold return (headline), **worst**
+  fold drawdown, and **fraction of folds positive** (consistency, not just a
+  good average).
+
+The **promoted artifact is the model trained on ALL data**; the fold models exist
+only to produce the honest gate metric and are discarded. If validation can't run
+(no `pandas`, unreadable parquet, or a fold's train/backtest fails) the trainer
+records `reason=validation_unavailable_not_promoted` and **promotes nothing**
+unless `ml_gate_allow_backtest_fallback=true` is explicitly set (then it gates on
+the in-sample backtest — unsafe, opt-in only).
 
 **Fail-safe by design.** OFF by default (`ml_autotrain_enabled`). On a machine
 without `crypto_ml` installed it records `reason=lab_not_installed` and promotes
@@ -208,9 +233,13 @@ nothing. Concurrent runs are guarded. A failure never touches trading.
 **Promotion gate (tunable via settings):**
 | Setting | Default | Meaning |
 |---|---|---|
-| `ml_gate_min_return` | 0.0 | **required** min backtest total return (0 = must not lose) |
-| `ml_gate_max_drawdown` | 0.25 | **required** max \|drawdown\| allowed (0.25 = 25%) |
-| `ml_gate_min_oos_sharpe` | 0.5 | optional: min Sharpe, only if the backtest reports it |
+| `ml_gate_min_return` | 0.0 | **required** min OOS median fold return (0 = must not lose) |
+| `ml_gate_max_drawdown` | 0.25 | **required** max \|drawdown\| allowed across folds (0.25 = 25%) |
+| `ml_gate_min_frac_folds_positive` | 0.75 | **required (when val ran)** fraction of OOS folds that must be profitable |
+| `ml_val_folds` | 4 | expanding walk-forward folds |
+| `ml_val_embargo` | 24 | rows purged between each train and test block |
+| `ml_gate_allow_backtest_fallback` | false | if validation can't run, gate on the in-sample backtest (unsafe, opt-in) |
+| `ml_gate_min_oos_sharpe` | 0.5 | optional: min Sharpe, only if reported |
 | `ml_gate_min_oos_trades` | 20 | optional: min trade count, only if reported |
 | `ml_gate_require_beats_baseline` | false | optional: require a beats-baseline flag |
 | `ml_autotrain_min_new_labels` | 200 | new matured labels before a retrain |
@@ -234,17 +263,21 @@ absent):
 
 Example the trainer will promote on: `{"total_return": 1.5, "max_drawdown": -0.08}`.
 
-> ⚠️ **Overfitting caveat.** A backtest total_return of ~3934× with a 50%
-> drawdown (observed on the first real run) is a classic overfit / non-purged
-> signature — the drawdown gate correctly blocks it. Before trusting any
-> auto-promotion, confirm `crypto_ml.cli backtest` is a purged/walk-forward
-> out-of-sample evaluation (the lab's `validation.py`), not an in-sample replay.
-> The gate can only be as trustworthy as the metric the backtest feeds it.
+> ⚠️ **Overfitting caveat (now handled).** A backtest total_return of ~3934× with
+> a 50% drawdown (observed on the first real run) is a classic overfit /
+> non-purged signature. Rather than trust `crypto_ml.cli backtest` (an in-sample
+> replay), the gate is now fed by CryptoMind's own **purged, embargoed
+> walk-forward** validation (above), which is lab-independent and never scores a
+> model on rows it trained on. The gate can only be as trustworthy as its metric —
+> so we generate that metric ourselves.
 
-16 tests in `tests/test_ml_trainer.py` cover the trigger, every gate-fail branch
-(negative return, excessive drawdown, optional sharpe/trades/beats), file + stdout
-metric parsing, atomic promotion, alias handling, lab-not-installed, and the
-concurrency guard.
+`tests/test_ml_trainer.py` covers the trigger, every gate-fail branch (negative
+return, excessive drawdown, **inconsistent OOS folds**, optional
+sharpe/trades/beats), alias handling, atomic promotion, lab-not-installed, the
+concurrency guard, **validation-unavailable fail-closed**, the opt-in backtest
+fallback, and the per-fold train/score adapter. `tests/test_validation.py` pins
+the pure harness (fold geometry, embargo purge gap, graceful degradation, median
+return / worst drawdown / frac-folds-positive aggregation).
 
 The trigger baseline is persisted in `<model_dir>/.autotrain_state.json`
 (git-ignored) so it survives restarts.
