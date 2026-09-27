@@ -24,9 +24,11 @@ def trainer(tmp_path, monkeypatch):
         "ml_autotrain_min_new_labels": 100,
         "ml_lab_cmd": "python -m crypto_ml.cli",
         "ml_backtest_metrics_file": "metrics.json",
+        "ml_gate_min_return": 0.0,
+        "ml_gate_max_drawdown": 0.25,
         "ml_gate_min_oos_sharpe": 0.5,
         "ml_gate_min_oos_trades": 20,
-        "ml_gate_require_beats_baseline": True,
+        "ml_gate_require_beats_baseline": False,
     }
     monkeypatch.setattr(MLTrainer, "_s",
                         staticmethod(lambda k, d=None: settings_store.get(k, d)))
@@ -98,7 +100,7 @@ def test_promotes_when_gates_pass(trainer, monkeypatch):
     monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
     _stub_export(trainer, monkeypatch)
     _stub_cli_success(trainer, monkeypatch,
-                      {"oos_sharpe": 0.9, "n_oos_trades": 40, "beats_baseline": True})
+                      {"total_return": 1.5, "max_drawdown": -0.08})
 
     rep = trainer.run_pipeline(force=False)
     assert rep["started"] and rep["promoted"] is True
@@ -111,34 +113,54 @@ def test_promotes_when_gates_pass(trainer, monkeypatch):
     assert state["last_trained_label_count"] == 500
 
 
-def test_weak_sharpe_blocks_promotion(trainer, monkeypatch):
+def test_negative_return_blocks_promotion(trainer, monkeypatch):
     monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
     _stub_export(trainer, monkeypatch)
     _stub_cli_success(trainer, monkeypatch,
-                      {"oos_sharpe": 0.1, "n_oos_trades": 40, "beats_baseline": True})
-
+                      {"total_return": -0.2, "max_drawdown": -0.05})
     rep = trainer.run_pipeline(force=True)
     assert rep["promoted"] is False
-    assert "failed:sharpe" in rep["gate"]["reason"]
-    # the live model dir must NOT have gained a model
+    assert "return" in rep["gate"]["reason"]
     assert not os.path.exists(os.path.join(trainer._model_dir(), "model.joblib"))
 
 
-def test_too_few_trades_blocks_promotion(trainer, monkeypatch):
+def test_excessive_drawdown_blocks_promotion(trainer, monkeypatch):
+    # mirrors the real observed result: huge return but a 50%+ drawdown
     monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
     _stub_export(trainer, monkeypatch)
     _stub_cli_success(trainer, monkeypatch,
-                      {"oos_sharpe": 1.0, "n_oos_trades": 5, "beats_baseline": True})
+                      {"total_return": 3934.5, "max_drawdown": -0.502})
+    rep = trainer.run_pipeline(force=True)
+    assert rep["promoted"] is False
+    assert "max_drawdown" in rep["gate"]["reason"]
+
+
+def test_optional_sharpe_enforced_when_present(trainer, monkeypatch):
+    monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
+    _stub_export(trainer, monkeypatch)
+    _stub_cli_success(trainer, monkeypatch,
+                      {"total_return": 1.0, "max_drawdown": -0.1, "oos_sharpe": 0.1})
+    rep = trainer.run_pipeline(force=True)
+    assert rep["promoted"] is False
+    assert "sharpe" in rep["gate"]["reason"]
+
+
+def test_too_few_trades_blocks_when_present(trainer, monkeypatch):
+    monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
+    _stub_export(trainer, monkeypatch)
+    _stub_cli_success(trainer, monkeypatch,
+                      {"total_return": 1.0, "max_drawdown": -0.1, "n_oos_trades": 5})
     rep = trainer.run_pipeline(force=True)
     assert rep["promoted"] is False
     assert "trades" in rep["gate"]["reason"]
 
 
-def test_not_beats_baseline_blocks_promotion(trainer, monkeypatch):
+def test_not_beats_baseline_blocks_when_required(trainer, monkeypatch):
+    trainer._settings["ml_gate_require_beats_baseline"] = True
     monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
     _stub_export(trainer, monkeypatch)
     _stub_cli_success(trainer, monkeypatch,
-                      {"oos_sharpe": 1.0, "n_oos_trades": 40, "beats_baseline": False})
+                      {"total_return": 1.0, "max_drawdown": -0.1, "beats_baseline": False})
     rep = trainer.run_pipeline(force=True)
     assert rep["promoted"] is False
     assert "beats_baseline" in rep["gate"]["reason"]
@@ -153,13 +175,35 @@ def test_missing_metrics_fails_closed(trainer, monkeypatch):
             run_dir = args[args.index("--output") + 1]
             os.makedirs(run_dir, exist_ok=True)
             open(os.path.join(run_dir, "model.joblib"), "w").write("M")
-        # backtest writes NO metrics file
+        # backtest writes NO metrics file and prints nothing parseable
         return 0, "ok", ""
     monkeypatch.setattr(trainer, "_run_cli", cli_no_metrics)
 
     rep = trainer.run_pipeline(force=True)
     assert rep["promoted"] is False
     assert rep["gate"]["reason"] == "no_metrics"
+
+
+def test_metrics_parsed_from_stdout_when_no_file(trainer, monkeypatch):
+    """Real crypto_ml backtest prints JSON to stdout; if --output somehow wrote
+    nothing, the stdout fallback still feeds the gate."""
+    monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
+    _stub_export(trainer, monkeypatch)
+
+    def cli(args, cwd, timeout=None):
+        if args and args[0] == "train":
+            run_dir = args[args.index("--output") + 1]
+            os.makedirs(run_dir, exist_ok=True)
+            open(os.path.join(run_dir, "model.joblib"), "w").write("M")
+            open(os.path.join(run_dir, "metadata.json"), "w").write('{"features":[]}')
+        if args and args[0] == "backtest":
+            return 0, '{\n  "total_return": 2.1,\n  "max_drawdown": -0.12\n}', ""
+        return 0, "ok", ""
+    monkeypatch.setattr(trainer, "_run_cli", cli)
+
+    rep = trainer.run_pipeline(force=True)
+    assert rep["promoted"] is True
+    assert rep["metrics"]["total_return"] == 2.1
 
 
 def test_lab_not_installed_is_reported(trainer, monkeypatch):
@@ -202,9 +246,9 @@ def test_no_events_aborts_before_cli(trainer, monkeypatch):
 def test_metric_aliases_accepted(trainer, monkeypatch):
     monkeypatch.setattr(MLTrainer, "_labeled_count", classmethod(lambda cls: 500))
     _stub_export(trainer, monkeypatch)
-    # use alternative key names
+    # use alternative key names for the required metrics
     _stub_cli_success(trainer, monkeypatch,
-                      {"sharpe": 0.8, "n_trades": 30, "beats_bench": True})
+                      {"cum_return": 1.0, "max_dd": -0.05})
     rep = trainer.run_pipeline(force=True)
     assert rep["promoted"] is True
 

@@ -38,6 +38,8 @@ import time
 
 
 # metric-name aliases so we tolerate small differences in the lab's output
+_RETURN_KEYS = ("total_return", "oos_return", "cum_return", "net_return", "return")
+_DRAWDOWN_KEYS = ("max_drawdown", "max_dd", "drawdown", "mdd")
 _SHARPE_KEYS = ("oos_sharpe", "test_sharpe", "sharpe", "sharpe_ratio")
 _TRADES_KEYS = ("n_oos_trades", "oos_trades", "n_trades", "trades", "num_trades")
 _BEATS_KEYS = ("beats_baseline", "beats_bench", "beats_benchmark", "outperforms_baseline")
@@ -81,9 +83,13 @@ class MLTrainer:
     @classmethod
     def _gate(cls):
         return {
+            # primary risk gate (metrics the lab's backtest actually emits)
+            "min_return": float(cls._s("ml_gate_min_return", 0.0)),
+            "max_drawdown": float(cls._s("ml_gate_max_drawdown", 0.25)),
+            # optional extra gates — only enforced if the backtest reports them
             "min_oos_sharpe": float(cls._s("ml_gate_min_oos_sharpe", 0.5)),
             "min_oos_trades": int(cls._s("ml_gate_min_oos_trades", 20)),
-            "require_beats_baseline": bool(cls._s("ml_gate_require_beats_baseline", True)),
+            "require_beats_baseline": bool(cls._s("ml_gate_require_beats_baseline", False)),
         }
 
     # ---------------- paths ----------------
@@ -197,6 +203,28 @@ class MLTrainer:
                 return d[k]
         return None
 
+    @staticmethod
+    def _parse_stdout_metrics(text):
+        """Fallback: extract a JSON metrics object from the backtest's stdout
+        (some builds only print, they don't write a file)."""
+        if not text:
+            return None
+        try:
+            m = json.loads(text)
+            if isinstance(m, dict):
+                return m
+        except Exception:
+            pass
+        start, end = text.find("{"), text.rfind("}")
+        if 0 <= start < end:
+            try:
+                m = json.loads(text[start:end + 1])
+                if isinstance(m, dict):
+                    return m
+            except Exception:
+                return None
+        return None
+
     def _read_metrics(self, run_dir):
         """Read the backtest metrics JSON. Tries the configured filename in the
         run dir, then a couple of common fallbacks. Returns dict or None."""
@@ -219,24 +247,42 @@ class MLTrainer:
 
     def _evaluate_gates(self, metrics):
         """Return (promote: bool, breakdown: dict). Fail-closed: anything
-        missing or unreadable blocks promotion."""
+        missing or unreadable blocks promotion.
+
+        PRIMARY gate = return + drawdown (the metrics crypto_ml's backtest
+        emits). Both are REQUIRED — if either is absent we do not promote.
+        Sharpe / trade-count / beats-baseline are OPTIONAL and only enforced
+        when the backtest actually reports them, so enhancing the backtest later
+        automatically tightens the gate without a code change."""
         g = self._gate()
         if not metrics:
             return False, {"pass": False, "reason": "no_metrics",
-                           "detail": "backtest wrote no readable metrics file"}
+                           "detail": "backtest produced no readable metrics"}
+        ret = self._first(metrics, _RETURN_KEYS)
+        dd = self._first(metrics, _DRAWDOWN_KEYS)
         sharpe = self._first(metrics, _SHARPE_KEYS)
         trades = self._first(metrics, _TRADES_KEYS)
         beats = self._first(metrics, _BEATS_KEYS)
         checks = {}
 
-        checks["sharpe"] = {"value": sharpe, "min": g["min_oos_sharpe"],
-                            "pass": sharpe is not None and float(sharpe) >= g["min_oos_sharpe"]}
-        if g["min_oos_trades"] > 0:
+        # --- required: profitability + drawdown control ---
+        checks["return"] = {
+            "value": ret, "min": g["min_return"],
+            "pass": ret is not None and float(ret) >= g["min_return"]}
+        checks["max_drawdown"] = {
+            "value": dd, "limit": g["max_drawdown"],
+            "pass": dd is not None and abs(float(dd)) <= g["max_drawdown"]}
+
+        # --- optional: only enforced when the metric is present ---
+        if sharpe is not None:
+            checks["sharpe"] = {"value": sharpe, "min": g["min_oos_sharpe"],
+                                "pass": float(sharpe) >= g["min_oos_sharpe"]}
+        if trades is not None and g["min_oos_trades"] > 0:
             checks["trades"] = {"value": trades, "min": g["min_oos_trades"],
-                                "pass": trades is not None and int(trades) >= g["min_oos_trades"]}
+                                "pass": int(trades) >= g["min_oos_trades"]}
         if g["require_beats_baseline"]:
             checks["beats_baseline"] = {"value": beats,
-                                        "pass": bool(beats) is True and beats is not None}
+                                        "pass": beats is not None and bool(beats) is True}
 
         failed = [k for k, v in checks.items() if not v["pass"]]
         promote = not failed
@@ -319,17 +365,23 @@ class MLTrainer:
                 return report
 
             feats = os.path.join(staging, "features.parquet")
-            # 2..5) lab CLI steps
+            metrics_path = os.path.join(run_dir, self._metrics_file())
+            # 2..5) lab CLI steps. backtest gets --output so it writes a metrics
+            # file we can read (it also prints the same JSON to stdout).
             steps = [
                 ("validate", ["validate", "--input", ev]),
                 ("prepare", ["prepare", "--input", ev, "--output", feats]),
                 ("train", ["train", "--input", feats, "--output", run_dir]),
                 ("backtest", ["backtest", "--input", feats,
-                              "--model", os.path.join(run_dir, "model.joblib")]),
+                              "--model", os.path.join(run_dir, "model.joblib"),
+                              "--output", metrics_path]),
             ]
+            step_out = {}
             for name, args in steps:
                 rc, out, err = self._run_cli(args, cwd=staging)
+                step_out[name] = out or ""
                 report["steps"].append({"step": name, "rc": rc,
+                                        "out_tail": (out or "")[-400:],
                                         "err_tail": err[-400:] if err else ""})
                 if rc != 0:
                     not_installed = (
@@ -341,8 +393,10 @@ class MLTrainer:
                     self.last_error = f"{name} rc={rc}: {err[-200:]}"
                     return report
 
-            # 6) read metrics + gate
+            # 6) read metrics (file first, then the backtest's stdout) + gate
             metrics = self._read_metrics(run_dir)
+            if not metrics:
+                metrics = self._parse_stdout_metrics(step_out.get("backtest", ""))
             report["metrics"] = {k: v for k, v in (metrics or {}).items()
                                  if k != "_metrics_path"}
             promote, gate = self._evaluate_gates(metrics)

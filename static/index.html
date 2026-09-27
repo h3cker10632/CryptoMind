@@ -1309,7 +1309,7 @@ async function refreshMLTrain(){
     <div class="kv"><span>Status</span>${state}</div>
     <div class="kv"><span>New matured labels since last train</span><b>${tr.new_since_last_train||0} / ${tr.threshold||0} (${pct}%)</b></div>
     <div class="kv"><span>Total labeled rows</span><b>${tr.labeled_total||0}</b></div>
-    <div class="kv"><span>Promotion gate</span><b style="font-weight:400">OOS Sharpe ≥ ${g.min_oos_sharpe}, trades ≥ ${g.min_oos_trades}${g.require_beats_baseline?', beats baseline':''}</b></div>
+    <div class="kv"><span>Promotion gate</span><b style="font-weight:400">return ≥ ${g.min_return}, max drawdown ≤ ${Math.round((g.max_drawdown||0)*100)}%${g.require_beats_baseline?', beats baseline':''}</b></div>
     <div class="kv"><span>Lab command</span><b style="font-weight:400"><code>${(s.lab_cmd||'')}</code></b></div>
     ${last}
     <div style="margin-top:6px;color:var(--dim);font-size:11px">Data-driven &amp; metric-gated: it only trains when enough new labels have matured, and only promotes a model whose backtest clears the gate — otherwise it keeps the current model. Needs <code>crypto_ml</code> installed.</div>`;

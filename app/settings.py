@@ -52,9 +52,14 @@ DEFAULTS = {
     "ml_autotrain_check_sec": 3600,      # how often the loop checks the trigger
     "ml_lab_cmd": "python -m crypto_ml.cli",  # base command to invoke the lab
     "ml_backtest_metrics_file": "metrics.json",  # metrics JSON the backtest writes
-    "ml_gate_min_oos_sharpe": 0.5,       # promotion gate: min out-of-sample Sharpe
-    "ml_gate_min_oos_trades": 20,        # promotion gate: min OOS trade count
-    "ml_gate_require_beats_baseline": True,  # promotion gate: must beat baseline
+    # Promotion gate. PRIMARY (required) = profitability + drawdown, the metrics
+    # crypto_ml's backtest actually emits (total_return / max_drawdown).
+    "ml_gate_min_return": 0.0,           # gate: min backtest total return (0 = must not lose)
+    "ml_gate_max_drawdown": 0.25,        # gate: max |drawdown| allowed (0.25 = 25%)
+    # OPTIONAL gates — only enforced if the backtest reports them.
+    "ml_gate_min_oos_sharpe": 0.5,       # gate: min out-of-sample Sharpe (if present)
+    "ml_gate_min_oos_trades": 20,        # gate: min OOS trade count (if present)
+    "ml_gate_require_beats_baseline": False,  # gate: require a beats-baseline flag
     # Predictive, self-learning early loss-cut. When True, a losing position the
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
@@ -145,6 +150,8 @@ FLOAT_KEYS = {
     "invo_horizon_hours": (0.25, 168.0),
     "invo_rank_decay": (0.0, 4.0),
     "ml_gate_min_oos_sharpe": (-10.0, 10.0),
+    "ml_gate_min_return": (-1.0, 1000000.0),
+    "ml_gate_max_drawdown": (0.0, 1.0),
 }
 
 # Integer settings: (min, max) inclusive clamp. Everything else is treated as

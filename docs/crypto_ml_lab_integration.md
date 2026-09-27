@@ -208,29 +208,43 @@ nothing. Concurrent runs are guarded. A failure never touches trading.
 **Promotion gate (tunable via settings):**
 | Setting | Default | Meaning |
 |---|---|---|
-| `ml_gate_min_oos_sharpe` | 0.5 | min out-of-sample Sharpe |
-| `ml_gate_min_oos_trades` | 20 | min OOS trade count |
-| `ml_gate_require_beats_baseline` | true | must beat the baseline |
+| `ml_gate_min_return` | 0.0 | **required** min backtest total return (0 = must not lose) |
+| `ml_gate_max_drawdown` | 0.25 | **required** max \|drawdown\| allowed (0.25 = 25%) |
+| `ml_gate_min_oos_sharpe` | 0.5 | optional: min Sharpe, only if the backtest reports it |
+| `ml_gate_min_oos_trades` | 20 | optional: min trade count, only if reported |
+| `ml_gate_require_beats_baseline` | false | optional: require a beats-baseline flag |
 | `ml_autotrain_min_new_labels` | 200 | new matured labels before a retrain |
 | `ml_autotrain_check_sec` | 3600 | trigger check cadence |
 | `ml_lab_cmd` | `python -m crypto_ml.cli` | how the lab CLI is invoked |
 | `ml_backtest_metrics_file` | `metrics.json` | metrics file the backtest writes |
 
-**Backtest-metrics contract (what the lab must emit).** The gate reads a small
-JSON file written by `crypto_ml.cli backtest` into its run/output dir. Accepted
-keys (first present alias wins, fail-closed if absent):
-- Sharpe: `oos_sharpe` \| `test_sharpe` \| `sharpe` \| `sharpe_ratio`
-- trades: `n_oos_trades` \| `oos_trades` \| `n_trades` \| `trades` \| `num_trades`
-- baseline: `beats_baseline` \| `beats_bench` \| `beats_benchmark` \| `outperforms_baseline` (truthy)
-
-Example the trainer will promote on:
+**Backtest-metrics contract.** The trainer runs `crypto_ml.cli backtest --input
+… --model … --output <run>/metrics.json` and reads that JSON (falling back to the
+backtest's stdout, which prints the same object). crypto_ml's backtest emits:
 ```json
-{"oos_sharpe": 0.91, "n_oos_trades": 44, "beats_baseline": true}
+{"total_return": 3934.52, "max_drawdown": -0.502, "final_equity": 39355208.9}
 ```
-If your `backtest` doesn't already write such a file, either add one or point
-`ml_backtest_metrics_file` at whatever it does write. 14 tests in
-`tests/test_ml_trainer.py` cover the trigger, every gate-fail branch, atomic
-promotion, alias handling, lab-not-installed, and the concurrency guard.
+Gate keys (first present alias wins; the two REQUIRED metrics fail-closed if
+absent):
+- **return (required):** `total_return` \| `oos_return` \| `cum_return` \| `net_return` \| `return`
+- **drawdown (required):** `max_drawdown` \| `max_dd` \| `drawdown` \| `mdd` (compared by absolute value)
+- Sharpe (optional): `oos_sharpe` \| `test_sharpe` \| `sharpe` \| `sharpe_ratio`
+- trades (optional): `n_oos_trades` \| `oos_trades` \| `n_trades` \| `trades` \| `num_trades`
+- baseline (optional): `beats_baseline` \| `beats_bench` \| `beats_benchmark` \| `outperforms_baseline`
+
+Example the trainer will promote on: `{"total_return": 1.5, "max_drawdown": -0.08}`.
+
+> ⚠️ **Overfitting caveat.** A backtest total_return of ~3934× with a 50%
+> drawdown (observed on the first real run) is a classic overfit / non-purged
+> signature — the drawdown gate correctly blocks it. Before trusting any
+> auto-promotion, confirm `crypto_ml.cli backtest` is a purged/walk-forward
+> out-of-sample evaluation (the lab's `validation.py`), not an in-sample replay.
+> The gate can only be as trustworthy as the metric the backtest feeds it.
+
+16 tests in `tests/test_ml_trainer.py` cover the trigger, every gate-fail branch
+(negative return, excessive drawdown, optional sharpe/trades/beats), file + stdout
+metric parsing, atomic promotion, alias handling, lab-not-installed, and the
+concurrency guard.
 
 The trigger baseline is persisted in `<model_dir>/.autotrain_state.json`
 (git-ignored) so it survives restarts.
