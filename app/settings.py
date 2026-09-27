@@ -229,6 +229,14 @@ def public():
     for k in SECRET_KEYS:
         s[k + "_set"] = bool(s.get(k))
         s[k] = MASK if s.get(k) else ""
+    # Non-secret computed flag: whether the ML model advisor actually has a
+    # trained artifact to serve. Enabling the toggle alone is inert without one,
+    # so the UI needs this to show "on (active)" vs "on (needs artifact)".
+    try:
+        from .learn.model_advisor import advisor as _model_advisor
+        s["model_artifact_present"] = bool(_model_advisor.artifact_present())
+    except Exception:
+        s["model_artifact_present"] = False
     return s
 
 

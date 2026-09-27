@@ -1059,7 +1059,7 @@ function renderToggles(){
   $('#tg-llm').classList.toggle('on', s.llm_advisor_enabled);
   $('#tg-llm-label').textContent=s.llm_advisor_enabled?'on (needs API key)':'off';
   $('#tg-model').classList.toggle('on', s.model_advisor_enabled);
-  $('#tg-model-label').textContent=s.model_advisor_enabled?'on (needs artifact)':'off';
+  $('#tg-model-label').textContent=s.model_advisor_enabled?(s.model_artifact_present?'on (active)':'on (needs artifact)'):'off';
   $('#tg-exit').classList.toggle('on', s.exit_advisor_enabled!==false);
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
   $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
