@@ -36,38 +36,47 @@ GENE_SPACE = {
     "htf_w":     (0.0, 1.0),   # >0.5 = require macro-trend agreement (HTF filter)
     "volz_w":    (0.0, 1.0),   # >0.5 = require a favourable volatility regime
     "volz_max":  (0.8, 2.5),   # max ATR / trailing-median-ATR allowed to enter
+    # --- regime filter (ga_regime_filter) ------------------------------------
+    # Kaufman efficiency-ratio gate: only enter when the trailing ER >= er_min.
+    # MEASURED: the trend-following edge is concentrated in trending regimes, so
+    # evolution can raise er_min to skip low-quality chop. er_min ~ 0 is inert,
+    # so this is a CONTINUOUS filter (not a binary gate that starves trades).
+    "er_n":      (24, 96),     # efficiency-ratio window (bars)
+    "er_min":    (0.0, 0.35),  # min trailing ER to allow an entry (0 = no filter)
 }
-INT_GENES = {"ema_fast", "ema_slow", "rsi_buy", "rsi_sell", "breakout_n", "htf_n"}
+INT_GENES = {"ema_fast", "ema_slow", "rsi_buy", "rsi_sell", "breakout_n",
+             "htf_n", "er_n"}
 
 # Trailing window (bars) for the volatility-regime normaliser (~3 days hourly).
 _VOL_WINDOW = 72
 
 
-# Market-structure weight genes gated behind the `ga_market_structure` tunable.
-_MS_WEIGHT_GENES = ("htf_w", "volz_w")
+# Genes pinned to an inert value unless their controlling tunable is enabled, so
+# the DEFAULT search space (and every promoted champion) stays bit-identical to
+# the pre-enrichment behaviour. {tunable_name: {gene_name: inert_value}}.
+_PINNED = {
+    # HTF/vol gates — MEASURED to starve trades and collapse DSR (default off).
+    "ga_market_structure": {"htf_w": 0.0, "volz_w": 0.0},
+    # Efficiency-ratio regime filter — er_min=0 disables the filter entirely.
+    "ga_regime_filter": {"er_min": 0.0},
+}
 
 
-def _ms_enabled():
-    """Whether the candle-derived market-structure genes may activate.
-
-    Default OFF: measurement showed the HTF/vol gates starve the walk-forward of
-    trades and collapse the deflated Sharpe. When off we PIN their weight genes to
-    0 across the whole population so the search space (and every promoted genome)
-    is bit-identical to the pre-enrichment behaviour. When on, they evolve freely.
-    """
+def _tv_on(name):
     try:
         from ..tunables import tv
-        return tv("ga_market_structure") > 0
+        return tv(name) > 0
     except Exception:
         return False
 
 
 def _apply_ms_flag(g):
-    """Pin the market-structure gates OFF unless the tunable enables them."""
-    if not _ms_enabled():
-        for k in _MS_WEIGHT_GENES:
-            if k in g:
-                g[k] = 0.0
+    """Pin experimental genes to their inert value unless their tunable is on."""
+    for tunable, pins in _PINNED.items():
+        if not _tv_on(tunable):
+            for k, inert in pins.items():
+                if k in g:
+                    g[k] = inert
     return g
 
 
@@ -357,16 +366,20 @@ def _precompute_indicators(candles, genome):
         vn[~_np.isfinite(vn)] = 1.0
         vol_norm[idx] = vn
 
+    # Kaufman efficiency ratio (trailing, causal) for the regime filter.
+    from .regime import efficiency_ratio
+    er = efficiency_ratio(closes.tolist(), int(genome.get("er_n", 48)))
+
     return {"ema_fast": _ema_series(closes.tolist(), genome["ema_fast"]),
             "ema_slow": _ema_series(closes.tolist(), genome["ema_slow"]),
             "atr": atr.tolist(), "rsi": rsi.tolist(),
             "brk_up": brk_up.tolist(), "brk_dn": brk_dn.tolist(),
             "htf_ema": htf_ema, "vol_norm": vol_norm.tolist(),
-            "closes": closes.tolist()}
+            "er": er, "closes": closes.tolist()}
 
 
 def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
-             sizing="risk"):
+             sizing="risk", trade_log=None):
     """Event-driven sim; LONG and (if short_w > 0.5) SHORT trades.
     side: 0 flat, +1 long, -1 short (margin-style shorts).
 
@@ -412,27 +425,34 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
         _atr, _rsi = ind["atr"], ind["rsi"]
         _brk_up_lvl, _brk_dn_lvl = ind["brk_up"], ind["brk_dn"]
         _htf, _voln = ind["htf_ema"], ind["vol_norm"]
+        _er = ind["er"]
     else:
         ef = _ema_series(closes, genome["ema_fast"])
         es = _ema_series(closes, genome["ema_slow"])
         _atr = _rsi = _brk_up_lvl = _brk_dn_lvl = None
-        # HTF trend still works without NumPy; vol regime needs it -> gate off.
+        # HTF trend + ER still work without NumPy; vol regime needs it -> off.
         _htf = _ema_series(closes, int(genome.get("htf_n", 48)))
+        from .regime import efficiency_ratio
+        _er = efficiency_ratio(closes, int(genome.get("er_n", 48)))
         _voln = None
 
     # Opt-in market-structure gates (disabled unless the weight gene > 0.5).
     htf_on = genome.get("htf_w", 0.0) > 0.5
     vol_on = genome.get("volz_w", 0.0) > 0.5
     vol_max = genome.get("volz_max", 99.0)
+    # Regime filter: only enter when trailing ER >= er_min (0 = inert).
+    er_min = genome.get("er_min", 0.0)
 
     cash, side, qty, entry, stop, take, margin = start_cash, 0, 0.0, 0.0, 0.0, 0.0, 0.0
+    entry_i = 0                       # bar index of the current open entry
     eq, trades = [], []
     # Only extend the warmup for a market-structure feature when it is actually
     # ACTIVE, so a genome with the gates disabled is bit-identical to a legacy
     # genome that never had these genes (strict superset behaviour).
     warm = max(genome["ema_slow"], n_bo, 15,
                int(genome.get("htf_n", 48)) if htf_on else 0,
-               _VOL_WINDOW if vol_on else 0) + 1
+               _VOL_WINDOW if vol_on else 0,
+               int(genome.get("er_n", 48)) if er_min > 0 else 0) + 1
 
     def close_pos(px):
         nonlocal cash, side, qty, margin
@@ -443,6 +463,11 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
             move = qty * (entry - px)
             cash += margin + move - qty * px * fee
             trades.append((entry - px) / entry)
+        # optional instrumentation: record (entry_bar_index, side) per closed
+        # trade so callers can bucket P&L by the regime at entry. No overhead
+        # unless a list is supplied.
+        if trade_log is not None:
+            trade_log.append((entry_i, side))
         side, qty, margin = 0, 0.0, 0.0
 
     for i in range(warm, len(candles)):
@@ -494,21 +519,23 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
             htf_ok_long = (not htf_on) or (cl > _htf[i])
             htf_ok_short = (not htf_on) or (cl < _htf[i])
             vol_ok = (not vol_on) or (_voln is None) or (_voln[i] <= vol_max)
+            # regime filter: strong-enough trend to trade (er_min 0 = inert)
+            regime_ok = (er_min <= 0.0) or (_er[i] >= er_min)
 
             if up_trend and (brk_up or rsi < genome["rsi_buy"]) and mom_up \
-                    and htf_ok_long and vol_ok:
+                    and htf_ok_long and vol_ok and regime_ok:
                 px = cl * (1 + slip)
                 notional = _entry_notional(cash, px, genome["stop_atr"] * atr)
                 if notional <= 0:
                     eq.append(cash); continue
                 qty = notional / px
                 cash -= notional * (1 + fee)
-                side, entry = 1, px
+                side, entry, entry_i = 1, px, i
                 stop = px - genome["stop_atr"] * atr
                 take = px + genome["take_atr"] * atr
             elif can_short and not up_trend and \
                     (brk_dn or rsi > genome.get("rsi_sell", 70)) and mom_dn \
-                    and htf_ok_short and vol_ok:
+                    and htf_ok_short and vol_ok and regime_ok:
                 px = cl * (1 - slip)
                 notional = _entry_notional(cash, px, genome["stop_atr"] * atr)
                 if notional <= 0:
@@ -516,7 +543,7 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
                 qty = notional / px
                 margin = notional
                 cash -= notional + notional * fee
-                side, entry = -1, px
+                side, entry, entry_i = -1, px, i
                 stop = px + genome["stop_atr"] * atr
                 take = px - genome["take_atr"] * atr
 

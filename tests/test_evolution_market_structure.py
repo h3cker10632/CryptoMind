@@ -15,7 +15,7 @@ import os, sys, random
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.learn import evolution as ev
 
-NEW = {"htf_n", "htf_w", "volz_w", "volz_max"}
+NEW = {"htf_n", "htf_w", "volz_w", "volz_max", "er_n", "er_min"}
 
 
 def _synth(n=800, seed=7):
@@ -66,6 +66,50 @@ def test_enabled_gates_only_filter_entries():
         base = ev.simulate(off, candles)["n_trades"]
         gated = ev.simulate(on, candles)["n_trades"]
         assert gated <= base, "market-structure gates must never add trades"
+
+
+def test_regime_filter_pinned_off_by_default_and_activates_on_flag():
+    """er_min is pinned to 0 (inert) unless ga_regime_filter is enabled."""
+    from app import tunables as T
+    rnd = random.Random(2)
+    T._overrides = {}                                  # default: filter off
+    assert all(ev.random_genome(rnd)["er_min"] == 0.0 for _ in range(20))
+    T._overrides = {"ga_regime_filter": 1}             # enabled
+    assert any(ev.random_genome(rnd)["er_min"] > 0 for _ in range(20))
+    T._overrides = {}
+
+
+def test_regime_filter_only_reduces_trades():
+    candles = _synth()
+    g = ev.random_genome(random.Random(4))
+    off = dict(g, er_min=0.0)
+    on = dict(g, er_min=0.25)                           # require a real trend
+    assert ev.simulate(on, candles)["n_trades"] <= ev.simulate(off, candles)["n_trades"]
+
+
+def test_er_gate_identical_numpy_and_fallback():
+    """The efficiency-ratio filter is computed on both paths -> must match."""
+    candles = _synth()
+    g = dict(ev.random_genome(random.Random(6)), er_min=0.2, htf_w=0.0, volz_w=0.0)
+    orig = ev._np
+    try:
+        ev._np = orig
+        r_np = ev.simulate(g, candles)
+        ev._np = None
+        r_py = ev.simulate(g, candles)
+    finally:
+        ev._np = orig
+    assert _summ(r_np) == _summ(r_py)
+
+
+def test_trade_log_matches_trade_count():
+    """The optional entry-index logger records exactly one (idx, side) per trade."""
+    candles = _synth()
+    g = ev.random_genome(random.Random(8))
+    log = []
+    res = ev.simulate(g, candles, trade_log=log)
+    assert len(log) == res["n_trades"]
+    assert all(isinstance(i, int) and s in (1, -1) for i, s in log)
 
 
 def test_htf_gate_identical_numpy_and_fallback():

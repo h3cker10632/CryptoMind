@@ -186,6 +186,15 @@ TUNABLES = {
                            "the deflated Sharpe (SOL +, DOGE/UNI -) because a longer window "
                            "spans more regimes the single-timeframe TA can't fit uniformly. "
                            "Left at 3; raise to experiment. 8 ≈ 2400 bars ≈ 100 days.", True),
+    "ga_regime_filter": T(0, 0, 1, 1, "evolution", "Regime filter (efficiency ratio)",
+                           "Let evolution add a Kaufman efficiency-ratio entry filter "
+                           "(er_n / er_min genes): only trade when the trailing trend is "
+                           "strong enough, skipping low-quality chop. MEASURED (2026-09): the "
+                           "trend-following edge is heavily concentrated in trending regimes "
+                           "(pooled TREND trades ~+1.7%/trade vs ~+0.3% in chop). Unlike the "
+                           "HTF/vol gates it is a CONTINUOUS threshold that need not starve "
+                           "trades. See ga_market_structure for the (default-off) HTF/vol "
+                           "gates.", True),
     "ga_market_structure": T(0, 0, 1, 1, "evolution", "Market-structure genes",
                            "Enable the candle-derived higher-timeframe-trend and "
                            "volatility-regime genome genes. OFF by default: MEASURED "
