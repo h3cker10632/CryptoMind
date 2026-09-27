@@ -68,6 +68,7 @@ async def startup():
     asyncio.create_task(orch.reconcile_loop())
     asyncio.create_task(orch.llm_advisor_loop())
     asyncio.create_task(orch.model_advisor_loop())   # crypto_ml_lab model vote
+    asyncio.create_task(orch.ml_trainer_loop())      # autonomous metric-gated retrain
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     from .export import auto_export_loop
@@ -623,6 +624,20 @@ async def invo_collector_stop():
 async def invo_study_run():
     from .data import invo
     return await asyncio.to_thread(invo.run_study_sync)
+
+
+@app.get("/api/ml/autotrain/status")
+def ml_autotrain_status():
+    from .learn.ml_trainer import trainer
+    return trainer.status()
+
+
+@app.post("/api/ml/autotrain/run")
+async def ml_autotrain_run():
+    """One-click 'run the full ML pipeline now' — forces a run regardless of the
+    data-driven trigger (still metric-gated before it promotes anything)."""
+    from .learn.ml_trainer import trainer
+    return trainer.start_async(force=True)
 
 
 @app.get("/api/tunables")

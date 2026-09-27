@@ -125,6 +125,38 @@ class Orchestrator:
                 db.log_event("warn", f"Model advisor loop error: {e}")
             await asyncio.sleep(30)
 
+    async def ml_trainer_loop(self):
+        """Autonomous, metric-gated ML retraining. Checks the data-driven
+        trigger on a cadence and, when enough NEW labeled rows have matured,
+        runs the full crypto_ml_lab pipeline off the hot path (in a worker
+        thread) and auto-promotes the artifact ONLY if the backtest gates pass.
+        No-ops entirely unless `ml_autotrain_enabled` is set; a failure here can
+        never affect trading."""
+        from .learn.ml_trainer import trainer
+        from . import settings
+        await asyncio.sleep(90)  # let feeds + db warm up
+        while True:
+            try:
+                if trainer.enabled():
+                    ok, reason = trainer.should_run()
+                    if ok:
+                        db.log_event("learn", "Auto-trainer: enough new labels "
+                                     "matured — running crypto_ml_lab pipeline")
+                        rep = await asyncio.to_thread(trainer.run_pipeline, False)
+                        if rep.get("promoted"):
+                            db.log_event("learn", "Auto-trainer PROMOTED a new "
+                                         f"model (gates passed): {rep.get('metrics')}")
+                        elif rep.get("started"):
+                            db.log_event("learn", "Auto-trainer ran but did not "
+                                         f"promote: {rep.get('reason')}")
+            except Exception as e:
+                db.log_event("warn", f"ML trainer loop error: {e}")
+            try:
+                interval = max(60, int(settings.get("ml_autotrain_check_sec")))
+            except Exception:
+                interval = 3600
+            await asyncio.sleep(interval)
+
     async def reconcile_loop(self):
         """Periodically reconcile the shadow OMS against its venue (source of
         truth) and prune the equity table. Runs off the hot decision path."""

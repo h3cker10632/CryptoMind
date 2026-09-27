@@ -92,6 +92,17 @@ class ModelAdvisor:
     def artifact_present(self):
         return os.path.exists(self._model_path())
 
+    def reload(self):
+        """Drop the cached model/metadata/leans so the next lean() reloads a
+        freshly promoted artifact from disk. Called by the auto-trainer right
+        after it swaps in a new model.joblib/metadata.json."""
+        self._model = None
+        self._meta = None
+        self._loaded_from = None
+        self._load_failed = False
+        self._leans = {}
+        self.last_error = ""
+
     # ---------------- model loading (lazy, cached) ----------------
     def _load(self):
         """Load the joblib artifact + metadata once. Returns the model or None.

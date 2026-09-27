@@ -145,6 +145,10 @@
     <div class="sw"></div>
     <span>ML-model advisor: <b id="tg-model-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-autotrain" title="Autonomous ML retraining: when enough NEW labeled rows have matured, the system runs the full crypto_ml_lab pipeline (export→validate→prepare→train→backtest) on its own and AUTO-PROMOTES the fresh model ONLY IF the backtest gates pass (OOS Sharpe / trade count / beats-baseline). Needs the crypto_ml package installed. Off by default; never promotes on unreadable metrics.">
+    <div class="sw"></div>
+    <span>auto-retrain ML: <b id="tg-autotrain-label">off</b></span>
+  </div>
   <div class="toggle" id="tg-exit" title="Predictive loss-cut: cuts a losing position early when the system confidently expects it to keep moving against you, instead of waiting for the hard stop. Learns hold-vs-cut per market state from what price actually did next.">
     <div class="sw"></div>
     <span>loss-cut advisor: <b id="tg-exit-label">on</b></span>
@@ -261,6 +265,13 @@
     <table id="tbl-bandit"><thead><tr>
       <th>Strategy</th><th title="Effective sample size (recent evidence is weighted more; old evidence decays)">Eff. samples (regime / pool)</th><th>Mean aligned return (bps)</th><th>Std (bps)</th><th>Hit rate</th><th>Weight</th>
     </tr></thead><tbody></tbody></table>
+
+    <div id="ml-autotrain-card" style="margin-top:14px;padding:10px;border:1px solid var(--accent);border-radius:8px">
+      <h2 style="margin:0 0 6px">🤖 Autonomous ML retraining
+        <button id="btn-ml-train" style="padding:2px 8px;font-size:11px">▶ run full pipeline now</button>
+        <span style="text-transform:none;color:var(--muted);font-weight:400">— retrains from matured labels &amp; auto-promotes ONLY if the backtest gates pass</span></h2>
+      <div id="ml-autotrain-stats" style="font-size:12.5px">loading…</div>
+    </div>
   </div>
 
   <div class="card span12">
@@ -1060,6 +1071,8 @@ function renderToggles(){
   $('#tg-llm-label').textContent=s.llm_advisor_enabled?'on (needs API key)':'off';
   $('#tg-model').classList.toggle('on', s.model_advisor_enabled);
   $('#tg-model-label').textContent=s.model_advisor_enabled?(s.model_artifact_present?'on (active)':'on (needs artifact)'):'off';
+  $('#tg-autotrain').classList.toggle('on', s.ml_autotrain_enabled);
+  $('#tg-autotrain-label').textContent=s.ml_autotrain_enabled?'on':'off';
   $('#tg-exit').classList.toggle('on', s.exit_advisor_enabled!==false);
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
   $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
@@ -1208,6 +1221,7 @@ document.querySelectorAll('#seg-mode button').forEach(b=>
 $('#tg-hedge').onclick=()=>setSetting('hedge_enabled',!(window._settings||{}).hedge_enabled);
 $('#tg-llm').onclick=()=>setSetting('llm_advisor_enabled',!(window._settings||{}).llm_advisor_enabled);
 $('#tg-model').onclick=()=>setSetting('model_advisor_enabled',!(window._settings||{}).model_advisor_enabled);
+$('#tg-autotrain').onclick=()=>setSetting('ml_autotrain_enabled',!(window._settings||{}).ml_autotrain_enabled);
 $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
 $('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
 $('#tg-autoexport').onclick=()=>setSetting('auto_export_enabled',(window._settings||{}).auto_export_enabled===false);
@@ -1263,6 +1277,44 @@ document.addEventListener('click',e=>{
     if(r&&r.started===false)alert(r.reason||'A run is already in progress.');
   }).finally(()=>{setTimeout(()=>{b.disabled=false; b.textContent=t; refresh();},1500);});
 });
+document.addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('#btn-ml-train');
+  if(!b)return;
+  b.disabled=true; const t=b.textContent; b.textContent='⏳ running…';
+  j('/api/ml/autotrain/run',{method:'POST'}).then(r=>{
+    if(r&&r.started===false)alert('Not started: '+(r.reason||'unknown'));
+    else alert('ML pipeline started. It runs in the background; this card will update when it finishes (training can take a while).');
+  }).finally(()=>{setTimeout(()=>{b.disabled=false; b.textContent=t; refreshMLTrain();},1500);});
+});
+async function refreshMLTrain(){
+  let s; try{ s=await j('/api/ml/autotrain/status'); }catch(e){ return; }
+  const el=document.getElementById('ml-autotrain-stats'); if(!el)return;
+  const tr=s.trigger||{}, g=s.gate||{}, lr=s.last_run;
+  const pct=tr.threshold?Math.min(100,Math.round(100*(tr.new_since_last_train||0)/tr.threshold)):0;
+  const state=s.running?'<b style="color:#f5c451">⏳ training now…</b>'
+    :(s.enabled?'<b style="color:#7fe0a7">autonomous — on</b>':'<b style="color:var(--dim)">off (enable "auto-retrain ML")</b>');
+  let last='';
+  if(lr){
+    const when=lr.finished_at?new Date(lr.finished_at*1000).toLocaleString():'—';
+    const promoted=lr.promoted?'<b style="color:#7fe0a7">✅ PROMOTED</b>':'<b style="color:#ff9f43">not promoted</b>';
+    const m=lr.metrics||{};
+    const mstr=Object.keys(m).length?Object.entries(m).map(([k,v])=>k+'='+v).join(', '):'—';
+    last=`<div style="margin-top:8px;padding-top:8px;border-top:1px solid #223">
+      <div class="kv"><span>Last run</span><b>${when} · ${lr.duration_sec||0}s</b></div>
+      <div class="kv"><span>Outcome</span>${promoted} <span style="color:var(--dim)">(${lr.reason||''})</span></div>
+      <div class="kv"><span>Backtest metrics</span><b style="font-weight:400">${mstr}</b></div>
+    </div>`;
+  } else { last='<div style="margin-top:6px;color:var(--dim)">No run yet.</div>'; }
+  el.innerHTML=`
+    <div class="kv"><span>Status</span>${state}</div>
+    <div class="kv"><span>New matured labels since last train</span><b>${tr.new_since_last_train||0} / ${tr.threshold||0} (${pct}%)</b></div>
+    <div class="kv"><span>Total labeled rows</span><b>${tr.labeled_total||0}</b></div>
+    <div class="kv"><span>Promotion gate</span><b style="font-weight:400">OOS Sharpe ≥ ${g.min_oos_sharpe}, trades ≥ ${g.min_oos_trades}${g.require_beats_baseline?', beats baseline':''}</b></div>
+    <div class="kv"><span>Lab command</span><b style="font-weight:400"><code>${(s.lab_cmd||'')}</code></b></div>
+    ${last}
+    <div style="margin-top:6px;color:var(--dim);font-size:11px">Data-driven &amp; metric-gated: it only trains when enough new labels have matured, and only promotes a model whose backtest clears the gate — otherwise it keeps the current model. Needs <code>crypto_ml</code> installed.</div>`;
+}
+refreshMLTrain(); setInterval(refreshMLTrain,15000);
 
 // backtest
 const PRODUCTS=['BTC-USD','ETH-USD','SOL-USD','DOGE-USD','LINK-USD','AVAX-USD'];

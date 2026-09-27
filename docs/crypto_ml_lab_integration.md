@@ -179,6 +179,62 @@ produces a valid bounded lean; rug-veto and TTL/clamp paths confirmed. 13 tests 
 calibrated probabilities, fee/slippage stress. Enabling the toggle without a validated
 artifact simply does nothing.
 
+### Phase 2.5 — autonomous, metric-gated auto-retraining ✅ DONE
+
+**Shipped** in `app/learn/ml_trainer.py` (`MLTrainer`, singleton `trainer`) +
+`orchestrator.ml_trainer_loop` (registered in `main.py`) + endpoints
+`GET /api/ml/autotrain/status` and `POST /api/ml/autotrain/run` + dashboard
+card ("🤖 Autonomous ML retraining") with an "auto-retrain ML" toggle and a
+"run full pipeline now" button.
+
+Closes the loop **without operator input**: a background loop checks a
+**data-driven trigger** on a cadence (`ml_autotrain_check_sec`, default 1h) and,
+once `ml_autotrain_min_new_labels` (default 200) NEW labeled rows have matured
+since the last successful train, runs the full pipeline off the hot path:
+
+```
+export (in-process)  ->  crypto_ml.cli validate  ->  prepare  ->  train  ->  backtest
+```
+
+then **auto-promotes** the fresh `model.joblib`/`metadata.json` into the live
+model dir (atomic temp+os.replace, then `advisor.reload()`) — **only if** the
+backtest gates pass. Governance-preserving: promotion is measurement-gated, never
+on vibes, and unreadable metrics **fail closed** (no promotion).
+
+**Fail-safe by design.** OFF by default (`ml_autotrain_enabled`). On a machine
+without `crypto_ml` installed it records `reason=lab_not_installed` and promotes
+nothing. Concurrent runs are guarded. A failure never touches trading.
+
+**Promotion gate (tunable via settings):**
+| Setting | Default | Meaning |
+|---|---|---|
+| `ml_gate_min_oos_sharpe` | 0.5 | min out-of-sample Sharpe |
+| `ml_gate_min_oos_trades` | 20 | min OOS trade count |
+| `ml_gate_require_beats_baseline` | true | must beat the baseline |
+| `ml_autotrain_min_new_labels` | 200 | new matured labels before a retrain |
+| `ml_autotrain_check_sec` | 3600 | trigger check cadence |
+| `ml_lab_cmd` | `python -m crypto_ml.cli` | how the lab CLI is invoked |
+| `ml_backtest_metrics_file` | `metrics.json` | metrics file the backtest writes |
+
+**Backtest-metrics contract (what the lab must emit).** The gate reads a small
+JSON file written by `crypto_ml.cli backtest` into its run/output dir. Accepted
+keys (first present alias wins, fail-closed if absent):
+- Sharpe: `oos_sharpe` \| `test_sharpe` \| `sharpe` \| `sharpe_ratio`
+- trades: `n_oos_trades` \| `oos_trades` \| `n_trades` \| `trades` \| `num_trades`
+- baseline: `beats_baseline` \| `beats_bench` \| `beats_benchmark` \| `outperforms_baseline` (truthy)
+
+Example the trainer will promote on:
+```json
+{"oos_sharpe": 0.91, "n_oos_trades": 44, "beats_baseline": true}
+```
+If your `backtest` doesn't already write such a file, either add one or point
+`ml_backtest_metrics_file` at whatever it does write. 14 tests in
+`tests/test_ml_trainer.py` cover the trigger, every gate-fail branch, atomic
+promotion, alias handling, lab-not-installed, and the concurrency guard.
+
+The trigger baseline is persisted in `<model_dir>/.autotrain_state.json`
+(git-ignored) so it survives restarts.
+
 ### Phase 3 — formalize the contract / optionally vendor
 Either keep the lab a separate repo and version the export schema as the API between them,
 or vendor it as `research/crypto_ml_lab/` (offline only, excluded from the live import

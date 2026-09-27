@@ -209,11 +209,25 @@ def strategy_scores(lookback):
         return [dict(r) for r in rows]
 
 
+def labeled_signals_count():
+    """Cheap COUNT of supervised-ready rows (scored signals with a realized
+    forward-return label). The auto-trainer's data-driven trigger uses this to
+    decide whether enough NEW labels have matured, without materializing the
+    whole dataset."""
+    with _lock, _conn() as c:
+        r = c.execute(
+            "SELECT COUNT(*) AS n FROM signal_scores "
+            "WHERE scored=1 AND fwd_return IS NOT NULL").fetchone()
+        return int(r["n"]) if r else 0
+
+
 def labeled_signals(limit=100000):
     """Scored signals that HAVE a realized forward-return label — the only rows
     fit for supervised learning. Unlike strategy_scores() this keeps ts/product/
     regime so an offline ML pipeline can join them to decision context and align
-    them in time. Ordered oldest->newest for chronological (walk-forward) use."""
+    them in time. Ordered oldest->newest for chronological (walk-forward) use.
+
+    See labeled_signals_count() for a cheap COUNT used by the auto-trainer."""
     with _lock, _conn() as c:
         rows = c.execute(
             "SELECT ts, strategy, product, direction, confidence, fwd_return, "

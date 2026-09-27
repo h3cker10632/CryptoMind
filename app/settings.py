@@ -39,6 +39,22 @@ DEFAULTS = {
     # contributes ONE directional vote that the bandit weights like any other
     # strategy — never the driver. Off by default: no artifact, no effect.
     "model_advisor_enabled": False,
+    # Autonomous, metric-gated ML retraining (closes the crypto_ml_lab loop
+    # without operator input). When True AND crypto_ml is installed, the system
+    # periodically checks whether enough NEW labeled rows have matured and, if
+    # so, runs export->validate->prepare->train->backtest, then AUTO-PROMOTES the
+    # fresh artifact into the model advisor ONLY IF the backtest gates pass
+    # (OOS Sharpe / trade count / beats-baseline). Off by default. Enabling it on
+    # a machine without crypto_ml simply records "lab not installed" and promotes
+    # nothing. Governance note: promotion is measurement-gated, never on vibes.
+    "ml_autotrain_enabled": False,
+    "ml_autotrain_min_new_labels": 200,  # retrain only after N new matured labels
+    "ml_autotrain_check_sec": 3600,      # how often the loop checks the trigger
+    "ml_lab_cmd": "python -m crypto_ml.cli",  # base command to invoke the lab
+    "ml_backtest_metrics_file": "metrics.json",  # metrics JSON the backtest writes
+    "ml_gate_min_oos_sharpe": 0.5,       # promotion gate: min out-of-sample Sharpe
+    "ml_gate_min_oos_trades": 20,        # promotion gate: min OOS trade count
+    "ml_gate_require_beats_baseline": True,  # promotion gate: must beat baseline
     # Predictive, self-learning early loss-cut. When True, a losing position the
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
@@ -117,6 +133,7 @@ TEXT_KEYS = {
     "invo_map_size", "invo_map_leverage",
     "invo_refresh_path", "invo_refresh_body", "invo_token_path",
     "invo_refresh_rotates_path",
+    "ml_lab_cmd", "ml_backtest_metrics_file",
 }
 
 # Secret settings: stored, but MASKED in the public payload and never clobbered
@@ -127,6 +144,7 @@ SECRET_KEYS = {"invo_token", "invo_refresh_token", "llm_api_key"}
 FLOAT_KEYS = {
     "invo_horizon_hours": (0.25, 168.0),
     "invo_rank_decay": (0.0, 4.0),
+    "ml_gate_min_oos_sharpe": (-10.0, 10.0),
 }
 
 # Integer settings: (min, max) inclusive clamp. Everything else is treated as
@@ -135,6 +153,9 @@ INT_KEYS = {
     "auto_export_interval_sec": (30, 86400),   # 30s .. 24h
     "invo_top_n": (1, 200),
     "invo_interval_sec": (30, 86400),
+    "ml_autotrain_min_new_labels": (10, 1000000),
+    "ml_autotrain_check_sec": (60, 86400),     # 1min .. 24h
+    "ml_gate_min_oos_trades": (0, 1000000),
 }
 
 
