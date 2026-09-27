@@ -16,6 +16,21 @@ from . import stats as st
 
 BASE = "https://api.exchange.coinbase.com"
 
+# Coinbase Exchange only accepts these candle granularities (seconds). Any other
+# value returns HTTP 400, so we snap requests to the nearest valid one.
+_COINBASE_GRANULARITIES = (60, 300, 900, 3600, 21600, 86400)
+
+
+def _snap_granularity(g):
+    """Snap an arbitrary granularity (seconds) to the nearest value Coinbase
+    accepts, so a tunable slider can never produce an invalid request."""
+    try:
+        g = int(g)
+    except (TypeError, ValueError):
+        return 3600
+    return min(_COINBASE_GRANULARITIES, key=lambda v: abs(v - g))
+
+
 # ---- history cache -------------------------------------------------------
 CACHE_TTL_SEC = 300          # hourly bars change at most once/hour; 5 min is safe
 _CACHE = {}                  # key -> (fetched_at, candles)
@@ -98,6 +113,7 @@ async def fetch_history(product, granularity=3600, chunks=3,
     falls back to any stale cached copy rather than propagating, so a transient
     Coinbase outage degrades gracefully instead of killing a backtest.
     """
+    granularity = _snap_granularity(granularity)      # never send an invalid step
     if not use_cache:
         return await _fetch_history_raw(product, granularity, chunks)
 

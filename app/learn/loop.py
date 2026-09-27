@@ -254,8 +254,10 @@ class Learner:
         def _worker():
             try:
                 from ..backtest.engine import fetch_history
-                candles = asyncio.run(
-                    fetch_history(product, chunks=int(tv("ga_history_chunks"))))
+                candles = asyncio.run(fetch_history(
+                    product,
+                    granularity=int(tv("ga_granularity")),
+                    chunks=int(tv("ga_history_chunks"))))
                 if len(candles) < 300:
                     db.log_event("warn", f"Evolution skipped for {product}: "
                                          f"insufficient history ({len(candles)} bars)")

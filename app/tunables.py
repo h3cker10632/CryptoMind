@@ -186,6 +186,13 @@ TUNABLES = {
                            "the deflated Sharpe (SOL +, DOGE/UNI -) because a longer window "
                            "spans more regimes the single-timeframe TA can't fit uniformly. "
                            "Left at 3; raise to experiment. 8 ≈ 2400 bars ≈ 100 days.", True),
+    "ga_granularity": T(3600, 900, 3600, 2700, "evolution", "GA candle granularity (sec)",
+                           "Candle timeframe the GA trains on, in seconds (snapped to the "
+                           "nearest Coinbase step). 3600 = 1h (default), 900 = 15m. Lower TF "
+                           "packs ~4x more bars/trades into the same calendar window, which "
+                           "directly relieves the walk-forward 'too_few_trades' floor that "
+                           "blocks regime-filtered strategies. Pair a lower TF with a higher "
+                           "ga_history_chunks so the calendar span stays reasonable.", True),
     "ga_regime_filter": T(0, 0, 1, 1, "evolution", "Regime filter (efficiency ratio)",
                            "Let evolution add a Kaufman efficiency-ratio entry filter "
                            "(er_n / er_min genes): only trade when the trailing trend is "
