@@ -179,6 +179,21 @@ TUNABLES = {
     "ga_max_wf_drawdown": T(0.15, 0.02, 0.60, 0.01, "evolution", "Max OOS drawdown",
                            "Worst-window drawdown a challenger may show under the fallback "
                            "Sharpe gate"),
+    "ga_history_chunks": T(3, 3, 24, 1, "evolution", "GA history depth (chunks)",
+                           "Coinbase candle pages (300 hourly bars each) fetched per "
+                           "evolution run. More = longer backtest, at the cost of more API "
+                           "calls. MEASURED (2026-09): raising 3->8 did NOT reliably improve "
+                           "the deflated Sharpe (SOL +, DOGE/UNI -) because a longer window "
+                           "spans more regimes the single-timeframe TA can't fit uniformly. "
+                           "Left at 3; raise to experiment. 8 ≈ 2400 bars ≈ 100 days.", True),
+    "ga_market_structure": T(0, 0, 1, 1, "evolution", "Market-structure genes",
+                           "Enable the candle-derived higher-timeframe-trend and "
+                           "volatility-regime genome genes. OFF by default: MEASURED "
+                           "(2026-09) these gates starve the walk-forward of trades "
+                           "(too_few_trades) and collapse the deflated Sharpe to ~0, because "
+                           "train fitness rewards the fewer/cleaner trades they produce while "
+                           "the OOS min-trades floor then rejects them. Turn on only to "
+                           "experiment further.", True),
     "oi_growth_threshold": T(0.15, 0.02, 1.0, 0.01, "learning", "OI-growth discovery",
                            "24h open-interest growth (as a fraction) that flags a "
                            "coin as a capital-flow discovery candidate and boosts "

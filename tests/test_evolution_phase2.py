@@ -160,7 +160,7 @@ def test_maybe_evolve_worker_logs_without_keyerror(monkeypatch):
 
     candles = _synth_candles(n=800, seed=2)
 
-    async def _fake_fetch(product):
+    async def _fake_fetch(product, chunks=None):
         return candles
     # the worker does `from ..backtest.engine import fetch_history` at call time,
     # so patch it on the source module (this is the real target).

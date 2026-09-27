@@ -29,8 +29,46 @@ GENE_SPACE = {
     "take_atr":  (1.5, 6.0),
     "mom_w":     (0.0, 1.0),
     "short_w":   (0.0, 1.0),   # >0.5 = genome may short downtrends
+    # --- market-structure genes (candle-derived, no lookahead) ---------------
+    # All are OPT-IN via a weight gene > 0.5, so evolution can fully disable them
+    # and the enriched search space stays a strict superset of the old behaviour.
+    "htf_n":     (24, 120),    # higher-timeframe trend EMA span (bars, ~1-5 days)
+    "htf_w":     (0.0, 1.0),   # >0.5 = require macro-trend agreement (HTF filter)
+    "volz_w":    (0.0, 1.0),   # >0.5 = require a favourable volatility regime
+    "volz_max":  (0.8, 2.5),   # max ATR / trailing-median-ATR allowed to enter
 }
-INT_GENES = {"ema_fast", "ema_slow", "rsi_buy", "rsi_sell", "breakout_n"}
+INT_GENES = {"ema_fast", "ema_slow", "rsi_buy", "rsi_sell", "breakout_n", "htf_n"}
+
+# Trailing window (bars) for the volatility-regime normaliser (~3 days hourly).
+_VOL_WINDOW = 72
+
+
+# Market-structure weight genes gated behind the `ga_market_structure` tunable.
+_MS_WEIGHT_GENES = ("htf_w", "volz_w")
+
+
+def _ms_enabled():
+    """Whether the candle-derived market-structure genes may activate.
+
+    Default OFF: measurement showed the HTF/vol gates starve the walk-forward of
+    trades and collapse the deflated Sharpe. When off we PIN their weight genes to
+    0 across the whole population so the search space (and every promoted genome)
+    is bit-identical to the pre-enrichment behaviour. When on, they evolve freely.
+    """
+    try:
+        from ..tunables import tv
+        return tv("ga_market_structure") > 0
+    except Exception:
+        return False
+
+
+def _apply_ms_flag(g):
+    """Pin the market-structure gates OFF unless the tunable enables them."""
+    if not _ms_enabled():
+        for k in _MS_WEIGHT_GENES:
+            if k in g:
+                g[k] = 0.0
+    return g
 
 
 def random_genome(rnd):
@@ -38,22 +76,57 @@ def random_genome(rnd):
     for k, (lo, hi) in GENE_SPACE.items():
         v = rnd.uniform(lo, hi)
         g[k] = int(round(v)) if k in INT_GENES else round(v, 3)
-    return g
+    return _apply_ms_flag(g)
+
+
+def _rand_gene(k, lo, hi, rnd):
+    v = rnd.uniform(lo, hi)
+    return int(round(v)) if k in INT_GENES else round(v, 3)
+
+
+def normalize_genome(g, rnd):
+    """Return a copy of ``g`` with every GENE_SPACE key present.
+
+    Legacy champions persisted before a gene was added (or hand-built genomes)
+    may omit newer genes. Filling the gaps with a random in-range draw lets such
+    a seed enter the population and start exploring the new gene, and keeps every
+    GENE_SPACE-iterating code path (dedup keys, crossover) KeyError-free.
+    """
+    out = dict(g)
+    for k, (lo, hi) in GENE_SPACE.items():
+        if k not in out:
+            out[k] = _rand_gene(k, lo, hi, rnd)
+    return _apply_ms_flag(out)
 
 
 def mutate(g, rnd, rate=0.35):
     out = dict(g)
     for k, (lo, hi) in GENE_SPACE.items():
+        if k not in out:
+            # a gene absent from the seed (e.g. a legacy champion predating a
+            # newly-added gene) is introduced with a random draw so the lineage
+            # can start exploring it — never a KeyError.
+            out[k] = _rand_gene(k, lo, hi, rnd)
+            continue
         if rnd.random() < rate:
             span = (hi - lo) * 0.25
             v = out[k] + rnd.gauss(0, span)
             v = max(lo, min(hi, v))
             out[k] = int(round(v)) if k in INT_GENES else round(v, 3)
-    return out
+    return _apply_ms_flag(out)
 
 
 def crossover(a, b, rnd):
-    return {k: (a if rnd.random() < 0.5 else b)[k] for k in GENE_SPACE}
+    out = {}
+    for k, (lo, hi) in GENE_SPACE.items():
+        first, second = (a, b) if rnd.random() < 0.5 else (b, a)
+        if k in first:
+            out[k] = first[k]
+        elif k in second:              # only one parent carries the gene
+            out[k] = second[k]
+        else:                          # neither parent has it (both legacy)
+            out[k] = _rand_gene(k, lo, hi, rnd)
+    return _apply_ms_flag(out)
 
 
 # ---------------- NSGA-II multi-objective selection ----------------
@@ -265,10 +338,30 @@ def _precompute_indicators(candles, genome):
         brk_up[idx] = sw_hi[idx - n_bo]                        # window [i-n_bo, i-1]
         brk_dn[idx] = sw_lo[idx - n_bo]
 
+    # Higher-timeframe trend proxy: a long EMA over the SAME hourly closes.
+    # Comparing close vs this slow EMA is a macro-trend agreement filter that
+    # needs no coarser candles and introduces no lookahead.
+    htf_ema = _ema_series(closes.tolist(), int(genome.get("htf_n", 48)))
+
+    # Volatility regime: ATR normalised by its own TRAILING median (window
+    # [i-VOL_WINDOW, i-1], strictly past bars -> no lookahead). ~1.0 = typical
+    # vol, >1 = elevated/chaotic. Genomes can gate entries to calm regimes.
+    vol_norm = _np.ones(n)
+    if n > _VOL_WINDOW:
+        from numpy.lib.stride_tricks import sliding_window_view
+        med = _np.median(sliding_window_view(atr, _VOL_WINDOW), axis=1)  # med[s]=median atr[s:s+W]
+        idx = _np.arange(_VOL_WINDOW, n)
+        base = med[idx - _VOL_WINDOW]                                    # window [i-W, i-1]
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            vn = atr[idx] / base
+        vn[~_np.isfinite(vn)] = 1.0
+        vol_norm[idx] = vn
+
     return {"ema_fast": _ema_series(closes.tolist(), genome["ema_fast"]),
             "ema_slow": _ema_series(closes.tolist(), genome["ema_slow"]),
             "atr": atr.tolist(), "rsi": rsi.tolist(),
             "brk_up": brk_up.tolist(), "brk_dn": brk_dn.tolist(),
+            "htf_ema": htf_ema, "vol_norm": vol_norm.tolist(),
             "closes": closes.tolist()}
 
 
@@ -318,14 +411,28 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
         ef, es = ind["ema_fast"], ind["ema_slow"]
         _atr, _rsi = ind["atr"], ind["rsi"]
         _brk_up_lvl, _brk_dn_lvl = ind["brk_up"], ind["brk_dn"]
+        _htf, _voln = ind["htf_ema"], ind["vol_norm"]
     else:
         ef = _ema_series(closes, genome["ema_fast"])
         es = _ema_series(closes, genome["ema_slow"])
         _atr = _rsi = _brk_up_lvl = _brk_dn_lvl = None
+        # HTF trend still works without NumPy; vol regime needs it -> gate off.
+        _htf = _ema_series(closes, int(genome.get("htf_n", 48)))
+        _voln = None
+
+    # Opt-in market-structure gates (disabled unless the weight gene > 0.5).
+    htf_on = genome.get("htf_w", 0.0) > 0.5
+    vol_on = genome.get("volz_w", 0.0) > 0.5
+    vol_max = genome.get("volz_max", 99.0)
 
     cash, side, qty, entry, stop, take, margin = start_cash, 0, 0.0, 0.0, 0.0, 0.0, 0.0
     eq, trades = [], []
-    warm = max(genome["ema_slow"], n_bo, 15) + 1
+    # Only extend the warmup for a market-structure feature when it is actually
+    # ACTIVE, so a genome with the gates disabled is bit-identical to a legacy
+    # genome that never had these genes (strict superset behaviour).
+    warm = max(genome["ema_slow"], n_bo, 15,
+               int(genome.get("htf_n", 48)) if htf_on else 0,
+               _VOL_WINDOW if vol_on else 0) + 1
 
     def close_pos(px):
         nonlocal cash, side, qty, margin
@@ -383,7 +490,13 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
             mom_up = closes[i] > closes[i - 12] if genome["mom_w"] > 0.5 else True
             mom_dn = closes[i] < closes[i - 12] if genome["mom_w"] > 0.5 else True
 
-            if up_trend and (brk_up or rsi < genome["rsi_buy"]) and mom_up:
+            # market-structure gates (opt-in; pass-through when weight <= 0.5)
+            htf_ok_long = (not htf_on) or (cl > _htf[i])
+            htf_ok_short = (not htf_on) or (cl < _htf[i])
+            vol_ok = (not vol_on) or (_voln is None) or (_voln[i] <= vol_max)
+
+            if up_trend and (brk_up or rsi < genome["rsi_buy"]) and mom_up \
+                    and htf_ok_long and vol_ok:
                 px = cl * (1 + slip)
                 notional = _entry_notional(cash, px, genome["stop_atr"] * atr)
                 if notional <= 0:
@@ -394,7 +507,8 @@ def simulate(genome, candles, fee=None, slip=None, start_cash=10_000.0,
                 stop = px - genome["stop_atr"] * atr
                 take = px + genome["take_atr"] * atr
             elif can_short and not up_trend and \
-                    (brk_dn or rsi > genome.get("rsi_sell", 70)) and mom_dn:
+                    (brk_dn or rsi > genome.get("rsi_sell", 70)) and mom_dn \
+                    and htf_ok_short and vol_ok:
                 px = cl * (1 - slip)
                 notional = _entry_notional(cash, px, genome["stop_atr"] * atr)
                 if notional <= 0:
@@ -502,6 +616,7 @@ class Evolution:
         pop = []
         seed_g = self.champions.get(product) or self.champions.get("BTC-USD")
         if seed_g:
+            seed_g = normalize_genome(seed_g, self.rnd)   # fill any newly-added genes
             pop.append(dict(seed_g))
             for _ in range(max(1, self.pop_size // 3)):
                 pop.append(mutate(dict(seed_g), self.rnd, rate=0.5))
