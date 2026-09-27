@@ -105,3 +105,26 @@ def test_verdict_pinpoints_asset_mismatch(tmp_path):
     rep = run_study.run(sp, pp, horizon_hours=1.0)
     v = run_study._verdict(rep["pooled"], rep["diagnostics"])
     assert "don't match" in v and "ETH" in v
+
+
+def test_json_safe_neutralizes_nan_inf_and_numpy():
+    """Regression: an Invo study report with NaN/Inf (empty walk-forward folds)
+    or numpy scalars must serialize under Starlette's strict allow_nan=False,
+    otherwise the study endpoint 500s and the dashboard can't parse it."""
+    import json
+    import numpy as np
+    from app.data.invo import _json_safe
+
+    rep = {"ok": True,
+           "pooled": {"ic": np.float64(0.1), "n": np.int64(42)},
+           "per_asset": {"BTC-USD": {"ablation": {"base_acc": float("nan"),
+                                                  "d_acc": float("-inf"),
+                                                  "ok": np.bool_(True)}}},
+           "verdict": "EDGE"}
+    clean = _json_safe(rep)
+    # must not raise (Starlette uses allow_nan=False)
+    json.dumps(clean, allow_nan=False)
+    ab = clean["per_asset"]["BTC-USD"]["ablation"]
+    assert ab["base_acc"] is None and ab["d_acc"] is None
+    assert clean["pooled"]["n"] == 42 and isinstance(clean["pooled"]["n"], int)
+    assert ab["ok"] is True and isinstance(ab["ok"], bool)

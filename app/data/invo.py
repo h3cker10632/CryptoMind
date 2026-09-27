@@ -15,7 +15,7 @@ after the study earns it. `tools/invo_signal` is our own numpy-only code (no
 Maxun / AGPL), so importing it here is fine.
 """
 from __future__ import annotations
-import asyncio, json, os, tempfile, time
+import asyncio, json, math, os, tempfile, time
 
 from .. import db
 from .. import settings as app_settings
@@ -25,6 +25,31 @@ from tools.invo_signal import run_study as _study
 
 SNAP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                          "invo_snapshots.json")
+
+
+def _json_safe(o):
+    """Recursively make a value JSON-serializable for the API layer. Starlette
+    serializes responses with allow_nan=False, so a NaN/Inf anywhere (e.g. a
+    walk-forward fold that produced no accuracy samples) would 500 the endpoint.
+    Convert non-finite floats to None and numpy scalars to native types."""
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    if isinstance(o, bool):
+        return o
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    try:
+        import numpy as np
+        if isinstance(o, np.generic):
+            v = o.item()
+            if isinstance(v, float) and not math.isfinite(v):
+                return None
+            return v
+    except Exception:
+        pass
+    return o
 
 
 def _dig(obj, path):
@@ -278,6 +303,8 @@ def run_study_sync() -> dict:
                          horizon_hours=float(s["invo_horizon_hours"]),
                          rank_decay=float(s["invo_rank_decay"]),
                          use_score=bool(s["invo_use_score"]))
+    except Exception as e:  # never 500 the dashboard — return a readable error
+        return {"ok": False, "error": f"study failed: {type(e).__name__}: {e}"}
     finally:
         try:
             os.remove(ptmp)
@@ -286,4 +313,5 @@ def run_study_sync() -> dict:
     rep["verdict"] = _study._verdict(rep.get("pooled", {}), rep.get("diagnostics"))
     db.log_event("system", "Invo edge study run",
                  {"verdict": rep["verdict"], "pooled": rep.get("pooled", {})})
-    return {"ok": True, **rep}
+    # sanitize NaN/Inf/numpy so the JSON response can't blow up the client
+    return _json_safe({"ok": True, **rep})
