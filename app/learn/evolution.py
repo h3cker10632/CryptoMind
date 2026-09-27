@@ -672,6 +672,7 @@ class Evolution:
         self.current_product = None
         self.generation = 0
         self.last_run = None
+        self.last_universe_run = None   # most recent cross-sectional report (any outcome)
 
     # backward-compat: BTC champion as the generic fallback
     @property
@@ -1026,6 +1027,8 @@ class Evolution:
         fails = {"too_few_trades": 0, "not_robust": 0,
                  "oos_negative": 0, "weak_sharpe": 0}
         best_obs_dsr = best_obs_pooled = None
+        best_obs_wf = None            # wf of the strongest front genome (even if unpromoted)
+        best_obs_rank = None
         for g in front:
             wf = pooled_walk_forward_eval(g, candles_map, n_windows=n_windows,
                                           embargo=embargo)
@@ -1049,6 +1052,12 @@ class Evolution:
                 best_obs_dsr = dsr
             if best_obs_pooled is None or wf["pooled_sharpe"] > best_obs_pooled:
                 best_obs_pooled = wf["pooled_sharpe"]
+            # keep the wf of the strongest genome (by DSR, else pooled Sharpe) so
+            # the dashboard can show the per-product breakdown even when nothing
+            # cleared the gate — the most useful diagnostic case.
+            rank = dsr if dsr is not None else wf["pooled_sharpe"]
+            if best_obs_rank is None or rank > best_obs_rank:
+                best_obs_rank, best_obs_wf = rank, wf
             if not enough:
                 fails["too_few_trades"] += 1
             elif not robust:
@@ -1076,7 +1085,8 @@ class Evolution:
             "genome": best[1] if best else None,
             "portfolio": portfolio,
             "portfolio_size": len(portfolio),
-            "walk_forward": _wf_summary(best[2]) if best else None,
+            "walk_forward": _wf_summary(best[2] if best else best_obs_wf)
+                            if (best or best_obs_wf) else None,
             "pooled_oos_sharpe": round(best[0], 4) if best else None,
             "deflated_sharpe": round(best[3], 4) if best and best[3] is not None else None,
             "n_trials": n_trials,
@@ -1107,6 +1117,7 @@ class Evolution:
                 self.champion_portfolios[p] = portfolio
                 self.champion_reports[p] = report
         self.last_run = report
+        self.last_universe_run = report
         self.attempt_reports["_UNIVERSE"] = {
             "promoted": report["promoted"],
             "best_observed_dsr": report["best_observed_dsr"],
@@ -1134,7 +1145,8 @@ class Evolution:
                 "attempt_reports": self.attempt_reports,
                 "champion": self.champion,                # legacy field
                 "champion_report": self.champion_reports.get("BTC-USD"),
-                "last_run": self.last_run}
+                "last_run": self.last_run,
+                "last_universe_run": self.last_universe_run}
 
 
 evolution = Evolution()
