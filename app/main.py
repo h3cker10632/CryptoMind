@@ -694,6 +694,18 @@ def reset_account():
     return {"reset": True, "cash": START_CASH}
 
 
+@app.get("/api/tearsheet")
+def tearsheet(exclude_hedge: bool = False):
+    """Honest risk-adjusted performance on the REAL closed-trade log — overall
+    plus sliced by entry regime and exit reason (Sharpe/Sortino/Calmar/maxDD/
+    profit-factor/win-rate-CI). This is the measured basis for regime/risk/exit
+    tuning, not the in-sample backtest."""
+    from .analytics.tearsheet import build_tearsheet
+    from .config import START_CASH
+    return build_tearsheet(broker.closed_trades, start_cash=START_CASH,
+                           exclude_hedge=exclude_hedge)
+
+
 @app.get("/api/backtest")
 async def backtest(product: str = "BTC-USD", strategy: str = "trend"):
     if product not in PRODUCTS:

@@ -324,6 +324,30 @@
     </tr></thead><tbody></tbody></table>
   </div>
 
+  <div class="card span8">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h2 style="margin:0">📈 Performance tearsheet <span style="text-transform:none;color:var(--dim);font-size:11px">— risk-adjusted truth on REAL closed trades (net of fees)</span></h2>
+      <label style="font-size:11px;color:var(--dim);cursor:pointer"><input type="checkbox" id="ts-exhedge" style="vertical-align:middle"> exclude hedge legs</label>
+    </div>
+    <div id="ts-headline" style="color:var(--dim);font-size:12px;margin-top:4px">no closed trades yet</div>
+    <div id="ts-kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px">
+      <div>
+        <h2 style="font-size:12px;margin:0 0 4px">By entry regime <span style="text-transform:none;color:var(--muted);font-weight:400">— which regimes actually pay</span></h2>
+        <table id="tbl-ts-regime" style="font-size:12px"><thead><tr>
+          <th>Regime</th><th title="closed trades">N</th><th>Net PnL</th><th>Win%</th><th title="mean per-trade return">Expectancy</th><th title="gross profit / gross loss">PF</th><th title="per-trade Sharpe">Sharpe</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <h2 style="font-size:12px;margin:0 0 4px">By exit reason <span style="text-transform:none;color:var(--muted);font-weight:400">— is an exit rule bleeding?</span></h2>
+        <table id="tbl-ts-exit" style="font-size:12px"><thead><tr>
+          <th>Exit reason</th><th>N</th><th>Net PnL</th><th>Win%</th><th>Expectancy</th><th>PF</th><th>Sharpe</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div id="ts-caveat" style="font-size:10.5px;color:var(--muted);margin-top:8px"></div>
+  </div>
+
   <div class="card span4">
     <h2>Research feed (live news &amp; social)</h2>
     <div style="margin-bottom:8px;font-size:12.5px" id="macro-line"></div>
@@ -1326,6 +1350,54 @@ async function refreshMLTrain(){
     <div style="margin-top:6px;color:var(--dim);font-size:11px">Data-driven &amp; metric-gated: it only trains when enough new labels have matured, and only promotes a model whose <b>purged, embargoed walk-forward</b> out-of-sample performance clears the gate — otherwise it keeps the current model. The in-sample backtest is never trusted for promotion. Needs <code>crypto_ml</code> + <code>pandas</code> installed.</div>`;
 }
 refreshMLTrain(); setInterval(refreshMLTrain,15000);
+
+// ===== performance tearsheet (real closed trades) =====
+function tsPF(x){ return x==null?'∞':(+x).toFixed(2); }   // null profit_factor = no losses
+function tsPct(x){ return x==null?'—':(x*100).toFixed(2)+'%'; }
+function tsRow(name,b){
+  if(!b||!b.n) return '';
+  return `<tr><td>${name}</td><td class="mono">${b.n}</td>
+    <td class="${cls(b.net_pnl)}">${fmt(b.net_pnl)}</td>
+    <td>${b.win_rate==null?'—':(b.win_rate*100).toFixed(0)+'%'}</td>
+    <td class="${b.expectancy_pct>=0?'pos':'neg'}">${tsPct(b.expectancy_pct)}</td>
+    <td>${tsPF(b.profit_factor)}</td>
+    <td class="${(b.sharpe_per_trade||0)>=0?'pos':'neg'}">${b.sharpe_per_trade==null?'—':(+b.sharpe_per_trade).toFixed(2)}</td></tr>`;
+}
+async function refreshTearsheet(){
+  try{
+    const ex=$('#ts-exhedge').checked?'?exclude_hedge=true':'';
+    const t=await j('/api/tearsheet'+ex);
+    const o=t.overall||{};
+    if(!t.n_trades){
+      $('#ts-headline').textContent='no closed trades yet — the tearsheet fills in as positions close';
+      $('#ts-kpis').innerHTML=''; $('#tbl-ts-regime tbody').innerHTML='';
+      $('#tbl-ts-exit tbody').innerHTML=''; $('#ts-caveat').textContent=''; return;
+    }
+    $('#ts-headline').innerHTML=`<b>${t.n_trades}</b> closed trades · net <b class="${cls(o.net_pnl)}">${fmt(o.net_pnl)}</b>`
+      +` · win ${o.win_rate==null?'—':(o.win_rate*100).toFixed(0)+'%'} `
+      +`<span style="color:var(--muted)">(95% CI ${o.win_rate_ci95&&o.win_rate_ci95[0]!=null?(o.win_rate_ci95[0]*100).toFixed(0)+'–'+(o.win_rate_ci95[1]*100).toFixed(0)+'%':'—'})</span>`
+      +(t.n_hedge_legs?` · <span style="color:var(--muted)">${t.n_hedge_legs} hedge legs</span>`:'');
+    const kpi=(v,l,good)=>`<div style="padding:6px 8px;border:1px solid #223;border-radius:6px">
+      <div style="font-size:16px;font-weight:600" class="${good===undefined?'':(good?'pos':'neg')}">${v}</div>
+      <div style="font-size:10px;color:var(--dim)">${l}</div></div>`;
+    $('#ts-kpis').innerHTML=
+      kpi(o.sharpe_per_trade==null?'—':(+o.sharpe_per_trade).toFixed(2),'Sharpe / trade',(o.sharpe_per_trade||0)>=0)
+     +kpi(o.sortino_per_trade==null?'—':(+o.sortino_per_trade).toFixed(2),'Sortino / trade',(o.sortino_per_trade||0)>=0)
+     +kpi(o.max_drawdown==null?'—':(o.max_drawdown*100).toFixed(1)+'%','Max drawdown',false)
+     +kpi(o.profit_factor==null?'∞':(+o.profit_factor).toFixed(2),'Profit factor',(o.profit_factor==null||o.profit_factor>=1))
+     +kpi(tsPct(o.expectancy_pct),'Expectancy / trade',(o.expectancy_pct||0)>=0)
+     +kpi(o.calmar==null?'—':(+o.calmar).toFixed(2),'Calmar',(o.calmar||0)>=0)
+     +kpi(o.win_loss_ratio==null?'—':(+o.win_loss_ratio).toFixed(2),'Win/Loss size',(o.win_loss_ratio||0)>=1)
+     +kpi(o.ann_sharpe==null?'—':(+o.ann_sharpe).toFixed(1),'Ann. Sharpe',(o.ann_sharpe||0)>=0);
+    $('#tbl-ts-regime tbody').innerHTML=Object.entries(t.by_regime||{}).map(([k,b])=>tsRow(k,b)).join('')
+      ||'<tr><td colspan="7" style="color:var(--dim)">—</td></tr>';
+    $('#tbl-ts-exit tbody').innerHTML=Object.entries(t.by_exit_reason||{}).map(([k,b])=>tsRow(k,b)).join('')
+      ||'<tr><td colspan="7" style="color:var(--dim)">—</td></tr>';
+    $('#ts-caveat').textContent=t.caveat+' '+t.basis;
+  }catch(e){}
+}
+$('#ts-exhedge').onchange=refreshTearsheet;
+refreshTearsheet(); setInterval(refreshTearsheet,10000);
 
 // backtest
 const PRODUCTS=['BTC-USD','ETH-USD','SOL-USD','DOGE-USD','LINK-USD','AVAX-USD'];
