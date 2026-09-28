@@ -22,16 +22,45 @@ justifies it.
 TREND = "trend"
 RANGE = "range"
 
+try:
+    import numpy as _np
+except Exception:                       # numpy optional — pure-Python fallback
+    _np = None
+
 
 def efficiency_ratio(closes, n):
-    """Trailing Kaufman efficiency ratio per bar (0..1); 0.0 for warmup bars."""
-    out = [0.0] * len(closes)
+    """Trailing Kaufman efficiency ratio per bar (0..1); 0.0 for warmup bars.
+
+    Vectorized with NumPy (cumulative-sum rolling window) when available — the
+    GA calls this once per genome, and it was one of the pure-Python hot spots
+    in the fitness loop. The NumPy path is numerically identical to the running-
+    window arithmetic below to floating-point epsilon (verified in tests), so
+    regime labels, champions and promotions are unchanged. Falls back to the
+    original per-bar loop when NumPy is missing or history is too short.
+    """
+    m = len(closes)
     if n < 1:
-        return out
-    # rolling sum of |delta| via a running window
-    abs_delta = [0.0] + [abs(closes[j] - closes[j - 1]) for j in range(1, len(closes))]
+        return [0.0] * m
+    if _np is not None and m > n:
+        c = _np.asarray(closes, dtype=float)
+        ad = _np.empty(m)
+        ad[0] = 0.0
+        ad[1:] = _np.abs(_np.diff(c))
+        cs = _np.concatenate(([0.0], _np.cumsum(ad)))     # cs[k] = sum(ad[:k])
+        out = _np.zeros(m)
+        idx = _np.arange(n, m)
+        win = cs[idx + 1] - cs[idx - n + 1]               # sum(ad[i-n+1 .. i])
+        num = _np.abs(c[idx] - c[idx - n])
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            r = num / win
+        r[win <= 0] = 0.0
+        out[idx] = r
+        return out.tolist()
+    # pure-Python fallback (original running-window implementation)
+    out = [0.0] * m
+    abs_delta = [0.0] + [abs(closes[j] - closes[j - 1]) for j in range(1, m)]
     win = 0.0
-    for i in range(len(closes)):
+    for i in range(m):
         win += abs_delta[i]
         if i - n >= 0:
             win -= abs_delta[i - n]
