@@ -44,6 +44,8 @@
   button{background:var(--panel2);color:var(--text);border:1px solid var(--border);
     border-radius:6px;padding:7px 14px;cursor:pointer;font-size:12.5px;font-weight:600}
   button:hover{border-color:var(--accent)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button:disabled:hover{border-color:var(--border)}
   button.danger{color:var(--red);border-color:#5a2323}
   select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px}
   .bar{height:8px;border-radius:4px;background:#222b3d;overflow:hidden}
@@ -114,7 +116,7 @@
   <button id="btn-pause">⏸ Pause</button>
   <button id="btn-resume">▶ Resume</button>
   <button class="danger" id="btn-kill">🛑 Kill switch</button>
-  <button id="btn-reset-kill" style="border-color:#3a5a2e;color:#8fd694;display:none">♻️ Reset kill</button>
+  <button id="btn-reset-kill" style="border-color:#333;color:var(--dim)" disabled title="Only active when trading is KILLED or daily-halted">♻️ Reset kill</button>
   <button id="btn-settings" style="border-color:#4a5a7a;color:#9db8e8">⚙️ Settings</button>
   <button id="btn-restart" style="border-color:#3a5a2e;color:#8fd694">🔄 Restart server</button>
   <button class="danger" id="btn-shutdown" style="background:#2a1215">⏻ Kill server</button>
@@ -789,7 +791,16 @@ async function refresh(){
       _wl.textContent='↳ '+_why+(st.kill_switch?_when:'')+_how;
     } else if(_wl){ _wl.remove(); }
     // show the Reset-kill button only when it's actionable (killed or halted)
-    const _rk=$('#btn-reset-kill'); if(_rk) _rk.style.display=(st.kill_switch||st.halted_today)?'':'none';
+    const _rk=$('#btn-reset-kill');
+    if(_rk){
+      const _active=!!(st.kill_switch||st.halted_today);
+      _rk.disabled=!_active;                       // always visible; enabled only when there's something to reset
+      _rk.style.borderColor=_active?'#3a5a2e':'#333';
+      _rk.style.color=_active?'#8fd694':'var(--dim)';
+      _rk.title=_active
+        ? 'Clear the KILLED / daily-halt state and resume trading'
+        : 'Nothing to reset — trading is not killed or halted';
+    }
     $('#b-regime').textContent='regime: '+(st.regime?st.regime.label:'—');
 
     $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD) · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
