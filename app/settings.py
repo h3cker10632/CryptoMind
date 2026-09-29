@@ -90,6 +90,16 @@ DEFAULTS = {
     # bandit-weighted vote reflects current news. Off by default; measured, never
     # a blind copy. Requires the LLM advisor to be enabled + keyed to have effect.
     "llm_web_context": False,
+    # Strategy Researcher: autonomous discovery of NEW strategy shapes (see
+    # app/learn/researcher.py). When True the system periodically searches a safe
+    # rule DSL, validates each candidate on a purged walk-forward + deflated-Sharpe
+    # gate, and AUTO-PROMOTES passers into the bandit-weighted `discovered`
+    # ensemble arm (its live weight is still learned from realized PnL). Off by
+    # default. researcher_use_llm additionally asks the LLM advisor to PROPOSE
+    # candidate specs (still gated identically); needs the LLM advisor keyed.
+    "researcher_enabled": False,
+    "researcher_use_llm": False,
+    "researcher_candidates": 60,      # systematic candidates sampled per run
     # crawl4ai producer config (used by the standalone tools/crawl4ai_signal):
     # JSON mapping asset symbol -> list of URLs to crawl. Blank = nothing to do.
     "crawl4ai_sources": "",
@@ -205,6 +215,7 @@ INT_KEYS = {
     "ml_gate_min_oos_trades": (0, 1000000),
     "ml_val_folds": (2, 12),
     "ml_val_embargo": (0, 1000000),
+    "researcher_candidates": (10, 500),
 }
 
 

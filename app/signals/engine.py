@@ -231,6 +231,25 @@ def _evolved_vote(g, f):
     return _clip(score)
 
 
+def strat_discovered(f, sent, regime):
+    """Researcher-discovered rule set (app/learn/researcher.py). Averages the
+    vote of the promoted candidate PORTFOLIO for this product — candidates that
+    each independently cleared a purged walk-forward + deflated-Sharpe gate that
+    prices the search's multiple testing. Like `evolved`, agreement concentrates
+    the vote and disagreement shrinks it toward zero. Inactive until the
+    researcher has promoted at least one candidate. Scored via the SAME vote()
+    the backtest used, so there is no train/live feature drift."""
+    try:
+        from ..learn.researcher import researcher, vote as _dvote
+        pop = researcher.portfolio_for(_cur_product())
+        if not pop:
+            return 0.0
+        votes = [_dvote(c, f) for c in pop]
+        return _clip(sum(votes) / len(votes))
+    except Exception:
+        return 0.0
+
+
 def strat_evolved(f, sent, regime):
     """GA-evolved champion rule set (promoted only after purged walk-forward
     validation). Now averages the CHAMPION PORTFOLIO (top-k promoted genomes)
@@ -257,6 +276,7 @@ STRATEGIES = {
     "derivatives": strat_derivatives,
     "ml": strat_ml,
     "evolved": strat_evolved,
+    "discovered": strat_discovered,
     "llm": strat_llm,
     "model": strat_model,
     "pattern": strat_pattern,

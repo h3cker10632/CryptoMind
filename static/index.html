@@ -159,6 +159,14 @@
     <div class="sw"></div>
     <span>meme trading: <b id="tg-meme-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-researcher" title="Strategy Researcher: autonomously searches a safe rule DSL for NEW strategy shapes, backtests each on a purged walk-forward + deflated-Sharpe gate, and AUTO-PROMOTES only the passers into the bandit-weighted 'discovered' ensemble arm (its live weight is still learned from realized PnL). Runs every ~6h. Off by default.">
+    <div class="sw"></div>
+    <span>strategy discovery: <b id="tg-researcher-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-researcher-llm" title="Also let the LLM advisor PROPOSE candidate strategy specs (in the same safe DSL). Every LLM proposal still faces the identical out-of-sample gate before it can be promoted. Needs the LLM advisor keyed.">
+    <div class="sw"></div>
+    <span>LLM-proposed ideas: <b id="tg-researcher-llm-label">off</b></span>
+  </div>
   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
     <span style="color:var(--dim)">stance:</span>
     <button data-mode="passive">🛡 passive</button>
@@ -426,6 +434,26 @@
       prediction + calibrated uncertainty coming out, the rolling learning curves, and every matured
       prediction scored against what price actually did. Updates every 3s while this tab is open.
     </div>
+  </div>
+
+  <div class="card span12">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">🧪 Strategy Researcher <span style="text-transform:none;color:var(--dim);font-size:11px">(auto-discovers new strategy shapes; promotes only on honest out-of-sample metrics)</span></h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="res-state" class="badge"></span>
+        <button id="res-run">🔎 run discovery</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px" id="res-kpis"></div>
+    <div style="color:var(--dim);font-size:11.5px;margin-top:8px">
+      Searches a safe rule DSL over the shared technical features, backtests every candidate on a
+      <b>purged walk-forward</b>, and promotes only those clearing a <b>deflated-Sharpe</b> bar that prices the
+      number of candidates tried (the false-strategy tax). Promoted rules become the bandit-weighted
+      <code>discovered</code> ensemble arm — measured, never a blind copy. Enable <code>researcher_enabled</code>
+      (and optionally <code>researcher_use_llm</code>) in ⚙️ Settings; it also runs itself every ~6h.
+    </div>
+    <div id="res-lastrun" style="font-size:12px;margin-top:8px"></div>
+    <div id="res-portfolio" style="margin-top:8px"></div>
   </div>
 
   <div class="card span6">
@@ -1177,6 +1205,10 @@ function renderToggles(){
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
   $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
   $('#tg-meme-label').textContent=s.meme_trading_enabled?'on':'off';
+  $('#tg-researcher').classList.toggle('on', !!s.researcher_enabled);
+  $('#tg-researcher-label').textContent=s.researcher_enabled?'on':'off';
+  $('#tg-researcher-llm').classList.toggle('on', !!s.researcher_use_llm);
+  $('#tg-researcher-llm-label').textContent=s.researcher_use_llm?'on (needs LLM key)':'off';
   const ae=s.auto_export_enabled!==false;
   $('#tg-autoexport').classList.toggle('on', ae);
   $('#tg-autoexport-label').textContent=ae?'on':'off';
@@ -1324,6 +1356,8 @@ $('#tg-model').onclick=()=>setSetting('model_advisor_enabled',!(window._settings
 $('#tg-autotrain').onclick=()=>setSetting('ml_autotrain_enabled',!(window._settings||{}).ml_autotrain_enabled);
 $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
 $('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
+$('#tg-researcher').onclick=()=>setSetting('researcher_enabled',!(window._settings||{}).researcher_enabled);
+$('#tg-researcher-llm').onclick=()=>setSetting('researcher_use_llm',!(window._settings||{}).researcher_use_llm);
 $('#tg-autoexport').onclick=()=>setSetting('auto_export_enabled',(window._settings||{}).auto_export_enabled===false);
 // live label while dragging; persist only on release (avoids a POST per pixel)
 $('#autoexport-interval').oninput=e=>{$('#autoexport-interval-label').textContent=fmtInterval(e.target.value);};
@@ -1598,7 +1632,7 @@ function showView(v){
   $('#view-ml').style.display   = v==='ml'?'grid':'none';
   $('#view-llm').style.display  = v==='llm'?'grid':'none';
   $('#view-poly').style.display = v==='poly'?'grid':'none';
-  if(v==='ml') refreshML();
+  if(v==='ml'){ refreshML(); refreshResearcher(); }
   if(v==='llm'){ refreshLLM(); refreshIngest(); }
   if(v==='poly') refreshPoly();
 }
@@ -1709,6 +1743,49 @@ async function refreshML(){
     : '<span style="color:var(--dim)">no live predictions yet.</span>';
 }
 setInterval(()=>{ if(_mlView==='ml') refreshML(); }, 3000);
+
+// ---------------- Strategy Researcher (automated strategy discovery) ----------
+async function refreshResearcher(){
+  let s; try{ s=await j('/api/research/status'); }catch(e){ return; }
+  const tot=s.promoted_total||0;
+  $('#res-state').outerHTML=`<span id="res-state" class="badge" style="color:${s.enabled?(tot>0?'#2ecc71':'#e8c07c'):'#8b93a7'}">${s.enabled?(tot>0?('● '+tot+' live'):'● on, none promoted'):'○ disabled'}</span>`;
+  const g=s.gate||{};
+  $('#res-kpis').innerHTML =
+    kpi('Discovered (live)', tot) +
+    kpi('Products covered', s.promoted_products||0) +
+    kpi('DSR bar', g.dsr_min) +
+    kpi('Min OOS trades', g.min_trades);
+  // last-run summary line(s)
+  const lr=s.last_run||{};
+  const keys=Object.keys(lr);
+  $('#res-lastrun').innerHTML = keys.length ? keys.map(p=>{
+    const r=lr[p]||{};
+    return `<div><b>${p}</b>: tested ${r.tested||0}, promoted <span style="color:${r.promoted?'#2ecc71':'var(--dim)'}">${r.promoted||0}</span>`+
+      (r.trial_sr_std!=null?` <span style="color:var(--dim)">(trial σ=${r.trial_sr_std})</span>`:'')+`</div>`;
+  }).join('') : '<span style="color:var(--dim)">no discovery run yet</span>';
+  // promoted portfolio table
+  const port=s.portfolio||{}; const rows=[];
+  for(const p of Object.keys(port)) for(const e of port[p])
+    rows.push([p, e.source||'?', e.dsr, e.oos_sharpe, e.trades, ruleText(e.candidate)]);
+  $('#res-portfolio').innerHTML = rows.length ? tbl(
+    ['Product','Src','DSR','OOS Sharpe','Trades','Rule'], rows
+  ) : '';
+}
+function ruleText(c){
+  if(!c) return '';
+  const fmt=(cl)=>cl.map(x=>`${x.feat}${x.op}${x.thr}`).join(' & ');
+  const parts=[];
+  if(c.long&&c.long.length) parts.push('LONG if '+fmt(c.long));
+  if(c.short&&c.short.length) parts.push('SHORT if '+fmt(c.short));
+  return `<span style="font-size:11px">${parts.join('; ')} @conf ${c.conf}</span>`;
+}
+$('#res-run').onclick=async(e)=>{
+  const b=e.target; b.disabled=true; b.textContent='…searching';
+  try{ await j('/api/research/run',{method:'POST'}); await refreshResearcher(); }
+  catch(err){ $('#res-lastrun').textContent='run failed (is researcher_enabled on?)'; }
+  b.disabled=false; b.textContent='🔎 run discovery';
+};
+setInterval(()=>{ if(_mlView==='ml') refreshResearcher(); }, 8000);
 
 // ===== LLM advisor tab =====
 let _llmProduct=null;

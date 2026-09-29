@@ -157,6 +157,29 @@ class Orchestrator:
                 interval = 3600
             await asyncio.sleep(interval)
 
+    async def researcher_loop(self):
+        """Autonomous strategy DISCOVERY. On a cadence, searches the safe rule DSL
+        for new strategy shapes, validates each on a purged walk-forward +
+        deflated-Sharpe gate that prices the multiple testing, and auto-promotes
+        passers into the bandit-weighted `discovered` ensemble arm. No-ops unless
+        `researcher_enabled` is set; runs in a worker thread off the hot path and
+        can never affect trading (a promoted arm still earns its weight from
+        realized PnL like every other sleeve)."""
+        from .learn.researcher import researcher
+        from . import settings
+        await asyncio.sleep(150)     # let feeds + history caches warm up
+        while True:
+            try:
+                if settings.get("researcher_enabled"):
+                    rep = await asyncio.to_thread(researcher.run_universe)
+                    if rep.get("promoted_total"):
+                        db.log_event("learn", "Strategy Researcher promoted "
+                                     f"{rep['promoted_total']} discovered "
+                                     "strategy(ies) into the ensemble")
+            except Exception as e:
+                db.log_event("warn", f"Researcher loop error: {e}")
+            await asyncio.sleep(6 * 3600)     # discovery every ~6h
+
     async def reconcile_loop(self):
         """Periodically reconcile the shadow OMS against its venue (source of
         truth) and prune the equity table. Runs off the hot decision path."""

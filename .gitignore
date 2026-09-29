@@ -56,3 +56,6 @@ invo_snapshots.json
 
 # External-signal ingest store (crawl4ai/Maxun/etc. output — may contain data)
 external_signals.jsonl
+
+# Strategy Researcher promoted-candidate store (runtime state)
+discovered_strategies.json

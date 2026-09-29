@@ -69,6 +69,7 @@ async def startup():
     asyncio.create_task(orch.llm_advisor_loop())
     asyncio.create_task(orch.model_advisor_loop())   # crypto_ml_lab model vote
     asyncio.create_task(orch.ml_trainer_loop())      # autonomous metric-gated retrain
+    asyncio.create_task(orch.researcher_loop())      # autonomous strategy discovery
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     from .export import auto_export_loop
@@ -726,6 +727,39 @@ async def ingest_study_run(horizon_hours: float = 4.0):
 def ingest_clear():
     from .data import ingest
     return ingest.clear()
+
+
+# ---------------- Strategy Researcher (automated strategy discovery) ----------
+@app.get("/api/research/status")
+def research_status():
+    from .learn.researcher import researcher
+    return researcher.status()
+
+
+@app.post("/api/research/run")
+async def research_run(product: str = "", use_llm: bool | None = None):
+    """Run one discovery pass. `product` empty = the whole universe. Gated on
+    researcher_enabled. Runs off the hot path in a worker thread. Auto-promotes
+    any candidate that clears the purged walk-forward + deflated-Sharpe gate."""
+    from .learn.researcher import researcher
+    if not app_settings.get("researcher_enabled"):
+        return {"ok": False, "error": "researcher_enabled is off — enable it in Settings"}
+    kw = {} if use_llm is None else {"use_llm": use_llm}
+    if product:
+        return await asyncio.to_thread(researcher.run_once, product, **kw)
+    return await asyncio.to_thread(researcher.run_universe, None, **kw)
+
+
+@app.get("/api/research/portfolio")
+def research_portfolio():
+    from .learn.researcher import researcher
+    return researcher.status().get("portfolio", {})
+
+
+@app.post("/api/research/clear")
+def research_clear():
+    from .learn.researcher import researcher
+    return researcher.clear()
 
 
 @app.get("/api/tunables")
