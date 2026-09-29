@@ -180,6 +180,36 @@ class Orchestrator:
                 db.log_event("warn", f"Researcher loop error: {e}")
             await asyncio.sleep(6 * 3600)     # discovery every ~6h
 
+    async def crawl_producer_loop(self):
+        """Run the crawl4ai producer INSIDE the app on a cadence, so the operator
+        never has to run the CLI. Crawls/scores configured or auto-discovered
+        sources in a worker thread (off the hot path) and pushes rows into the
+        ingest seam. No-ops unless `crawl4ai_producer_enabled` is set. The producer
+        is imported LAZILY and every failure is swallowed, so a missing crawl4ai
+        (Apache-2.0, optional) or a dead source can never affect trading — the core
+        still never hard-imports the scraper."""
+        from . import settings
+        await asyncio.sleep(120)     # let feeds warm up
+        while True:
+            try:
+                if settings.get("crawl4ai_producer_enabled"):
+                    def _run():
+                        from tools.crawl4ai_signal.producer import run_once
+                        return run_once()
+                    rep = await asyncio.to_thread(_run)
+                    if rep.get("ok") and rep.get("rows"):
+                        db.log_event("data", "crawl4ai producer pushed "
+                                     f"{rep['rows']} web-signal row(s) "
+                                     f"(scored {rep.get('scored', 0)}, "
+                                     f"auto-discovered {rep.get('autodiscovered', 0)})")
+            except Exception as e:
+                db.log_event("warn", f"crawl4ai producer loop error: {e}")
+            try:
+                interval = max(60, int(settings.get("crawl4ai_interval_sec")))
+            except Exception:
+                interval = 900
+            await asyncio.sleep(interval)
+
     async def reconcile_loop(self):
         """Periodically reconcile the shadow OMS against its venue (source of
         truth) and prune the equity table. Runs off the hot decision path."""

@@ -108,6 +108,12 @@ DEFAULTS = {
     # crawl4ai_sources map. Discovered signals still enter as MEASURED features.
     "crawl4ai_autodiscover": False,
     "crawl4ai_max_urls": 4,           # max articles discovered per asset per run
+    # Run the crawl4ai producer INSIDE the app on a schedule (no manual CLI). It
+    # crawls/scores sources off the hot path and pushes rows into the ingest seam.
+    # Off by default. The core imports the producer lazily + defensively, so a
+    # missing crawl4ai (Apache-2.0, optional) never affects trading.
+    "crawl4ai_producer_enabled": False,
+    "crawl4ai_interval_sec": 900,     # producer cadence (15 min default)
     # Real on-chain execution. Inert unless this is True AND a pm_wallet_key
     # secret is present AND py-clob-client is installed (see execution.py).
     "pm_live_enabled": False,
@@ -222,6 +228,7 @@ INT_KEYS = {
     "ml_val_embargo": (0, 1000000),
     "researcher_candidates": (10, 500),
     "crawl4ai_max_urls": (1, 15),
+    "crawl4ai_interval_sec": (60, 86400),    # 1min .. 24h
 }
 
 

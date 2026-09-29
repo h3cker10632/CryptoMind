@@ -179,6 +179,10 @@
     <div class="sw"></div>
     <span>auto-find sources: <b id="tg-autodiscover-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-crawler" title="Run the crawl4ai producer INSIDE the app on a schedule (crawl4ai_interval_sec) — no manual CLI. It crawls/scores your sources (manual or auto-found) off the hot path and pushes rows into the ingest seam. Needs web-signal ingest on; the LLM only acts on them if 'LLM sees web signals' is on and the advisor is keyed.">
+    <div class="sw"></div>
+    <span>run web crawler: <b id="tg-crawler-label">off</b></span>
+  </div>
   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
     <span style="color:var(--dim)">stance:</span>
     <button data-mode="passive">🛡 passive</button>
@@ -520,6 +524,7 @@
       <h2 style="margin:0">🌐 External web signals <span style="text-transform:none;color:var(--dim);font-size:11px">(crawl4ai → LLM → trades; measured, never blind)</span></h2>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="ing-state" class="badge"></span>
+        <button id="ing-crawl">🕷 crawl now</button>
         <button id="ing-study">📊 run edge study</button>
       </div>
     </div>
@@ -1227,6 +1232,8 @@ function renderToggles(){
   $('#tg-webctx-label').textContent=s.llm_web_context?'on (needs LLM key)':'off';
   $('#tg-autodiscover').classList.toggle('on', !!s.crawl4ai_autodiscover);
   $('#tg-autodiscover-label').textContent=s.crawl4ai_autodiscover?'on':'off';
+  $('#tg-crawler').classList.toggle('on', !!s.crawl4ai_producer_enabled);
+  $('#tg-crawler-label').textContent=s.crawl4ai_producer_enabled?'on (scheduled)':'off';
   const ae=s.auto_export_enabled!==false;
   $('#tg-autoexport').classList.toggle('on', ae);
   $('#tg-autoexport-label').textContent=ae?'on':'off';
@@ -1379,6 +1386,7 @@ $('#tg-researcher-llm').onclick=()=>setSetting('researcher_use_llm',!(window._se
 $('#tg-ingest').onclick=()=>setSetting('ingest_enabled',!(window._settings||{}).ingest_enabled);
 $('#tg-webctx').onclick=()=>setSetting('llm_web_context',!(window._settings||{}).llm_web_context);
 $('#tg-autodiscover').onclick=()=>setSetting('crawl4ai_autodiscover',!(window._settings||{}).crawl4ai_autodiscover);
+$('#tg-crawler').onclick=()=>setSetting('crawl4ai_producer_enabled',!(window._settings||{}).crawl4ai_producer_enabled);
 $('#tg-autoexport').onclick=()=>setSetting('auto_export_enabled',(window._settings||{}).auto_export_enabled===false);
 // live label while dragging; persist only on release (avoids a POST per pixel)
 $('#autoexport-interval').oninput=e=>{$('#autoexport-interval-label').textContent=fmtInterval(e.target.value);};
@@ -2032,6 +2040,15 @@ async function refreshIngest(){
     ) : '<span style="color:var(--dim);font-size:12px">no signals yet — run the crawl4ai producer (see tools/crawl4ai_signal)</span>';
   }catch(e){}
 }
+$('#ing-crawl').onclick=async(e)=>{
+  const b=e.target; b.disabled=true; b.textContent='…crawling';
+  try{
+    const r=await j('/api/ingest/crawl/run',{method:'POST'});
+    if(r.ok){ $('#ing-study-out').innerHTML=`<b>Crawl:</b> scored ${r.scored||0}, pushed ${(r.pushed&&r.pushed.accepted)||0} row(s)`+(r.autodiscovered?` <span style="color:var(--dim)">(auto-found sources for ${r.autodiscovered} asset(s))</span>`:''); await refreshIngest(); }
+    else { $('#ing-study-out').innerHTML=`<span style="color:#e8c07c">${r.error||'crawl unavailable — set sources or enable auto-find in Settings'}</span>`; }
+  }catch(err){ $('#ing-study-out').textContent='crawl failed'; }
+  b.disabled=false; b.textContent='🕷 crawl now';
+};
 $('#ing-study').onclick=async(e)=>{
   const b=e.target; b.disabled=true; b.textContent='…studying';
   try{

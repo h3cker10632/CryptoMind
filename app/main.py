@@ -70,6 +70,7 @@ async def startup():
     asyncio.create_task(orch.model_advisor_loop())   # crypto_ml_lab model vote
     asyncio.create_task(orch.ml_trainer_loop())      # autonomous metric-gated retrain
     asyncio.create_task(orch.researcher_loop())      # autonomous strategy discovery
+    asyncio.create_task(orch.crawl_producer_loop())  # in-app crawl4ai producer
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     from .export import auto_export_loop
@@ -727,6 +728,20 @@ async def ingest_study_run(horizon_hours: float = 4.0):
 def ingest_clear():
     from .data import ingest
     return ingest.clear()
+
+
+@app.post("/api/ingest/crawl/run")
+async def ingest_crawl_run():
+    """Run the crawl4ai producer ONCE on demand (the dashboard 'crawl now' button).
+    Crawls/scores configured or auto-discovered sources and pushes rows into the
+    ingest seam. Imported lazily + off the hot path; never affects trading."""
+    def _run():
+        try:
+            from tools.crawl4ai_signal.producer import run_once
+            return run_once()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    return await asyncio.to_thread(_run)
 
 
 # ---------------- Strategy Researcher (automated strategy discovery) ----------
