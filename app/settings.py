@@ -103,6 +103,11 @@ DEFAULTS = {
     # crawl4ai producer config (used by the standalone tools/crawl4ai_signal):
     # JSON mapping asset symbol -> list of URLs to crawl. Blank = nothing to do.
     "crawl4ai_sources": "",
+    # When True, the crawl4ai producer FINDS its own news sources per traded asset
+    # (Google News RSS, key-less) instead of only using the hand-curated
+    # crawl4ai_sources map. Discovered signals still enter as MEASURED features.
+    "crawl4ai_autodiscover": False,
+    "crawl4ai_max_urls": 4,           # max articles discovered per asset per run
     # Real on-chain execution. Inert unless this is True AND a pm_wallet_key
     # secret is present AND py-clob-client is installed (see execution.py).
     "pm_live_enabled": False,
@@ -216,6 +221,7 @@ INT_KEYS = {
     "ml_val_folds": (2, 12),
     "ml_val_embargo": (0, 1000000),
     "researcher_candidates": (10, 500),
+    "crawl4ai_max_urls": (1, 15),
 }
 
 

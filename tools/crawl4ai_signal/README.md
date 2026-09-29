@@ -21,14 +21,31 @@ pip install crawl4ai        # optional; falls back to httpx + HTML strip if abse
 python -m playwright install chromium   # crawl4ai uses Playwright to render JS
 ```
 
-Configure sources in Settings (`crawl4ai_sources`), a JSON map of symbol → URLs:
+### Where the sources come from — two ways
+
+**A. Auto-discovery (let the system find the websites).** Turn on
+`crawl4ai_autodiscover` (dashboard: *auto-find sources*). For each traded asset
+the producer queries **Google News RSS** (public, no API key) for fresh articles,
+scores the discovered headlines (+ article text when fetchable), and pushes the
+result. No hand-curated list required. `crawl4ai_max_urls` caps articles per asset.
+
+**B. Manual list.** Set `crawl4ai_sources`, a JSON map of symbol → URLs:
 
 ```json
 {"BTC": ["https://example.com/bitcoin-news"], "ETH": ["https://example.com/eth"]}
 ```
 
-Enable the pipeline in Settings:
+Both can be on at once — manual URLs and auto-discovered URLs for the same asset
+are merged.
+
+> **Invo is NOT crawled.** Invo already has a first-class JSON-API integration
+> (`app/data/invo.py`). Crawl4AI / Maxun are for **API-less** sources (news,
+> sentiment). Maxun (AGPL) has no code hook by design — run it standalone and have
+> it POST its output to `/api/ingest/push`, exactly like this crawler does.
+
+Enable the pipeline in Settings (all available as dashboard toggles):
 - `ingest_enabled = true`  (accept ingested rows)
+- `crawl4ai_autodiscover = true` (optional: auto-find sources) **or** set `crawl4ai_sources`
 - `llm_web_context = true` (let the LLM advisor see the crawled signal)
 - LLM advisor enabled + keyed (`llm_advisor_enabled`, `llm_api_key`).
 

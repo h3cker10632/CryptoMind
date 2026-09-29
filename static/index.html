@@ -167,6 +167,18 @@
     <div class="sw"></div>
     <span>LLM-proposed ideas: <b id="tg-researcher-llm-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-ingest" title="External-signal ingest seam: accept structured signal rows from standalone producers (crawl4ai, Maxun, a cron curl) at /api/ingest/push. Off by default; the seam only ingests OUTPUT, never a scraper's code.">
+    <div class="sw"></div>
+    <span>web-signal ingest: <b id="tg-ingest-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-webctx" title="Feed the freshest ingested web signal + headlines into the LLM advisor's context, so its bandit-weighted vote reflects current news. Needs the LLM advisor keyed and web-signal ingest on.">
+    <div class="sw"></div>
+    <span>LLM sees web signals: <b id="tg-webctx-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-autodiscover" title="Let the crawl4ai producer FIND its own news sources per traded asset (Google News RSS, no API key) instead of only using a hand-curated URL list. Discovered signals still enter as MEASURED features and are weighed by the bandit.">
+    <div class="sw"></div>
+    <span>auto-find sources: <b id="tg-autodiscover-label">off</b></span>
+  </div>
   <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
     <span style="color:var(--dim)">stance:</span>
     <button data-mode="passive">🛡 passive</button>
@@ -1209,6 +1221,12 @@ function renderToggles(){
   $('#tg-researcher-label').textContent=s.researcher_enabled?'on':'off';
   $('#tg-researcher-llm').classList.toggle('on', !!s.researcher_use_llm);
   $('#tg-researcher-llm-label').textContent=s.researcher_use_llm?'on (needs LLM key)':'off';
+  $('#tg-ingest').classList.toggle('on', !!s.ingest_enabled);
+  $('#tg-ingest-label').textContent=s.ingest_enabled?'on':'off';
+  $('#tg-webctx').classList.toggle('on', !!s.llm_web_context);
+  $('#tg-webctx-label').textContent=s.llm_web_context?'on (needs LLM key)':'off';
+  $('#tg-autodiscover').classList.toggle('on', !!s.crawl4ai_autodiscover);
+  $('#tg-autodiscover-label').textContent=s.crawl4ai_autodiscover?'on':'off';
   const ae=s.auto_export_enabled!==false;
   $('#tg-autoexport').classList.toggle('on', ae);
   $('#tg-autoexport-label').textContent=ae?'on':'off';
@@ -1358,6 +1376,9 @@ $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{
 $('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
 $('#tg-researcher').onclick=()=>setSetting('researcher_enabled',!(window._settings||{}).researcher_enabled);
 $('#tg-researcher-llm').onclick=()=>setSetting('researcher_use_llm',!(window._settings||{}).researcher_use_llm);
+$('#tg-ingest').onclick=()=>setSetting('ingest_enabled',!(window._settings||{}).ingest_enabled);
+$('#tg-webctx').onclick=()=>setSetting('llm_web_context',!(window._settings||{}).llm_web_context);
+$('#tg-autodiscover').onclick=()=>setSetting('crawl4ai_autodiscover',!(window._settings||{}).crawl4ai_autodiscover);
 $('#tg-autoexport').onclick=()=>setSetting('auto_export_enabled',(window._settings||{}).auto_export_enabled===false);
 // live label while dragging; persist only on release (avoids a POST per pixel)
 $('#autoexport-interval').oninput=e=>{$('#autoexport-interval-label').textContent=fmtInterval(e.target.value);};
