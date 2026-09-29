@@ -72,6 +72,21 @@ DEFAULTS = {
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
     "exit_advisor_enabled": True,
+    # ---- Polymarket prediction-market sleeve (standalone, off by default) ----
+    # Master switch for the Polymarket engine loop. When False the sleeve is
+    # completely dormant (no fetch, no trading); the read-only "peek" endpoint
+    # still works so the operator can inspect markets before enabling it.
+    "polymarket_enabled": False,
+    # When True (and the engine is enabled) the engine may OPEN paper bets that
+    # clear the edge/cost gate. When False it only evaluates + records
+    # would-open decisions, so the operator can watch it think before it trades.
+    "pm_auto_trade": False,
+    # Real on-chain execution. Inert unless this is True AND a pm_wallet_key
+    # secret is present AND py-clob-client is installed (see execution.py).
+    "pm_live_enabled": False,
+    # Polygon wallet private key for live CLOB order signing. SECRET — stored in
+    # the git-ignored .secrets.json only, masked in the API, never committed.
+    "pm_wallet_key": "",              # SECRET
     # Pattern-aware exits. When True, a CONFIRMED reversal chart pattern forming
     # against an open position (e.g. a double top / head-&-shoulders / bearish
     # divergence on a long) tightens that position's stop, and cuts it outright
@@ -151,7 +166,7 @@ TEXT_KEYS = {
 
 # Secret settings: stored, but MASKED in the public payload and never clobbered
 # by an empty save (only overwritten when a new non-empty value is supplied).
-SECRET_KEYS = {"invo_token", "invo_refresh_token", "llm_api_key"}
+SECRET_KEYS = {"invo_token", "invo_refresh_token", "llm_api_key", "pm_wallet_key"}
 
 # Float settings: (min, max) inclusive clamp.
 FLOAT_KEYS = {

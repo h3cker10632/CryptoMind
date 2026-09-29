@@ -198,6 +198,7 @@
   <button class="tab-btn active" data-view="dash">📊 Dashboard</button>
   <button class="tab-btn" data-view="ml">🔬 ML Live — watch it learn</button>
   <button class="tab-btn" data-view="llm">🧠 LLM Advisor — what it sees</button>
+  <button class="tab-btn" data-view="poly">🎲 Polymarket — prediction markets</button>
 </div>
 
 <div class="grid" id="view-dash">
@@ -490,6 +491,52 @@
   <div class="card span12">
     <h2>Per-coin lean &amp; trading impact <span style="text-transform:none;color:var(--dim);font-size:11px">(is this opinion currently feeding the bandit?)</span></h2>
     <div id="llm-table" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div class="grid" id="view-poly" style="display:none">
+  <div class="card span12">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0">🎲 Polymarket — prediction-market sleeve <span style="text-transform:none;color:var(--dim);font-size:12px">(paper; standalone book)</span></h2>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;flex-wrap:wrap">
+        <span id="poly-state" class="badge"></span>
+        <span id="poly-exec" class="badge"></span>
+        <button id="poly-toggle">▶ start engine</button>
+        <button id="poly-ticknow">↻ run one cycle</button>
+        <button id="poly-reset" style="border-color:#5a3a2e;color:#e8a87c">↺ reset paper book</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:10px" id="poly-kpis"></div>
+    <div style="color:var(--dim);font-size:11.5px;margin-top:8px">
+      Separate paper bankroll from the crypto book. Signals are transparent <b>heuristic priors</b> (momentum, mean-revert,
+      favourite–longshot fade, order-flow) — <b>not claimed alpha</b>. The engine only OPENS bets that clear the edge &amp; cost-viability
+      gate, and the shared bandit + online model MEASURE whether the heuristics actually predict resolutions. Enable the sleeve
+      and auto-trade in ⚙️ Settings. Live on-chain execution is a separate, disabled-by-default switch.
+    </div>
+    <div id="poly-note" style="color:#e8c07c;font-size:12px;margin-top:8px;display:none"></div>
+  </div>
+
+  <div class="card span7">
+    <h2>Open bets <span style="text-transform:none;color:var(--dim);font-size:11px">(mark-to-market on live midpoint)</span></h2>
+    <div id="poly-positions" style="margin-top:6px"></div>
+  </div>
+  <div class="card span5">
+    <h2>Learning health <span style="text-transform:none;color:var(--dim);font-size:11px">(un-starves on resolutions)</span></h2>
+    <div id="poly-learning" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card span7">
+    <h2>Live markets &amp; signal read <span style="text-transform:none;color:var(--dim);font-size:11px">(top by liquidity)</span></h2>
+    <div id="poly-markets" style="margin-top:6px"></div>
+  </div>
+  <div class="card span5">
+    <h2>Recent decisions <span style="text-transform:none;color:var(--dim);font-size:11px">(why it did / didn't bet)</span></h2>
+    <div id="poly-decisions" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card span12">
+    <h2>Closed bets <span style="text-transform:none;color:var(--dim);font-size:11px">(resolutions &amp; early exits)</span></h2>
+    <div id="poly-trades" style="margin-top:6px"></div>
   </div>
 </div>
 
@@ -1532,8 +1579,10 @@ function showView(v){
   $('#view-dash').style.display = v==='dash'?'grid':'none';
   $('#view-ml').style.display   = v==='ml'?'grid':'none';
   $('#view-llm').style.display  = v==='llm'?'grid':'none';
+  $('#view-poly').style.display = v==='poly'?'grid':'none';
   if(v==='ml') refreshML();
   if(v==='llm') refreshLLM();
+  if(v==='poly') refreshPoly();
 }
 document.querySelectorAll('.tab-btn').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 
@@ -1743,6 +1792,107 @@ function drawLLMGauge(lean){
   ctx.fillText('strong short',cx-scale,midY+34);ctx.fillText('strong long',cx+scale,midY+34);ctx.fillText('0',cx,midY+34);
 }
 setInterval(()=>{ if(_mlView==='llm') refreshLLM(); }, 3000);
+
+// ---------------- Polymarket tab ----------------
+function polyPill(v,label,good){
+  const col = good ? '#2ecc71' : '#8b93a7';
+  return `<span class="badge" style="color:${col};border-color:${col}44">${label}</span>`;
+}
+function edgeCol(e){ return e>0 ? '#2ecc71' : (e<0?'#e74c3c':'#8b93a7'); }
+function money(x){ return (x<0?'-$':'$')+Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0}); }
+
+async function refreshPoly(){
+  let s;
+  try{ s=await j('/api/polymarket/status'); }catch(e){ return; }
+  // header state
+  $('#poly-state').outerHTML = `<span id="poly-state" class="badge" style="color:${s.running?'#2ecc71':'#8b93a7'}">${s.running?'● engine running':'○ engine stopped'}</span>`;
+  const ex=s.execution||{};
+  $('#poly-exec').outerHTML = `<span id="poly-exec" class="badge" style="color:${ex.mode==='live'?'#e74c3c':'#8b93a7'}" title="${(ex.blockers||[]).join('; ')}">${ex.mode==='live'?'⚠ LIVE on-chain':'paper only'}</span>`;
+  $('#poly-toggle').textContent = s.running ? '⏸ stop engine' : '▶ start engine';
+  // enabled / auto-trade guidance
+  const note=$('#poly-note');
+  if(!s.enabled){ note.style.display='block'; note.innerHTML='Sleeve is <b>disabled</b>. Turn on <code>polymarket_enabled</code> in ⚙️ Settings to run the engine.'; }
+  else if(!s.auto_trade){ note.style.display='block'; note.innerHTML='Engine is enabled but <b>auto-trade is off</b> — it evaluates and shows would-open decisions without betting. Turn on <code>pm_auto_trade</code> in ⚙️ Settings to open paper bets.'; }
+  else { note.style.display='none'; }
+  // KPIs
+  const b=s.broker||{};
+  const pnlCol = (b.realized_pnl||0)>=0?'#2ecc71':'#e74c3c';
+  $('#poly-kpis').innerHTML =
+    kpi('Equity (USDC)', money(s.equity||0)) +
+    kpi('Realized PnL', money(b.realized_pnl||0), pnlCol) +
+    kpi('Cash', money(b.cash||0)) +
+    kpi('Open bets', (b.open_positions||0)) +
+    kpi('Closed', (b.trades||0)) +
+    kpi('Win rate', b.win_rate!=null?fmtPct(b.win_rate):'—');
+  // positions
+  const pos=s.positions||[];
+  $('#poly-positions').innerHTML = pos.length ? tbl(
+    ['Market','Bet','Entry','Mid','Cost','Unreal.'],
+    pos.map(p=>[p.question, p.outcome, p.entry, p.mid, money(p.cost),
+      `<span style="color:${p.unrealized>=0?'#2ecc71':'#e74c3c'}">${money(p.unrealized)}</span>`])
+  ) : '<span style="color:var(--dim)">no open bets</span>';
+  // learning
+  const L=s.learning||{};
+  const om=L.online_model||{};
+  let lh = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+    ${polyPill(1,'signals scored: '+(L.n_signals_scored||0), (L.n_signals_scored||0)>0)}
+    ${polyPill(1,'trades learned: '+(L.n_trades_learned||0), !(L.starved))}
+    ${polyPill(1,'model updates: '+(om.n_updates||0), (om.n_updates||0)>0)}
+    ${L.starved?'<span class="badge" style="color:#e8c07c;border-color:#e8c07c44">⚠ starved: no resolutions yet</span>':''}
+  </div>`;
+  const attr=L.attributions||{};
+  const arows=Object.keys(attr).map(k=>[k, attr[k].n, `<span style="color:${edgeCol(attr[k].net)}">${attr[k].net>=0?'+':''}${attr[k].net}</span>`]);
+  lh += arows.length ? tbl(['Strategy','n','net attribution'], arows)
+                     : '<div style="color:var(--dim);font-size:12px">Strategy attribution appears once bets resolve. The online model predicts P(outcome) and its log-loss falls as markets settle.</div>';
+  $('#poly-learning').innerHTML = lh;
+  // decisions
+  const dec=s.decisions||[];
+  $('#poly-decisions').innerHTML = dec.length ? tbl(
+    ['Action','Market','Reason'],
+    dec.slice(0,14).map(d=>[
+      `<span style="color:${d.action==='open'?'#2ecc71':(d.action.indexOf('would')===0?'#7aa2ff':'#8b93a7')}">${d.action}</span>`,
+      (d.question||''), (d.reason||'')])
+  ) : '<span style="color:var(--dim)">no decisions yet — run a cycle</span>';
+
+  // markets (read-only peek) + closed trades — fetched in parallel
+  try{
+    const [mk,tr]=await Promise.all([j('/api/polymarket/markets'), j('/api/polymarket/trades')]);
+    const ms=(mk&&mk.markets)||[];
+    $('#poly-markets').innerHTML = ms.length ? tbl(
+      ['Market','Cat','Pick','Price','Edge','Conf'],
+      ms.slice(0,12).map(m=>[m.question, m.category, m.pick, (m.prices?m.prices[0]:''),
+        `<span style="color:${edgeCol(m.edge)}">${m.edge>=0?'+':''}${m.edge}</span>`, m.confidence])
+    ) : `<span style="color:var(--dim)">${mk&&mk.error?('data error: '+mk.error):'no markets'}</span>`;
+    const ts=(tr&&tr.trades)||[];
+    $('#poly-trades').innerHTML = ts.length ? tbl(
+      ['Market','Bet','Entry','Exit','P/L','Return','Reason'],
+      ts.slice(0,20).map(t=>[t.question,t.outcome,t.entry,t.exit,
+        `<span style="color:${t.pnl>=0?'#2ecc71':'#e74c3c'}">${money(t.pnl)}</span>`,
+        fmtPct(t.return_pct), t.reason])
+    ) : '<span style="color:var(--dim)">no closed bets yet</span>';
+  }catch(e){}
+}
+function tbl(head,rows){
+  let h='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'+
+    head.map(x=>`<th style="text-align:left;padding:4px 6px;color:var(--dim);border-bottom:1px solid var(--border);font-weight:600">${x}</th>`).join('')+'</tr></thead><tbody>';
+  for(const r of rows){ h+='<tr>'+r.map((c,i)=>`<td style="padding:4px 6px;border-bottom:1px solid var(--border)3a;${i===0?'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap':''}">${c}</td>`).join('')+'</tr>'; }
+  return h+'</tbody></table>';
+}
+$('#poly-toggle').onclick=async()=>{
+  const s=await j('/api/polymarket/status');
+  await j(s.running?'/api/polymarket/stop':'/api/polymarket/start',{method:'POST'});
+  refreshPoly();
+};
+$('#poly-ticknow').onclick=async(e)=>{
+  const btn=e.target; btn.disabled=true; btn.textContent='…running';
+  try{ await j('/api/polymarket/tick',{method:'POST'}); }catch(err){}
+  btn.disabled=false; btn.textContent='↻ run one cycle'; refreshPoly();
+};
+$('#poly-reset').onclick=async()=>{
+  if(!confirm('Reset the Polymarket paper book (cash, positions, trades)?'))return;
+  await j('/api/polymarket/reset',{method:'POST'}); refreshPoly();
+};
+setInterval(()=>{ if(_mlView==='poly') refreshPoly(); }, 4000);
 
 refresh(); window._refreshTimer=setInterval(refresh,5000);
 </script>

@@ -640,6 +640,54 @@ async def ml_autotrain_run():
     return trainer.start_async(force=True)
 
 
+@app.get("/api/polymarket/status")
+def polymarket_status():
+    from .markets.polymarket import engine
+    return engine.snapshot()
+
+
+@app.get("/api/polymarket/markets")
+async def polymarket_markets():
+    from .markets.polymarket import engine
+    return await asyncio.to_thread(engine.peek)
+
+
+@app.get("/api/polymarket/trades")
+def polymarket_trades():
+    from .markets.polymarket import engine
+    return engine.trades()
+
+
+@app.get("/api/polymarket/learning")
+def polymarket_learning():
+    from .markets.polymarket import engine
+    return engine.snapshot()["learning"]
+
+
+@app.post("/api/polymarket/tick")
+async def polymarket_tick():
+    from .markets.polymarket import engine
+    return await asyncio.to_thread(engine.tick)
+
+
+@app.post("/api/polymarket/start")
+async def polymarket_start():
+    from .markets.polymarket import engine
+    return engine.start()
+
+
+@app.post("/api/polymarket/stop")
+async def polymarket_stop():
+    from .markets.polymarket import engine
+    return engine.stop()
+
+
+@app.post("/api/polymarket/reset")
+def polymarket_reset():
+    from .markets.polymarket import engine
+    return engine.reset()
+
+
 @app.get("/api/tunables")
 def get_tunables():
     from . import tunables

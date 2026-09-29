@@ -355,6 +355,44 @@ TUNABLES = {
     "hedge_cost_multiple": T(1.5, 1.0, 5.0, 0.1, "hedge", "Hedge pair cost multiple",
                            "Expected z-reversion move (in $) must clear round-trip "
                            "cost on ALL FOUR fills by this multiple, or skip the pair"),
+    # ---- Polymarket prediction-market sleeve (paper) ----
+    "pm_interval_sec":   T(60, 15, 3600, 5, "polymarket", "Engine cadence (s)",
+                           "Seconds between Polymarket decision cycles", True),
+    "pm_universe_size":  T(40, 5, 200, 5, "polymarket", "Universe size",
+                           "How many top-liquidity markets to evaluate each cycle", True),
+    "pm_min_liquidity":  T(5000, 0, 500000, 500, "polymarket", "Min market liquidity ($)",
+                           "Skip markets with CLOB liquidity below this — thin books "
+                           "can't be paper-filled honestly", True),
+    "pm_kelly_fraction": T(0.25, 0.02, 1.0, 0.01, "polymarket", "Kelly fraction",
+                           "Fraction of full Kelly to stake on estimated edge "
+                           "(0.25 = quarter-Kelly; Kelly over-bets on estimates)"),
+    "pm_max_position_pct": T(0.05, 0.005, 0.30, 0.005, "polymarket", "Max position %",
+                           "Cap on a single bet as a fraction of the paper bankroll"),
+    "pm_max_positions":  T(8, 1, 40, 1, "polymarket", "Max open bets",
+                           "Cap on concurrent open Polymarket positions", True),
+    "pm_min_edge":       T(0.03, 0.0, 0.30, 0.005, "polymarket", "Min edge",
+                           "Estimated fair-minus-market probability edge required "
+                           "to consider a bet (probability points)"),
+    "pm_edge_scale":     T(0.06, 0.005, 0.25, 0.005, "polymarket", "Edge scale (max nudge)",
+                           "Largest fair-probability adjustment a full-strength "
+                           "signal lean may claim over the market price"),
+    "pm_cost_multiple":  T(1.5, 1.0, 6.0, 0.1, "polymarket", "Cost-viability multiple",
+                           "Edge must clear round-trip spread+slippage by this multiple"),
+    "pm_confidence_gate": T(0.15, 0.0, 0.90, 0.01, "polymarket", "Confidence gate",
+                           "Minimum signal confidence to open a bet"),
+    "pm_fee_rate":       T(0.0, 0.0, 0.05, 0.001, "polymarket", "Fee rate (per side)",
+                           "Polymarket currently charges 0 trading fees; raise to "
+                           "stress the book at a hypothetical fee"),
+    "pm_slippage":       T(0.005, 0.0, 0.10, 0.001, "polymarket", "Slippage (prob pts/side)",
+                           "Simulated fill slippage in probability points per side"),
+    "pm_min_notional":   T(5, 1, 1000, 1, "polymarket", "Min bet notional ($)",
+                           "Skip bets smaller than this (Polymarket min order is $5)", True),
+    "pm_take_profit":    T(0.15, 0.0, 0.50, 0.01, "polymarket", "Early take-profit (prob)",
+                           "Exit early once the token price rises this far above "
+                           "entry (0 = hold to resolution only)"),
+    "pm_stop_loss":      T(0.20, 0.0, 0.50, 0.01, "polymarket", "Early stop-loss (prob)",
+                           "Exit early once the token price falls this far below "
+                           "entry (0 = hold to resolution only)"),
 }
 
 _overrides = None
