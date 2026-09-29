@@ -159,6 +159,14 @@
     <div class="sw"></div>
     <span>meme trading: <b id="tg-meme-label">off</b></span>
   </div>
+  <div class="toggle" id="tg-pm" title="Polymarket prediction-market sleeve (master switch). When on, the standalone engine loop evaluates liquid binary markets and manages a separate PAPER book. Off by default; nothing runs until this is on.">
+    <div class="sw"></div>
+    <span>Polymarket sleeve: <b id="tg-pm-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-pm-auto" title="Polymarket auto-trade (paper). When off, the engine only evaluates and shows would-open decisions without betting. When on, it opens PAPER bets. Needs the Polymarket sleeve on.">
+    <div class="sw"></div>
+    <span>Polymarket auto-trade: <b id="tg-pm-auto-label">off</b></span>
+  </div>
   <div class="toggle" id="tg-researcher" title="Strategy Researcher: autonomously searches a safe rule DSL for NEW strategy shapes, backtests each on a purged walk-forward + deflated-Sharpe gate, and AUTO-PROMOTES only the passers into the bandit-weighted 'discovered' ensemble arm (its live weight is still learned from realized PnL). Runs every ~6h. Off by default.">
     <div class="sw"></div>
     <span>strategy discovery: <b id="tg-researcher-label">off</b></span>
@@ -1222,6 +1230,10 @@ function renderToggles(){
   $('#tg-exit-label').textContent=s.exit_advisor_enabled!==false?'on':'off';
   $('#tg-meme').classList.toggle('on', !!s.meme_trading_enabled);
   $('#tg-meme-label').textContent=s.meme_trading_enabled?'on':'off';
+  $('#tg-pm').classList.toggle('on', !!s.polymarket_enabled);
+  $('#tg-pm-label').textContent=s.polymarket_enabled?'on':'off';
+  $('#tg-pm-auto').classList.toggle('on', !!s.pm_auto_trade);
+  $('#tg-pm-auto-label').textContent=s.pm_auto_trade?'on (paper bets)':'off (evaluate only)';
   $('#tg-researcher').classList.toggle('on', !!s.researcher_enabled);
   $('#tg-researcher-label').textContent=s.researcher_enabled?'on':'off';
   $('#tg-researcher-llm').classList.toggle('on', !!s.researcher_use_llm);
@@ -1381,6 +1393,8 @@ $('#tg-model').onclick=()=>setSetting('model_advisor_enabled',!(window._settings
 $('#tg-autotrain').onclick=()=>setSetting('ml_autotrain_enabled',!(window._settings||{}).ml_autotrain_enabled);
 $('#tg-exit').onclick=()=>setSetting('exit_advisor_enabled',(window._settings||{}).exit_advisor_enabled===false);
 $('#tg-meme').onclick=()=>setSetting('meme_trading_enabled',!(window._settings||{}).meme_trading_enabled);
+$('#tg-pm').onclick=()=>setSetting('polymarket_enabled',!(window._settings||{}).polymarket_enabled);
+$('#tg-pm-auto').onclick=()=>setSetting('pm_auto_trade',!(window._settings||{}).pm_auto_trade);
 $('#tg-researcher').onclick=()=>setSetting('researcher_enabled',!(window._settings||{}).researcher_enabled);
 $('#tg-researcher-llm').onclick=()=>setSetting('researcher_use_llm',!(window._settings||{}).researcher_use_llm);
 $('#tg-ingest').onclick=()=>setSetting('ingest_enabled',!(window._settings||{}).ingest_enabled);
