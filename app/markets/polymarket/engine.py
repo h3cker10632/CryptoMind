@@ -30,6 +30,7 @@ from .broker import broker, PM_START_CASH
 from .client import client
 from .execution import executor, status as exec_status
 from .learner import learner, regime_of
+from .llm import llm_advisor
 from .risk import size as size_bet, exit_levels
 
 
@@ -95,11 +96,13 @@ class PolymarketEngine:
                 if t:
                     learner.on_trade_closed(t)
                     # signal teacher: outcome 0 winning?
+                    leans0 = _leans_from_votes(pos)
                     learner.score_resolution(
                         {**pos, "prices": res["prices"],
                          "ttl_hours": None, "spread": 0.0,
-                         "mom_1d": 0.0, "liquidity": 0.0},
-                        _leans_from_votes(pos),
+                         "mom_1d": 0.0, "liquidity": 0.0,
+                         "llm_lean": leans0.get("llm", 0.0)},
+                        leans0,
                         1 if res["winning_index"] == 0 else 0)
                     db.log_event("pm", f"RESOLVED {'WON' if won else 'LOST'} "
                                  f"{pos['outcome']} pnl={t['pnl']:+.2f}")
@@ -114,15 +117,25 @@ class PolymarketEngine:
         auto = bool(app_settings.get("pm_auto_trade"))
         edge_scale = tv("pm_edge_scale")
         max_pos = int(tv("pm_max_positions"))
+        llm_infl = tv("pm_llm_influence")
         equity = broker.equity(self._mid_lookup)
+        # refresh a bounded batch of LLM leans (cached; no-op if the LLM sleeve
+        # is off) BEFORE evaluating, so the `llm` strategy + ML feature see them.
+        try:
+            llm_advisor.refresh(markets, int(tv("pm_llm_max_queries")))
+        except Exception as e:                        # noqa: BLE001
+            self.last_error = f"LLM refresh: {e}"
         opened = 0
         candidates = []
         for m in markets:
             if m["condition_id"] in {p["condition_id"]
                                      for p in broker.positions.values()}:
                 continue
+            ll = llm_advisor.lean(m["condition_id"])
+            m["llm_lean"] = ll               # for the online-model ML feature
             w = learner.weights(m.get("ttl_hours"))
-            sig = signals.evaluate(m, w, edge_scale)
+            sig = signals.evaluate(m, w, edge_scale, llm_lean=ll,
+                                   llm_influence=llm_infl)
             if sig["outcome_index"] is None:
                 continue
             stake, why = size_bet(equity, broker.cash, sig["price"], sig["edge"],
@@ -264,6 +277,7 @@ class PolymarketEngine:
             "positions": positions,
             "decisions": self.decisions[:25],
             "learning": learner.stats(),
+            "llm": llm_advisor.stats(),
         })
 
     def trades(self, limit=100) -> dict:

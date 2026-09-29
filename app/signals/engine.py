@@ -20,6 +20,16 @@ def _cur_market_sent():
     return getattr(_ctx, "market_sent", 0.0)
 
 
+def _is_meme(product):
+    """True if `product` is a meme coin (narrative-driven), for the LLM-influence
+    lever. Lazy import + swallow errors so the signal path never breaks on it."""
+    try:
+        from ..data.memes import memes
+        return bool(memes.is_meme(product))
+    except Exception:
+        return False
+
+
 class Signal(dict):
     """direction: +1 long / -1 short, confidence in [0,1]. Shorts are
     actionable when allow_shorts is enabled (settings)."""
@@ -274,6 +284,10 @@ class SignalEngine:
             sent = nlp.asset_score(p)
             _ctx.product = p
             _ctx.ml_uncertainty = None      # strat_ml sets this if it votes
+            # stamp advisor leans so strat_ml's build_x scores on the SAME inputs
+            # the model was trained on (see loop.collect_features).
+            from ..learn.online_model import stamp_advisor_leans
+            stamp_advisor_leans(f, p)
             raw = {}
             for name, fn in STRATEGIES.items():
                 try:
@@ -292,8 +306,28 @@ class SignalEngine:
             # only over strategies that actually voted.
             active = {n: s for n, s in raw.items() if abs(s) > 0.05}
             if active:
-                wsum = sum(self.weights[n] for n in active) or 1e-9
-                composite = sum(self.weights[n] * s for n, s in active.items()) / wsum
+                # --- operator LLM-influence lever ---------------------------
+                # Boost the effective weight of the `llm` arm by an operator
+                # multiplier (larger on meme coins, whose moves are narrative-
+                # driven). This is GOVERNED, not a blind override: the bandit's
+                # learned `llm` weight is still the base, so a losing LLM is
+                # still down-weighted from realized PnL — the lever only raises
+                # its baseline voice. An optional floor guarantees it a minimum
+                # share so the bandit can't fully silence it.
+                eff = dict(self.weights)
+                if "llm" in active:
+                    infl = tv("llm_meme_influence") if _is_meme(p) else tv("llm_influence")
+                    eff["llm"] = self.weights.get("llm", 0.0) * infl
+                    floor = tv("llm_weight_floor")
+                    if floor > 0:
+                        wtmp = sum(eff[n] for n in active) or 1e-9
+                        if eff["llm"] < floor * wtmp:
+                            # solve for the weight that gives llm exactly `floor`
+                            # share of the total across active arms
+                            others = wtmp - eff["llm"]
+                            eff["llm"] = floor * others / max(1e-9, 1 - floor)
+                wsum = sum(eff[n] for n in active) or 1e-9
+                composite = sum(eff[n] * s for n, s in active.items()) / wsum
                 # agreement: fraction of active voters on the composite's side
                 agree = sum(1 for s in active.values()
                             if s * composite > 0) / len(active)

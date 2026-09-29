@@ -329,6 +329,25 @@ TUNABLES = {
     "model_return_scale": T(20.0, 1.0, 100.0, 1.0, "learning", "Model return→lean scale",
                             "The predicted short-horizon return is multiplied by "
                             "this before tanh() to shape it into a [-1,1] lean"),
+    # ---- LLM advisor influence (operator lever; the bandit still learns) ----
+    "llm_influence":     T(2.0, 1.0, 6.0, 0.1, "learning", "LLM vote influence",
+                           "Operator boost on the LLM advisor's weight in the "
+                           "composite (1.0 = purely as the bandit has learned it). "
+                           "The bandit STILL down-weights a losing LLM from realized "
+                           "PnL — this only raises its baseline voice, never a blind "
+                           "override. Only matters when the LLM advisor is enabled."),
+    "llm_meme_influence": T(2.5, 1.0, 8.0, 0.1, "learning", "LLM influence on memes",
+                           "Separate, usually larger LLM boost applied on MEME coins, "
+                           "whose moves are narrative/sentiment-driven where an LLM's "
+                           "read is most relevant. Same governance as llm_influence."),
+    "llm_weight_floor":  T(0.0, 0.0, 0.50, 0.01, "learning", "LLM weight floor",
+                           "Guarantee the LLM arm at least this SHARE of the composite "
+                           "weight whenever it has an opinion, so the bandit can't fully "
+                           "silence it. 0 = no floor (purely bandit-governed)."),
+    "llm_ml_feature":    T(1, 0, 1, 1, "learning", "LLM teaches the ML",
+                           "When 1, the LLM (and model-advisor) leans are fed to the "
+                           "online model as INPUT FEATURES, so the ML learns whether "
+                           "the LLM's opinion is predictive. 0 = ML ignores them.", True),
     # ---- stance presets ----
     "stance_passive_risk": T(0.5, 0.1, 1.0, 0.05, "stance", "Passive risk mult",
                            "Position-size multiplier at full passive"),
@@ -393,6 +412,18 @@ TUNABLES = {
     "pm_stop_loss":      T(0.20, 0.0, 0.50, 0.01, "polymarket", "Early stop-loss (prob)",
                            "Exit early once the token price falls this far below "
                            "entry (0 = hold to resolution only)"),
+    "pm_llm_influence":  T(2.5, 1.0, 8.0, 0.1, "polymarket", "LLM vote influence",
+                           "Operator boost on the LLM advisor's weight in the "
+                           "Polymarket composite. Prediction markets are natural-"
+                           "language questions where an LLM's read is especially "
+                           "relevant, so this defaults higher than the crypto lever. "
+                           "The bandit still learns the LLM's real trust from "
+                           "resolutions; this only raises its baseline voice. Only "
+                           "matters when the LLM advisor is enabled + keyed."),
+    "pm_llm_max_queries": T(6, 0, 40, 1, "polymarket", "LLM queries / cycle",
+                           "Max LLM calls per Polymarket cycle (bounded for cost); "
+                           "leans are cached with the llm_lean_ttl_sec TTL. 0 = "
+                           "never query (LLM sleeve off for Polymarket).", True),
 }
 
 _overrides = None

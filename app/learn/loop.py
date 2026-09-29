@@ -23,7 +23,8 @@ from collections import deque
 from ..config import ALLOC_LOOKBACK, SIGNAL_EVAL_HORIZON_SEC, ALLOC_TEMPERATURE
 from .. import db
 from ..signals.engine import STRATEGIES
-from .online_model import model, committee, build_x, FEAT_NAMES, N_IN
+from .online_model import (model, committee, build_x, FEAT_NAMES, N_IN,
+                           stamp_advisor_leans as _stamp_advisor_leans)
 from .bandit import RegimeBandit
 from .drift import detector, page_hinkley
 from .rl_risk import agent as rl_agent
@@ -114,6 +115,7 @@ class Learner:
             if not f:
                 continue
             asset_sent, _ = nlp.asset_score(p)
+            _stamp_advisor_leans(f, p)
             x = build_x(f, asset_sent, nlp.market_sentiment,
                         derivatives.features(p))
             pred = model.predict(x) if model.n_updates >= 10 else 0.0

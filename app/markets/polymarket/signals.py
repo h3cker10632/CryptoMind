@@ -27,14 +27,14 @@ from __future__ import annotations
 
 import math
 
-STRATEGIES = ("momentum", "mean_revert", "longshot_fade", "microstructure")
+STRATEGIES = ("momentum", "mean_revert", "longshot_fade", "microstructure", "llm")
 
 
 def _clip(x, lo=-1.0, hi=1.0):
     return max(lo, min(hi, x))
 
 
-def _leans(m: dict) -> dict:
+def _leans(m: dict, llm_lean: float = 0.0) -> dict:
     """Per-strategy leans in [-1, 1] (positive = outcome 0 underpriced)."""
     p0 = m["prices"][0]
     mom1h = m.get("mom_1h", 0.0)
@@ -51,11 +51,14 @@ def _leans(m: dict) -> dict:
         if abs(dist) > 0.15 else 0.0
     # order-flow: last trade above the implied mid -> pressure toward outcome 0
     micro = _clip((m.get("last_trade_price", p0) - p0) * 10.0)
+    # LLM advisor lean is already signed toward outcome 0 and bounded [-1, 1].
     return {"momentum": momentum, "mean_revert": mean_revert,
-            "longshot_fade": longshot_fade, "microstructure": micro}
+            "longshot_fade": longshot_fade, "microstructure": micro,
+            "llm": _clip(llm_lean)}
 
 
-def evaluate(m: dict, weights: dict, edge_scale: float) -> dict:
+def evaluate(m: dict, weights: dict, edge_scale: float,
+             llm_lean: float = 0.0, llm_influence: float = 1.0) -> dict:
     """Turn a market + bandit weights into a trade candidate.
 
     Returns a dict with the chosen outcome, its price, estimated edge (fair minus
@@ -63,10 +66,14 @@ def evaluate(m: dict, weights: dict, edge_scale: float) -> dict:
     attribution). `outcome_index` is which of the two tokens to buy; None means
     no actionable lean.
     """
-    leans = _leans(m)
+    leans = _leans(m, llm_lean)
+    # effective weights: apply the operator's LLM-influence boost to the `llm`
+    # arm (governed, not an override — the bandit's learned weight is the base).
+    ew = {s: abs(weights.get(s, 1.0)) for s in STRATEGIES}
+    ew["llm"] = ew.get("llm", 1.0) * max(1.0, llm_influence)
     # weighted net lean toward outcome 0 (weights default to 1.0 per strategy)
-    wsum = sum(abs(weights.get(s, 1.0)) for s in STRATEGIES) or 1.0
-    net = sum(weights.get(s, 1.0) * leans[s] for s in STRATEGIES) / wsum
+    wsum = sum(ew[s] for s in STRATEGIES) or 1.0
+    net = sum(ew[s] * leans[s] for s in STRATEGIES) / wsum
     net = _clip(net)
     # agreement: fraction of non-zero strategies that point the same way as net
     active = [leans[s] for s in STRATEGIES if abs(leans[s]) > 1e-6]

@@ -52,7 +52,7 @@ class _PMOnline:
     trimmed to a linear model because the feature set is small and we want it to
     stay well-calibrated on few samples.
     """
-    N_IN = 5
+    N_IN = 6
 
     def __init__(self, lr=0.05, l2=1e-4):
         self.w = [0.0] * self.N_IN
@@ -77,6 +77,10 @@ class _PMOnline:
             m.get("mom_1d", 0.0),
             ttl_log,
             math.log1p(max(0.0, liq)),
+            # LLM advisor lean (0 unless the LLM sleeve is on) — this is how the
+            # LLM "teaches" the Polymarket ML: it learns from resolutions whether
+            # the LLM's read on a market is worth anything.
+            max(-1.0, min(1.0, m.get("llm_lean", 0.0))),
         ]
 
     def _standardize(self, x):

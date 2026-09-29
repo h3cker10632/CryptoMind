@@ -18,7 +18,7 @@ Uncertainty features (Phase 3):
 import math, random
 from collections import deque
 
-N_IN = 24          # 18 core + 6 chart-pattern features (see build_x / FEAT_NAMES)
+N_IN = 26          # 18 core + 6 chart-pattern + 2 advisor-lean (see build_x / FEAT_NAMES)
 N_HID = 16
 
 # Minimum |prediction| (on the scaled ±1 return axis) for a recorded prediction
@@ -46,9 +46,13 @@ FEAT_NAMES = ["rsi", "macd", "macd_delta", "mom_1h", "mom_4h", "vol_ratio",
               "price_vs_sma20", "sma20_vs_sma50", "volatility",
               "funding", "oi_change", "ls_crowding", "taker_aggression",
               "mtf_align",
-              # chart-pattern features (appended last so N_IN migration is clean)
+              # chart-pattern features (appended so N_IN migration is clean)
               "pat_structure", "pat_sr", "pat_reversal",
-              "pat_continuation", "pat_candle", "pat_divergence"]
+              "pat_continuation", "pat_candle", "pat_divergence",
+              # advisor leans appended LAST so the model can learn whether the
+              # LLM / trained-model opinions add predictive value. Zero (and thus
+              # inert) unless the respective advisor is enabled + llm_ml_feature.
+              "llm_lean", "model_lean"]
 
 
 def _clip(x, lo=-3.0, hi=3.0):
@@ -81,7 +85,42 @@ def build_x(f, asset_sent, market_sent, deriv=None):
         # multi-timeframe trend alignment in [-1,1] (mean of 15m/1h/4h trend
         # signs) — a cross-timeframe confirmation feature for the model.
         _clip(f.get("mtf_align", 0.0), -1, 1),
-    ] + _pattern_feats(f)
+    ] + _pattern_feats(f) + [
+        # advisor leans (0 unless the caller stamped them AND llm_ml_feature is
+        # on): this is how "the LLM teaches the ML" — the online model gets the
+        # LLM's / trained-model's directional opinion as an input feature and
+        # learns from realized outcomes whether it's worth anything.
+        _clip(f.get("llm_lean", 0.0), -1, 1),
+        _clip(f.get("model_lean", 0.0), -1, 1),
+    ]
+
+
+def stamp_advisor_leans(f, product):
+    """Write the LLM + model-advisor leans onto a features dict so build_x picks
+    them up as input features. No-op (leaves them 0 / inert) when the
+    `llm_ml_feature` toggle is off, so the ML ignores the advisors by default.
+
+    Called on BOTH the training path (loop.collect_features) and the inference
+    path (signals.compute) so the model is trained and scored on the same inputs.
+    Any advisor error is swallowed — a missing/disabled advisor just leaves 0.
+    """
+    if not isinstance(f, dict):
+        return
+    from ..tunables import tv
+    if not tv("llm_ml_feature"):
+        f.setdefault("llm_lean", 0.0)
+        f.setdefault("model_lean", 0.0)
+        return
+    try:
+        from .llm_advisor import advisor as _llm
+        f["llm_lean"] = float(_llm.lean(product))
+    except Exception:
+        f.setdefault("llm_lean", 0.0)
+    try:
+        from .model_advisor import advisor as _model_adv
+        f["model_lean"] = float(_model_adv.lean(product))
+    except Exception:
+        f.setdefault("model_lean", 0.0)
 
 
 def _pattern_feats(f):

@@ -155,3 +155,24 @@ def test_online_model_predicts_probability():
     lr = PMLearner()
     p = lr.online.predict(_market())
     assert 0.0 <= p <= 1.0
+
+
+def test_llm_is_a_strategy_and_influence_moves_the_lean():
+    assert "llm" in signals.STRATEGIES
+    m = _market(p0=0.50, mom1h=0.0, mom1d=0.0, last=0.50)  # heuristics ~flat
+    base = signals.evaluate(m, weights={}, edge_scale=0.10, llm_lean=0.9,
+                            llm_influence=1.0)
+    boosted = signals.evaluate(m, weights={}, edge_scale=0.10, llm_lean=0.9,
+                               llm_influence=5.0)
+    # a bullish LLM lean on outcome 0 should push the edge more when boosted
+    assert boosted["net_lean"] >= base["net_lean"] > 0
+    assert boosted["votes"]["llm"] != 0.0
+
+
+def test_llm_lean_feeds_the_pm_online_model():
+    lr = PMLearner()
+    m = _market()
+    w_off = lr.online.features(m)
+    w_on = lr.online.features({**m, "llm_lean": 0.6})
+    assert len(w_off) == 6 and w_off[-1] == 0.0
+    assert w_on[-1] == 0.6
