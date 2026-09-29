@@ -81,6 +81,18 @@ DEFAULTS = {
     # clear the edge/cost gate. When False it only evaluates + records
     # would-open decisions, so the operator can watch it think before it trades.
     "pm_auto_trade": False,
+    # ---- External-signal ingest (crawl4ai / Maxun / any standalone producer) ----
+    # Master switch for accepting ingested external rows via /api/ingest/push.
+    # When False the endpoint rejects pushes; the store is still readable.
+    "ingest_enabled": False,
+    # When True, the LLM advisor injects the freshest crawled web signal +
+    # headlines (from app.data.ingest) into its per-asset context, so its
+    # bandit-weighted vote reflects current news. Off by default; measured, never
+    # a blind copy. Requires the LLM advisor to be enabled + keyed to have effect.
+    "llm_web_context": False,
+    # crawl4ai producer config (used by the standalone tools/crawl4ai_signal):
+    # JSON mapping asset symbol -> list of URLs to crawl. Blank = nothing to do.
+    "crawl4ai_sources": "",
     # Real on-chain execution. Inert unless this is True AND a pm_wallet_key
     # secret is present AND py-clob-client is installed (see execution.py).
     "pm_live_enabled": False,
@@ -162,6 +174,10 @@ TEXT_KEYS = {
     "invo_refresh_path", "invo_refresh_body", "invo_token_path",
     "invo_refresh_rotates_path",
     "ml_lab_cmd", "ml_backtest_metrics_file",
+    # crawl4ai producer: JSON mapping of asset symbol -> [urls to crawl], e.g.
+    # {"BTC": ["https://…/news"], "ETH": ["https://…"]}. Consumed by the
+    # standalone tools/crawl4ai_signal producer, not the core.
+    "crawl4ai_sources",
 }
 
 # Secret settings: stored, but MASKED in the public payload and never clobbered

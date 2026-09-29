@@ -53,3 +53,6 @@ invo_snapshots.json
 
 # Operator secrets (Invo token, etc.) — NEVER commit
 .secrets.json
+
+# External-signal ingest store (crawl4ai/Maxun/etc. output — may contain data)
+external_signals.jsonl

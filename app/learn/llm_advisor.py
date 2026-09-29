@@ -145,7 +145,7 @@ class LLMAdvisor:
         if not f:
             return None
         sent = nlp.asset_score(product)
-        return {
+        ctx = {
             "product": product,
             "price": round(f["price"], 6),
             "rsi": round(f["rsi"], 1),
@@ -157,6 +157,22 @@ class LLMAdvisor:
             "asset_sentiment": round(sent[0], 3),
             "regime": market.regime().get("label"),
         }
+        # Optional: inject fresh crawled web signal (e.g. from a standalone
+        # crawl4ai producer feeding app.data.ingest) so the LLM's vote reflects
+        # current news/sentiment. Gated + best-effort; the LLM arm is still
+        # bandit-weighted, so this is measured influence, never a blind copy.
+        try:
+            if self._setting("llm_web_context"):
+                from ..data import ingest
+                web_lean = ingest.feature(product)
+                web_texts = ingest.latest_texts(product, n=3)
+                if web_lean is not None or web_texts:
+                    ctx["web_signal"] = round(web_lean, 3) if web_lean is not None else None
+                    if web_texts:
+                        ctx["web_headlines"] = web_texts
+        except Exception:
+            pass
+        return ctx
 
     async def refresh(self, market, nlp, products):
         """Slow, best-effort refresh of the lean cache. Only runs when enabled +
@@ -225,7 +241,11 @@ class LLMAdvisor:
             "features for one asset, respond with ONLY a JSON object "
             '{"lean": <number -1..1>, "why": "<short reason>"} where lean is '
             "your directional bias (-1 strong short … +1 strong long, 0 = no "
-            "edge). Be conservative; prefer 0 when signals conflict."
+            "edge). Be conservative; prefer 0 when signals conflict. If the "
+            "input includes 'web_signal' (a recent crawled news/sentiment lean "
+            "in -1..1) and/or 'web_headlines', weigh them as ONE input among the "
+            "price features — corroborate, don't blindly follow; ignore stale or "
+            "irrelevant headlines."
         )
         payload = {
             "model": model,

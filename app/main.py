@@ -688,6 +688,46 @@ def polymarket_reset():
     return engine.reset()
 
 
+@app.get("/api/ingest/status")
+def ingest_status():
+    from .data import ingest
+    return ingest.status()
+
+
+@app.post("/api/ingest/push")
+async def ingest_push(request: Request):
+    """Accept external structured rows from ANY standalone producer (crawl4ai,
+    Maxun, curl…). Body: a single row object or {"rows": [...]}. License-safe:
+    this only ingests OUTPUT, never the producer's code."""
+    from .data import ingest
+    if not app_settings.get("ingest_enabled"):
+        return {"accepted": 0, "rejected": 0,
+                "error": "ingest_enabled is off — enable it in Settings"}
+    body = await request.json()
+    rows = body.get("rows", body) if isinstance(body, dict) else body
+    return ingest.push(rows)
+
+
+@app.get("/api/ingest/feature")
+def ingest_feature(product: str):
+    from .data import ingest
+    return {"product": product, "feature": ingest.feature(product),
+            "texts": ingest.latest_texts(product),
+            "recent": ingest.recent(product, 10)}
+
+
+@app.post("/api/ingest/study/run")
+async def ingest_study_run(horizon_hours: float = 4.0):
+    from .data import ingest
+    return await asyncio.to_thread(ingest.study, horizon_hours)
+
+
+@app.post("/api/ingest/clear")
+def ingest_clear():
+    from .data import ingest
+    return ingest.clear()
+
+
 @app.get("/api/tunables")
 def get_tunables():
     from . import tunables
