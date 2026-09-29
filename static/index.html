@@ -122,85 +122,6 @@
   <button id="btn-restart" style="border-color:#3a5a2e;color:#8fd694">🔄 Restart server</button>
   <button class="danger" id="btn-shutdown" style="background:#2a1215">⏻ Kill server</button>
 </header>
-<div style="display:flex;gap:22px;flex-wrap:wrap;margin:-6px 0 14px 0;padding:8px 12px;
-  background:var(--panel);border:1px solid var(--border);border-radius:8px">
-  <div class="toggle" id="tg-flatten" title="What happens to open positions when you press Kill server">
-    <div class="sw"></div>
-    <span>on kill server: <b id="tg-flatten-label">flatten positions</b></span>
-  </div>
-  <div class="toggle" id="tg-carry" title="What happens to the paper account when the server restarts">
-    <div class="sw"></div>
-    <span>on restart: <b id="tg-carry-label">carry equity over</b></span>
-  </div>
-  <div class="toggle" id="tg-shorts" title="Allow the system to open SHORT positions (margin-style paper)">
-    <div class="sw"></div>
-    <span>shorts: <b id="tg-shorts-label">enabled</b></span>
-  </div>
-  <div class="toggle" id="tg-hedge" title="Market-neutral pair hedging: long laggard / short leader when relative strength diverges past the z-score gate (needs shorts enabled)">
-    <div class="sw"></div>
-    <span>pair hedge: <b id="tg-hedge-label">on</b></span>
-  </div>
-  <div class="toggle" id="tg-llm" title="Optional LLM advisor: adds ONE directional vote the bandit weights like any other strategy (never the driver). Uses Gemini (gemini-2.5-flash). Set the API key in Settings → LLM advisor (or CRYPTOMIND_LLM_KEY / GEMINI_API_KEY / llm_key.txt) — without a key it stays inert.">
-    <div class="sw"></div>
-    <span>LLM advisor: <b id="tg-llm-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-model" title="Optional ML-model advisor: adds ONE directional vote from a trained crypto_ml_lab model, weighted by the bandit like any other strategy (never the driver). Needs a validated artifact at model_artifact/ (or $CRYPTOMIND_MODEL_DIR) plus the crypto_ml package — without them it stays inert.">
-    <div class="sw"></div>
-    <span>ML-model advisor: <b id="tg-model-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-autotrain" title="Autonomous ML retraining: when enough NEW labeled rows have matured, the system runs the full crypto_ml_lab pipeline (export→validate→prepare→train→backtest) on its own and AUTO-PROMOTES the fresh model ONLY IF the backtest gates pass (OOS Sharpe / trade count / beats-baseline). Needs the crypto_ml package installed. Off by default; never promotes on unreadable metrics.">
-    <div class="sw"></div>
-    <span>auto-retrain ML: <b id="tg-autotrain-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-exit" title="Predictive loss-cut: cuts a losing position early when the system confidently expects it to keep moving against you, instead of waiting for the hard stop. Learns hold-vs-cut per market state from what price actually did next.">
-    <div class="sw"></div>
-    <span>loss-cut advisor: <b id="tg-exit-label">on</b></span>
-  </div>
-  <div class="toggle" id="tg-meme" title="Meme-coin trading: seeds Coinbase-listed meme majors (DOGE/SHIB/PEPE/BONK/WIF/FLOKI) and auto-discovers hot new memes from CoinGecko's meme category. High variance — traded under a tighter risk envelope (smaller size, wider stops, concurrent + total exposure caps).">
-    <div class="sw"></div>
-    <span>meme trading: <b id="tg-meme-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-pm" title="Polymarket prediction-market sleeve (master switch). When on, the standalone engine loop evaluates liquid binary markets and manages a separate PAPER book. Off by default; nothing runs until this is on.">
-    <div class="sw"></div>
-    <span>Polymarket sleeve: <b id="tg-pm-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-pm-auto" title="Polymarket auto-trade (paper). When off, the engine only evaluates and shows would-open decisions without betting. When on, it opens PAPER bets. Needs the Polymarket sleeve on.">
-    <div class="sw"></div>
-    <span>Polymarket auto-trade: <b id="tg-pm-auto-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-researcher" title="Strategy Researcher: autonomously searches a safe rule DSL for NEW strategy shapes, backtests each on a purged walk-forward + deflated-Sharpe gate, and AUTO-PROMOTES only the passers into the bandit-weighted 'discovered' ensemble arm (its live weight is still learned from realized PnL). Runs every ~6h. Off by default.">
-    <div class="sw"></div>
-    <span>strategy discovery: <b id="tg-researcher-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-researcher-llm" title="Also let the LLM advisor PROPOSE candidate strategy specs (in the same safe DSL). Every LLM proposal still faces the identical out-of-sample gate before it can be promoted. Needs the LLM advisor keyed.">
-    <div class="sw"></div>
-    <span>LLM-proposed ideas: <b id="tg-researcher-llm-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-ingest" title="External-signal ingest seam: accept structured signal rows from standalone producers (crawl4ai, Maxun, a cron curl) at /api/ingest/push. Off by default; the seam only ingests OUTPUT, never a scraper's code.">
-    <div class="sw"></div>
-    <span>web-signal ingest: <b id="tg-ingest-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-webctx" title="Feed the freshest ingested web signal + headlines into the LLM advisor's context, so its bandit-weighted vote reflects current news. Needs the LLM advisor keyed and web-signal ingest on.">
-    <div class="sw"></div>
-    <span>LLM sees web signals: <b id="tg-webctx-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-autodiscover" title="Let the crawl4ai producer FIND its own news sources per traded asset (Google News RSS, no API key) instead of only using a hand-curated URL list. Discovered signals still enter as MEASURED features and are weighed by the bandit.">
-    <div class="sw"></div>
-    <span>auto-find sources: <b id="tg-autodiscover-label">off</b></span>
-  </div>
-  <div class="toggle" id="tg-crawler" title="Run the crawl4ai producer INSIDE the app on a schedule (crawl4ai_interval_sec) — no manual CLI. It crawls/scores your sources (manual or auto-found) off the hot path and pushes rows into the ingest seam. Needs web-signal ingest on; the LLM only acts on them if 'LLM sees web signals' is on and the advisor is keyed.">
-    <div class="sw"></div>
-    <span>run web crawler: <b id="tg-crawler-label">off</b></span>
-  </div>
-  <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
-    <span style="color:var(--dim)">stance:</span>
-    <button data-mode="passive">🛡 passive</button>
-    <button data-mode="auto">🤖 auto</button>
-    <button data-mode="aggressive">🔥 aggressive</button>
-    <span id="stance-now" style="color:var(--dim)"></span>
-  </div>
-  <span style="color:var(--dim);font-size:11.5px;align-self:center">learned intelligence (models · bandit · Q-table · champion · universe) always survives restarts</span>
-</div>
 
 <div id="restart-overlay" style="display:none;position:fixed;inset:0;background:rgba(11,14,20,.93);
   z-index:99;align-items:center;justify-content:center;flex-direction:column;gap:14px">
@@ -622,6 +543,88 @@
       </div>
     </div>
     <div style="color:var(--dim);font-size:12px">Changes apply <b>immediately</b> to the running system (no restart) and persist across restarts. Amber = changed from default. Hover a name for what it does. Reality check built in: costs are first-class knobs — if a config only works at zero fees, it doesn't work.</div>
+    <div class="sm-group">
+      <h3>🎛 Feature toggles <b style="font-weight:400;color:var(--dim);font-size:11px">— flip any sleeve on/off; applies live, persists across restarts</b></h3>
+      <div style="display:flex;gap:22px;flex-wrap:wrap;padding:6px 0 2px">
+  background:var(--panel);border:1px solid var(--border);border-radius:8px">
+  <div class="toggle" id="tg-flatten" title="What happens to open positions when you press Kill server">
+    <div class="sw"></div>
+    <span>on kill server: <b id="tg-flatten-label">flatten positions</b></span>
+  </div>
+  <div class="toggle" id="tg-carry" title="What happens to the paper account when the server restarts">
+    <div class="sw"></div>
+    <span>on restart: <b id="tg-carry-label">carry equity over</b></span>
+  </div>
+  <div class="toggle" id="tg-shorts" title="Allow the system to open SHORT positions (margin-style paper)">
+    <div class="sw"></div>
+    <span>shorts: <b id="tg-shorts-label">enabled</b></span>
+  </div>
+  <div class="toggle" id="tg-hedge" title="Market-neutral pair hedging: long laggard / short leader when relative strength diverges past the z-score gate (needs shorts enabled)">
+    <div class="sw"></div>
+    <span>pair hedge: <b id="tg-hedge-label">on</b></span>
+  </div>
+  <div class="toggle" id="tg-llm" title="Optional LLM advisor: adds ONE directional vote the bandit weights like any other strategy (never the driver). Uses Gemini (gemini-2.5-flash). Set the API key in Settings → LLM advisor (or CRYPTOMIND_LLM_KEY / GEMINI_API_KEY / llm_key.txt) — without a key it stays inert.">
+    <div class="sw"></div>
+    <span>LLM advisor: <b id="tg-llm-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-model" title="Optional ML-model advisor: adds ONE directional vote from a trained crypto_ml_lab model, weighted by the bandit like any other strategy (never the driver). Needs a validated artifact at model_artifact/ (or $CRYPTOMIND_MODEL_DIR) plus the crypto_ml package — without them it stays inert.">
+    <div class="sw"></div>
+    <span>ML-model advisor: <b id="tg-model-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-autotrain" title="Autonomous ML retraining: when enough NEW labeled rows have matured, the system runs the full crypto_ml_lab pipeline (export→validate→prepare→train→backtest) on its own and AUTO-PROMOTES the fresh model ONLY IF the backtest gates pass (OOS Sharpe / trade count / beats-baseline). Needs the crypto_ml package installed. Off by default; never promotes on unreadable metrics.">
+    <div class="sw"></div>
+    <span>auto-retrain ML: <b id="tg-autotrain-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-exit" title="Predictive loss-cut: cuts a losing position early when the system confidently expects it to keep moving against you, instead of waiting for the hard stop. Learns hold-vs-cut per market state from what price actually did next.">
+    <div class="sw"></div>
+    <span>loss-cut advisor: <b id="tg-exit-label">on</b></span>
+  </div>
+  <div class="toggle" id="tg-meme" title="Meme-coin trading: seeds Coinbase-listed meme majors (DOGE/SHIB/PEPE/BONK/WIF/FLOKI) and auto-discovers hot new memes from CoinGecko's meme category. High variance — traded under a tighter risk envelope (smaller size, wider stops, concurrent + total exposure caps).">
+    <div class="sw"></div>
+    <span>meme trading: <b id="tg-meme-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-pm" title="Polymarket prediction-market sleeve (master switch). When on, the standalone engine loop evaluates liquid binary markets and manages a separate PAPER book. Off by default; nothing runs until this is on.">
+    <div class="sw"></div>
+    <span>Polymarket sleeve: <b id="tg-pm-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-pm-auto" title="Polymarket auto-trade (paper). When off, the engine only evaluates and shows would-open decisions without betting. When on, it opens PAPER bets. Needs the Polymarket sleeve on.">
+    <div class="sw"></div>
+    <span>Polymarket auto-trade: <b id="tg-pm-auto-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-researcher" title="Strategy Researcher: autonomously searches a safe rule DSL for NEW strategy shapes, backtests each on a purged walk-forward + deflated-Sharpe gate, and AUTO-PROMOTES only the passers into the bandit-weighted 'discovered' ensemble arm (its live weight is still learned from realized PnL). Runs every ~6h. Off by default.">
+    <div class="sw"></div>
+    <span>strategy discovery: <b id="tg-researcher-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-researcher-llm" title="Also let the LLM advisor PROPOSE candidate strategy specs (in the same safe DSL). Every LLM proposal still faces the identical out-of-sample gate before it can be promoted. Needs the LLM advisor keyed.">
+    <div class="sw"></div>
+    <span>LLM-proposed ideas: <b id="tg-researcher-llm-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-ingest" title="External-signal ingest seam: accept structured signal rows from standalone producers (crawl4ai, Maxun, a cron curl) at /api/ingest/push. Off by default; the seam only ingests OUTPUT, never a scraper's code.">
+    <div class="sw"></div>
+    <span>web-signal ingest: <b id="tg-ingest-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-webctx" title="Feed the freshest ingested web signal + headlines into the LLM advisor's context, so its bandit-weighted vote reflects current news. Needs the LLM advisor keyed and web-signal ingest on.">
+    <div class="sw"></div>
+    <span>LLM sees web signals: <b id="tg-webctx-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-autodiscover" title="Let the crawl4ai producer FIND its own news sources per traded asset (Google News RSS, no API key) instead of only using a hand-curated URL list. Discovered signals still enter as MEASURED features and are weighed by the bandit.">
+    <div class="sw"></div>
+    <span>auto-find sources: <b id="tg-autodiscover-label">off</b></span>
+  </div>
+  <div class="toggle" id="tg-crawler" title="Run the crawl4ai producer INSIDE the app on a schedule (crawl4ai_interval_sec) — no manual CLI. It crawls/scores your sources (manual or auto-found) off the hot path and pushes rows into the ingest seam. Needs web-signal ingest on; the LLM only acts on them if 'LLM sees web signals' is on and the advisor is keyed.">
+    <div class="sw"></div>
+    <span>run web crawler: <b id="tg-crawler-label">off</b></span>
+  </div>
+  <div class="seg" id="seg-mode" title="Trading stance: passive trades smaller and pickier, aggressive trades bigger and more often, auto lets the system judge conditions itself">
+    <span style="color:var(--dim)">stance:</span>
+    <button data-mode="passive">🛡 passive</button>
+    <button data-mode="auto">🤖 auto</button>
+    <button data-mode="aggressive">🔥 aggressive</button>
+    <span id="stance-now" style="color:var(--dim)"></span>
+  </div>
+  <span style="color:var(--dim);font-size:11.5px;align-self:center">learned intelligence (models · bandit · Q-table · champion · universe) always survives restarts</span>
+      </div>
+    </div>
     <div class="sm-group">
       <h3>Data export</h3>
       <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap;padding:6px 0 2px">
