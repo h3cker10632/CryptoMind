@@ -139,6 +139,63 @@ def test_non_meme_entry_unaffected_by_meme_caps():
     assert ok, why                       # meme cap must not block a core coin
 
 
+def test_memes_excluded_from_general_max_open_positions_count():
+    """Held memes must not consume the general max_open_positions budget --
+    only non-meme positions count against it."""
+    _enable(True)
+    tunables.update({"max_open_positions": 2, "meme_max_positions": 6,
+                     "meme_max_exposure": 0.60})
+    rm = RiskManager()
+    positions = {
+        "BTC-USD": {"qty": 1, "side": 1, "entry": 100},
+        "DOGE-USD": {"qty": 1, "side": 1, "entry": 100},
+        "SHIB-USD": {"qty": 1, "side": 1, "entry": 100},
+        "PEPE-USD": {"qty": 1, "side": 1, "entry": 100},
+    }
+    # only 1 non-meme (BTC-USD) is held -- a second non-meme must still fit
+    # under the cap of 2, even though 3 memes are also open.
+    ok, why = rm.can_open("ETH-USD", _FakeBroker(positions), _FakeMarket(), True)
+    assert ok, why
+    tunables.update({"max_open_positions": 4, "meme_max_positions": 2,
+                     "meme_max_exposure": 0.15})
+
+
+def test_meme_entry_exempt_from_general_max_open_positions():
+    """A new meme entry must not be blocked by the general cap even when
+    non-meme positions already occupy every general slot."""
+    _enable(True)
+    tunables.update({"max_open_positions": 2, "meme_max_positions": 6,
+                     "meme_max_exposure": 0.60})
+    rm = RiskManager()
+    positions = {
+        "BTC-USD": {"qty": 1, "side": 1, "entry": 100},
+        "ETH-USD": {"qty": 1, "side": 1, "entry": 100},
+    }
+    ok, why = rm.can_open("PEPE-USD", _FakeBroker(positions), _FakeMarket(), True)
+    assert ok, why
+    tunables.update({"max_open_positions": 4, "meme_max_positions": 2,
+                     "meme_max_exposure": 0.15})
+
+
+def test_non_meme_entry_blocked_counts_only_non_meme_positions():
+    """A non-meme entry IS still blocked once non-meme positions alone hit
+    the general cap, regardless of how many memes are also open."""
+    _enable(True)
+    tunables.update({"max_open_positions": 2, "meme_max_positions": 6,
+                     "meme_max_exposure": 0.60})
+    rm = RiskManager()
+    positions = {
+        "BTC-USD": {"qty": 1, "side": 1, "entry": 100},
+        "ETH-USD": {"qty": 1, "side": 1, "entry": 100},
+        "DOGE-USD": {"qty": 1, "side": 1, "entry": 100},
+        "SHIB-USD": {"qty": 1, "side": 1, "entry": 100},
+    }
+    ok, why = rm.can_open("SOL-USD", _FakeBroker(positions), _FakeMarket(), True)
+    assert not ok and "max open positions" in why
+    tunables.update({"max_open_positions": 4, "meme_max_positions": 2,
+                     "meme_max_exposure": 0.15})
+
+
 def test_seed_universe_tags_and_heats(monkeypatch):
     _enable(True)
     from app.data.universe import universe
@@ -224,6 +281,62 @@ def test_universe_refresh_still_enforces_listing_after_ranking():
     rank_pos = src.index("candidates = sorted(")
     listing_pos = src.index("not in self.cb_products")
     assert listing_pos > rank_pos
+
+
+def test_meme_universe_slots_tunable_default():
+    from app import tunables
+    assert tunables.tv("meme_universe_slots") == 4
+
+
+def test_meme_candidates_get_dedicated_universe_slots(monkeypatch):
+    """Memes must not consume the non-meme discovered budget: with
+    meme_universe_slots=1 and slots=2 (non-meme), 2 hot non-memes AND 1 hot
+    meme must all make it into the universe -- the meme doesn't bump a
+    non-meme out, and isn't bumped out by them."""
+    import asyncio
+    from app.config import PRODUCTS
+    from app.data.universe import universe, CORE, MAX_UNIVERSE
+    from app import tunables
+    from app.execution.paper import broker
+
+    products_before = list(PRODUCTS)
+    tunables.update({"meme_universe_slots": 1})
+    monkeypatch.setattr(universe, "_load_coinbase_products",
+                        lambda client: _async_noop())
+    monkeypatch.setattr(universe, "_fetch_trending", lambda client: _async_noop())
+    monkeypatch.setattr(universe, "_fetch_oi_growth", lambda client: _async_noop())
+    monkeypatch.setattr(universe, "_volume_ok",
+                        lambda client, sym: _async_true())
+    monkeypatch.setattr("app.data.memes.memes.seed_universe", lambda: None)
+    monkeypatch.setattr(broker, "positions", {})
+
+    non_meme_slots = MAX_UNIVERSE - len(CORE)
+    universe.mention_heat.clear()
+    universe.sources.clear()
+    universe.cb_products.clear()
+    # fill exactly `non_meme_slots` hot non-memes + 1 hot meme (SHIB -- not a
+    # CORE coin, unlike DOGE), all above the heat floor and all "listed"/liquid.
+    syms = [f"ALT{i}" for i in range(non_meme_slots)] + ["SHIB"]
+    for i, sym in enumerate(syms):
+        universe.mention_heat[sym] = 10.0 - i * 0.01   # descending heat
+        universe.cb_products[sym] = {"id": f"{sym}-USD", "status": "online"}
+
+    try:
+        asyncio.run(universe.refresh(None))
+        assert "SHIB-USD" in universe.discovered
+        for sym in syms[:non_meme_slots]:
+            assert f"{sym}-USD" in universe.discovered
+    finally:
+        PRODUCTS[:] = products_before
+        tunables.update({"meme_universe_slots": 4})
+
+
+async def _async_noop():
+    return None
+
+
+async def _async_true():
+    return True
 
 
 def test_meme_strategy_influence_tunable_default_and_wiring():

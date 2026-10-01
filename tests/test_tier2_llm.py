@@ -16,6 +16,58 @@ def test_llm_registered_as_strategy():
     assert "llm" in STRATEGIES
 
 
+# ---------------- build_context: chart-pattern awareness ----------------
+
+class _MktWithPatterns:
+    def __init__(self, patterns=None):
+        self._patterns = patterns
+
+    def features(self, p):
+        f = {"price": 100.0, "rsi": 55.0, "macd_delta": 0.1, "mom_1h": 0.01,
+             "mom_4h": 0.02, "mtf_align": 0.5, "vol_ratio": 1.1}
+        if self._patterns is not None:
+            f["patterns"] = self._patterns
+        return f
+
+    def regime(self):
+        return {"label": "bull/normal"}
+
+
+class _StubNlp:
+    market_sentiment = 0.0
+
+    def asset_score(self, p):
+        return (0.1, "x")
+
+
+def test_build_context_includes_chart_patterns():
+    patterns = {"structure": "uptrend",
+                "detected": [{"name": "Double bottom", "direction": "bullish",
+                             "strength": 0.8},
+                            {"name": "Bullish engulfing", "direction": "bullish",
+                             "strength": 0.6}]}
+    a = LLMAdvisor()
+    ctx = a.build_context("BTC-USD", _MktWithPatterns(patterns), _StubNlp())
+    assert ctx["chart_structure"] == "uptrend"
+    assert any("Double bottom" in s for s in ctx["chart_patterns"])
+    assert any("Bullish engulfing" in s for s in ctx["chart_patterns"])
+
+
+def test_build_context_omits_chart_patterns_when_absent():
+    a = LLMAdvisor()
+    ctx = a.build_context("BTC-USD", _MktWithPatterns(None), _StubNlp())
+    assert "chart_structure" not in ctx
+    assert "chart_patterns" not in ctx
+
+
+def test_build_context_omits_chart_patterns_when_none_detected():
+    a = LLMAdvisor()
+    ctx = a.build_context("BTC-USD", _MktWithPatterns(
+        {"structure": "range", "detected": []}), _StubNlp())
+    assert ctx["chart_structure"] == "range"
+    assert "chart_patterns" not in ctx
+
+
 def test_disabled_by_default_returns_zero():
     settings.update({"llm_advisor_enabled": False})
     a = LLMAdvisor()

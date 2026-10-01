@@ -377,33 +377,8 @@ class Orchestrator:
         except Exception as e:
             db.log_event("error", f"pattern exit failed: {e}")
 
-        # 6. exits on signal flip (direction-aware: close a long on a
-        # confident bearish signal, close a short on a confident bullish one)
-        for p in list(broker.positions.keys()):
-            sig = signals.get(p)
-            if not sig:
-                continue
-            # NEVER let a directional signal flip close a hedge leg — a pair
-            # hedge is market-neutral and managed as a unit by the hedger; a
-            # confident directional call on one leg would orphan the other.
-            if broker.positions[p].get("hedge"):
-                continue
-            side = broker.positions[p].get("side", 1)
-            # MIN-HOLD: don't let a signal flip churn a position out on the same
-            # (or next) tick it opened — its hard stop/target still protect it.
-            age = time.time() - broker.positions[p].get("opened", 0)
-            if age < tv("min_hold_sec"):
-                continue
-            # MIN-HOLD: don't let a signal flip churn a position out on the same
-            # (or next) tick it opened — its hard stop/target still protect it.
-            age = time.time() - broker.positions[p].get("opened", 0)
-            if age < tv("min_hold_sec"):
-                continue
-            if sig["direction"] * side < 0 and sig["confidence"] > 0.5:
-                t = broker.sell(p, market.price(p), "signal flip")
-                if t:
-                    risk.on_trade_closed(t)
-                    learner.on_trade_closed(t)
+        # 6. exits on signal flip
+        self._manage_signal_flip_exits(market, regime, signals)
 
         # 7. entries — conviction trades at full size
         if self._entries_enabled():
@@ -536,6 +511,15 @@ class Orchestrator:
                 lambda prod, ts: learner._price_at(prod, ts, market))
         except Exception as e:
             db.log_event("error", f"exit advisor scoring failed: {e}")
+        # score the exit THROTTLE's matured pattern_exit/signal-flip exits
+        # against the realized counterfactual (same price-history lookup).
+        try:
+            from .learn.exit_throttle import exit_throttle
+            exit_throttle.score_pending(
+                lambda prod, ts: learner._price_at(prod, ts, market),
+                horizon_sec=tv("exit_throttle_horizon_sec"))
+        except Exception as e:
+            db.log_event("error", f"exit throttle scoring failed: {e}")
         if self.tick_count % 9 == 0:    # every ~3 min
             learner.run(market, regime)
 
@@ -548,14 +532,72 @@ class Orchestrator:
             except RuntimeError:
                 persistence.save()
 
+    @staticmethod
+    def _trend_bucket(side, regime):
+        """Is this position WITH or AGAINST the current BTC-regime trend —
+        the same bucket app.learn.exit_advisor uses, reused here so the exit
+        throttle's hierarchical pooling lines up with proven state buckets."""
+        trend_num = 1 if regime.get("trend") == "bull" else \
+                    -1 if regime.get("trend") == "bear" else 0
+        st = side * trend_num
+        return "with" if st > 0 else "against" if st < 0 else "neutral"
+
+    def _manage_signal_flip_exits(self, market, regime, signals):
+        """Direction-aware exit: close a long on a confident bearish signal,
+        close a short on a confident bullish one. The confidence bar is
+        throttled by the learned, regime-conditioned edge of this mechanism
+        (see app.learn.exit_throttle) — same scheme as pattern_exit; the hard
+        stop/target are never touched by it."""
+        from . import settings as app_settings
+        from .learn.exit_throttle import exit_throttle
+        throttle_on = app_settings.get("exit_throttle_enabled")
+        for p in list(broker.positions.keys()):
+            sig = signals.get(p)
+            if not sig:
+                continue
+            # NEVER let a directional signal flip close a hedge leg — a pair
+            # hedge is market-neutral and managed as a unit by the hedger; a
+            # confident directional call on one leg would orphan the other.
+            if broker.positions[p].get("hedge"):
+                continue
+            side = broker.positions[p].get("side", 1)
+            # MIN-HOLD: don't let a signal flip churn a position out on the same
+            # (or next) tick it opened — its hard stop/target still protect it.
+            age = time.time() - broker.positions[p].get("opened", 0)
+            if age < tv("min_hold_sec"):
+                continue
+            trend_bucket = self._trend_bucket(side, regime)
+            factor = (exit_throttle.throttle_factor(
+                        "signal_flip", regime["label"], trend_bucket)
+                      if throttle_on else 1.0)
+            conf_bar = min(0.99, 0.5 / factor)
+            if sig["direction"] * side < 0 and sig["confidence"] > conf_bar:
+                px = market.price(p)
+                t = broker.sell(p, px, "signal flip")
+                if t:
+                    risk.on_trade_closed(t)
+                    learner.on_trade_closed(t)
+                    if throttle_on:
+                        exit_throttle.record_exit("signal_flip", regime["label"],
+                                                  trend_bucket, p, side, px)
+
     def _manage_pattern_exit(self, market):
         """Tighten or cut an open position when a confirmed reversal chart
         pattern forms against it. Additive protection only — layered on top of
-        the hard stop / take-profit / trailing / loss-cut advisor."""
+        the hard stop / take-profit / trailing / loss-cut advisor.
+
+        The cut/tighten trigger bar is throttled by the learned, regime-
+        conditioned edge of pattern_exit itself (see app.learn.exit_throttle):
+        a mechanism confirmed to cut into recoveries gets a harder bar; one
+        confirmed to catch real reversals gets a little more rope. The hard
+        stop/take-profit below this are never touched by that learning."""
         from .signals import patterns
         from . import settings as app_settings
         if not app_settings.get("pattern_exit_enabled"):
             return
+        from .learn.exit_throttle import exit_throttle
+        throttle_on = app_settings.get("exit_throttle_enabled")
+        regime = market.regime()
         cut_th = tv("pattern_exit_cut")
         tighten_th = tv("pattern_exit_tighten")
         tighten_atr = tv("pattern_exit_tighten_atr")
@@ -573,22 +615,31 @@ class Orchestrator:
             if not rep:
                 continue
             side = pos.get("side", 1)
+            trend_bucket = self._trend_bucket(side, regime)
+            factor = (exit_throttle.throttle_factor(
+                        "pattern_exit", regime["label"], trend_bucket)
+                      if throttle_on else 1.0)
+            eff_cut_th = cut_th / factor
+            eff_tighten_th = tighten_th / factor
             threat, name = patterns.exit_threat(side, rep)
-            if threat < tighten_th:
+            if threat < eff_tighten_th:
                 continue
             label = name or "reversal pattern"
-            if threat >= cut_th:
+            if threat >= eff_cut_th:
                 t = broker.sell(p, px, f"pattern reversal ({label})")
                 if t:
                     risk.on_trade_closed(t)
                     learner.on_trade_closed(t)
+                    if throttle_on:
+                        exit_throttle.record_exit("pattern_exit", regime["label"],
+                                                  trend_bucket, p, side, px)
                     if self.shadow is not None and p in self.shadow.positions:
                         try:
                             self.shadow.mirror_close(p, t.get("exit", t["entry"]))
                         except Exception:
                             pass
                     db.log_event("risk", f"✂️ {p}: cut on {label} "
-                                 f"(threat {threat:.2f} ≥ {cut_th:.2f})")
+                                 f"(threat {threat:.2f} ≥ {eff_cut_th:.2f})")
                 continue
             # tighten: pull the stop to `tighten_atr` swing-ATR from price, but
             # only ever CLOSER than the current stop (never loosen it).

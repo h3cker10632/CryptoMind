@@ -299,6 +299,10 @@ TUNABLES = {
     "meme_max_exposure": T(0.15, 0.02, 0.60, 0.01, "meme", "Max meme exposure",
                            "Total meme notional cap as a fraction of equity — the "
                            "blast radius if a meme trade goes wrong"),
+    "meme_universe_slots": T(4, 0, 8, 1, "meme", "Dedicated meme universe slots",
+                           "Discovered meme coins get this many universe slots IN "
+                           "ADDITION to the normal non-meme discovered budget, so "
+                           "memes never crowd out non-meme coin discovery", True),
     "meme_strategy_influence": T(1.5, 1.0, 4.0, 0.1, "meme",
                            "Meme research/decision priority",
                            "Multiplies the `meme` strategy's EFFECTIVE composite "
@@ -319,6 +323,11 @@ TUNABLES = {
     "pattern_exit_tighten_atr": T(1.0, 0.3, 3.0, 0.1, "risk", "Pattern-exit stop distance (ATR)",
                            "When a reversal tightens a stop, place it this many swing-"
                            "ATR from the current price (smaller = tighter)."),
+    "exit_throttle_horizon_sec": T(1800, 300, 14400, 60, "risk",
+                           "Exit-throttle learn horizon (s)",
+                           "Forward window used to score whether a pattern_exit/"
+                           "signal-flip cut was validated (price kept moving against "
+                           "the position) or a false alarm (price recovered)", True),
     "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
                            "Seconds between LLM-advisor lean refreshes (only when "
                            "the advisor is enabled + a key is configured)", True),

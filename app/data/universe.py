@@ -244,19 +244,37 @@ class Universe:
 
         self.rejected = {}
         chosen = []
+        meme_chosen = []
         slots = MAX_UNIVERSE - len(CORE)
+        try:
+            from ..tunables import tv as _tv
+            meme_slots = int(_tv("meme_universe_slots"))
+        except Exception:
+            meme_slots = 0
+        # memes get their OWN slot budget (meme_slots) on top of the non-meme
+        # discovered budget (slots), so they never crowd out non-meme coins.
         for sym, heat in candidates:
-            if len(chosen) >= slots:
+            if len(chosen) >= slots and len(meme_chosen) >= meme_slots:
                 break
             if heat < 1.5:
                 continue                              # not hot enough yet
+            is_meme_candidate = _is_meme_sym(sym)
+            if is_meme_candidate:
+                if len(meme_chosen) >= meme_slots:
+                    continue
+            elif len(chosen) >= slots:
+                continue
             if sym not in self.cb_products:
                 self.rejected[sym] = "not listed on Coinbase USD"
                 continue
             if not await self._volume_ok(client, sym):
                 self.rejected[sym] = "24h volume below liquidity floor"
                 continue
-            chosen.append(self.cb_products[sym]["id"])
+            if is_meme_candidate:
+                meme_chosen.append(self.cb_products[sym]["id"])
+            else:
+                chosen.append(self.cb_products[sym]["id"])
+        chosen = chosen + meme_chosen
 
         # apply changes to the live universe (mutate PRODUCTS in place).
         # never prune a coin we currently hold a position in.
@@ -298,6 +316,11 @@ class Universe:
                 await asyncio.sleep(REFRESH_SEC)
 
     def stats(self):
+        try:
+            from ..tunables import tv
+            meme_slots = tv("meme_universe_slots")
+        except Exception:
+            meme_slots = 0
         return {
             "core": CORE,
             "discovered": self.discovered,
@@ -311,6 +334,7 @@ class Universe:
             "rejected": self.rejected,
             "coinbase_listed": len(self.cb_products),
             "max_universe": MAX_UNIVERSE,
+            "meme_universe_slots": meme_slots,
             "last_update": self.last_update,
             "performance": self._performance_stats(),
         }

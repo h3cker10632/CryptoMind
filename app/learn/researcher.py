@@ -141,8 +141,8 @@ def validate_candidate(c) -> bool:
     has_side = False
     for side in ("long", "short"):
         clauses = c.get(side)
-        if clauses is None:
-            continue
+        if not clauses:
+            continue                  # absent OR empty list => side unused
         if not isinstance(clauses, list) or not (1 <= len(clauses) <= MAX_CLAUSES):
             return False
         for cl in clauses:
@@ -281,15 +281,28 @@ def sample_systematic(rnd, n):
     return out
 
 
-def propose_llm(n=8):
+LAST_LLM_ERROR = ""         # sanitized reason propose_llm() last returned []
+
+
+def propose_llm(n=8, patterns_ctx=None):
     """Ask the LLM advisor to propose candidate strategy specs in the DSL. Returns
     a list of VALIDATED candidates (invalid/garbage specs dropped). Reuses the
     LLM-advisor endpoint/credential plumbing; a no-key / disabled advisor yields
-    []. Nothing here can promote a strategy — every proposal still faces the gate."""
+    []. Nothing here can promote a strategy — every proposal still faces the gate.
+    `patterns_ctx`, when supplied, is a short human-readable summary of the
+    product's CURRENT algorithmically-detected chart patterns (see
+    app.signals.patterns) — handed to the model as one more input so its
+    proposals can reference the same reversal/continuation/candlestick
+    evidence the `pattern` strategy and exit-throttle already use.
+    On any failure, LAST_LLM_ERROR is set to a sanitized (no-secret) reason so
+    the caller/operator can see WHY zero candidates came back, instead of a
+    silent no-op."""
+    global LAST_LLM_ERROR
     try:
         import httpx
         from .llm_advisor import LLMAdvisor
         if not LLMAdvisor.enabled() or not LLMAdvisor._api_key():
+            LAST_LLM_ERROR = "llm advisor disabled or no api key configured"
             return []
         feat_desc = ", ".join(f"{k} in [{lo},{hi}]" for k, (lo, hi) in FEATURES.items())
         sys_prompt = (
@@ -301,22 +314,45 @@ def propose_llm(n=8):
             'at least one of "long"/"short". Allowed feats and typical ranges: '
             + feat_desc + ". ema_cross is +1/-1 (use thr 0). Keep 1-3 clauses per "
             "side. Propose DIVERSE, economically-plausible ideas (trend, mean-"
-            "reversion, breakout, volume-confirmed, momentum). No prose, JSON only."
+            "reversion, breakout, volume-confirmed, momentum). If a current chart-"
+            "pattern summary is supplied, let it inform (not dictate) your ideas "
+            "-- e.g. propose a mean-reversion clause for a detected reversal "
+            "pattern, or a continuation clause for a detected trend/triangle. "
+            "No prose, JSON only."
         )
+        user_msg = f"Propose {n} strategy candidates."
+        if patterns_ctx:
+            user_msg += f" Current chart patterns: {patterns_ctx}"
         payload = {
             "model": LLMAdvisor._model(), "temperature": 0.7, "max_tokens": 900,
             "messages": [
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": f"Propose {n} strategy candidates."},
+                {"role": "user", "content": user_msg},
             ],
         }
         with httpx.Client(timeout=30) as c:
-            r = c.post(f"{LLMAdvisor._base_url()}/chat/completions",
-                       headers={"Authorization": f"Bearer {LLMAdvisor._api_key()}"},
-                       json=payload)
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
+            try:
+                r = c.post(f"{LLMAdvisor._base_url()}/chat/completions",
+                           headers={"Authorization": f"Bearer {LLMAdvisor._api_key()}"},
+                           json=payload)
+                r.raise_for_status()
+                content = r.json()["choices"][0]["message"]["content"]
+            except httpx.HTTPStatusError as e:
+                body = ""
+                try:
+                    body = e.response.text[:200]
+                except Exception:
+                    pass
+                LAST_LLM_ERROR = f"HTTP {e.response.status_code}: {body or '(empty body)'}"
+                return []
+            except Exception as e:
+                LAST_LLM_ERROR = f"request failed: {e}"
+                return []
         arr = _extract_json_array(content)
+        if not arr:
+            snippet = (content or "")[:160].replace("\n", " ")
+            LAST_LLM_ERROR = f"model response had no parseable JSON array: {snippet!r}"
+            return []
         out = []
         for c in arr:
             if isinstance(c, dict):
@@ -324,8 +360,14 @@ def propose_llm(n=8):
                 c["meta"] = {"source": "llm"}
                 if validate_candidate(c):
                     out.append(c)
+        if not out:
+            LAST_LLM_ERROR = (f"model proposed {len(arr)} candidate(s), none "
+                              f"validated (sample: {arr[0]!r})")
+            return []
+        LAST_LLM_ERROR = ""
         return out
-    except Exception:
+    except Exception as e:
+        LAST_LLM_ERROR = f"unexpected error: {e}"
         return []
 
 
@@ -352,6 +394,29 @@ def _extract_json_array(content):
         except Exception:
             return []
     return []
+
+
+def patterns_context(candles):
+    """Short human-readable summary of the product's CURRENT algorithmically-
+    detected chart patterns (see app.signals.patterns), for propose_llm.
+    Best-effort: returns None on any failure or when nothing is detected."""
+    try:
+        from ..signals import patterns as patterns_mod
+        closes = [c[4] for c in candles]
+        highs = [c[2] for c in candles]
+        lows = [c[1] for c in candles]
+        opens = [c[3] for c in candles]
+        vols = [c[5] for c in candles]
+        rep = patterns_mod.analyze(highs, lows, closes, vols, opens)
+        top = rep.get("detected") or []
+        structure = rep.get("structure")
+        if not top:
+            return f"structure={structure}" if structure else None
+        parts = [f"{d.get('name')} ({d.get('direction')}, {d.get('strength', 0):.2f})"
+                 for d in top[:3]]
+        return f"structure={structure}; " + "; ".join(parts)
+    except Exception:
+        return None
 
 
 # ---------------- the researcher ----------------
@@ -431,9 +496,17 @@ class Researcher:
             candidates = sample_systematic(rnd, n_systematic)
             n_llm = 0
             if use_llm:
-                llm_c = propose_llm(8)
+                llm_c = propose_llm(8, patterns_ctx=patterns_context(candles))
                 n_llm = len(llm_c)
                 candidates += llm_c
+                if n_llm == 0 and LAST_LLM_ERROR:
+                    try:
+                        from .. import db
+                        db.log_event("warn", f"Researcher LLM proposals for "
+                                     f"{product} returned 0 candidates: "
+                                     f"{LAST_LLM_ERROR}")
+                    except Exception:
+                        pass
 
             # dedup by canonical id
             seen, uniq = set(), []
@@ -533,6 +606,7 @@ class Researcher:
         return {
             "enabled": bool(app_settings.get("researcher_enabled")),
             "use_llm": bool(app_settings.get("researcher_use_llm")),
+            "last_llm_error": LAST_LLM_ERROR,
             "gate": {"dsr_min": DSR_MIN,
                      "min_frac_folds_positive": MIN_FRAC_FOLDS_POSITIVE,
                      "min_trades": MIN_TRADES, "top_k": TOP_K},

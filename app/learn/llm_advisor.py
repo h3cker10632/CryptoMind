@@ -157,6 +157,20 @@ class LLMAdvisor:
             "asset_sentiment": round(sent[0], 3),
             "regime": market.regime().get("label"),
         }
+        # Chart-pattern awareness: the algorithmic pattern engine (app.signals.
+        # patterns) already runs every tick as part of market.features(); hand
+        # its summary to the LLM too so its vote can weigh the same reversal/
+        # continuation/candlestick evidence the `pattern` strategy and the
+        # exit-throttle already use. Best-effort — absent/neutral is silently
+        # omitted rather than sent as noise.
+        pat = f.get("patterns")
+        if pat:
+            ctx["chart_structure"] = pat.get("structure")
+            detected = pat.get("detected") or []
+            if detected:
+                ctx["chart_patterns"] = [
+                    f"{d.get('name')} ({d.get('direction')}, "
+                    f"{d.get('strength', 0):.2f})" for d in detected[:3]]
         # Optional: inject fresh crawled web signal (e.g. from a standalone
         # crawl4ai producer feeding app.data.ingest) so the LLM's vote reflects
         # current news/sentiment. Gated + best-effort; the LLM arm is still
@@ -245,7 +259,10 @@ class LLMAdvisor:
             "input includes 'web_signal' (a recent crawled news/sentiment lean "
             "in -1..1) and/or 'web_headlines', weigh them as ONE input among the "
             "price features — corroborate, don't blindly follow; ignore stale or "
-            "irrelevant headlines."
+            "irrelevant headlines. If 'chart_structure' and/or 'chart_patterns' "
+            "are present (algorithmically detected reversal/continuation/"
+            "candlestick patterns), weigh them as ONE more input alongside the "
+            "numeric features — a detected pattern is evidence, not a command."
         )
         payload = {
             "model": model,

@@ -182,9 +182,14 @@ class RiskManager:
         if product in broker.positions:
             return False, "already in position"
         from .stance import stance
+        from ..data.memes import memes
         max_pos = max(1, round(tv("max_open_positions") * stance.current()["max_pos_mult"]))
-        if len(broker.positions) >= max_pos:
-            return False, f"max open positions ({max_pos} in {stance.current()['label']} stance)"
+        # memes have their own dedicated blast-radius caps below and never
+        # compete with non-meme coins for the general position-count budget.
+        if not memes.is_meme(product):
+            held_non_meme = [q for q in broker.positions if not memes.is_meme(q)]
+            if len(held_non_meme) >= max_pos:
+                return False, f"max open positions ({max_pos} in {stance.current()['label']} stance)"
         eq = broker.equity(market)
         if broker.exposure(market) / eq >= tv("max_gross_exposure"):
             return False, "max gross exposure"
@@ -217,7 +222,6 @@ class RiskManager:
         # independent caps: a limit on CONCURRENT meme positions and a limit on
         # total meme exposure as a fraction of equity. Non-meme trading is
         # unaffected by these.
-        from ..data.memes import memes
         if memes.is_meme(product):
             if not memes.enabled():
                 return False, "meme trading disabled"

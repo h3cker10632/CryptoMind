@@ -74,6 +74,10 @@ DEFAULTS = {
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
     "exit_advisor_enabled": True,
+    # Learns whether the DISCRETIONARY early exits (pattern_exit, signal-flip)
+    # are actually earning their keep per regime, and dials their trigger bar
+    # up/down accordingly. Never touches stop-loss/take-profit/kill-switch.
+    "exit_throttle_enabled": True,
     # ---- Polymarket prediction-market sleeve (standalone, off by default) ----
     # Master switch for the Polymarket engine loop. When False the sleeve is
     # completely dormant (no fetch, no trading); the read-only "peek" endpoint

@@ -39,6 +39,13 @@ def test_validate_candidate_whitelist():
     assert not R.validate_candidate({"long": [{"feat": "os.system", "op": "<", "thr": 1}], "conf": 0.5})
     # bad op rejected
     assert not R.validate_candidate({"long": [{"feat": "rsi", "op": "==", "thr": 1}], "conf": 0.5})
+    # an unused side sent as an EMPTY list (common LLM habit: emitting both
+    # "long" and "short" keys for schema consistency) must not reject an
+    # otherwise-valid candidate -- only a non-empty, malformed side should.
+    assert R.validate_candidate({"long": [{"feat": "rsi", "op": "<", "thr": 30}],
+                                 "short": [], "conf": 0.6})
+    assert R.validate_candidate({"short": [{"feat": "rsi", "op": ">", "thr": 70}],
+                                 "long": [], "conf": 0.6})
     # non-numeric threshold rejected
     assert not R.validate_candidate({"long": [{"feat": "rsi", "op": "<", "thr": "x"}], "conf": 0.5})
     # no clauses at all rejected
@@ -155,5 +162,186 @@ def test_status_and_clear(tmp_path):
     st = res.status()
     assert "gate" in st and st["gate"]["dsr_min"] == R.DSR_MIN
     assert "features" in st
+    assert "last_llm_error" in st
     res.clear()
     assert res.status()["promoted_total"] == 0
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import httpx
+            raise httpx.HTTPStatusError("boom", request=None, response=self)
+
+    def json(self):
+        return self._payload
+
+
+def test_propose_llm_records_error_on_http_failure(monkeypatch):
+    from app.learn.llm_advisor import LLMAdvisor
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            return _FakeResponse(status_code=401, text="bad key")
+
+    monkeypatch.setattr(LLMAdvisor, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(LLMAdvisor, "_api_key", classmethod(lambda cls: "k"))
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    R.LAST_LLM_ERROR = ""
+    out = R.propose_llm(4)
+    assert out == []
+    assert "401" in R.LAST_LLM_ERROR
+
+
+def test_propose_llm_records_error_on_unparseable_response(monkeypatch):
+    from app.learn.llm_advisor import LLMAdvisor
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            return _FakeResponse(payload={"choices": [{"message": {"content": "not json"}}]})
+
+    monkeypatch.setattr(LLMAdvisor, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(LLMAdvisor, "_api_key", classmethod(lambda cls: "k"))
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    R.LAST_LLM_ERROR = ""
+    out = R.propose_llm(4)
+    assert out == []
+    assert R.LAST_LLM_ERROR
+
+
+def test_propose_llm_clears_error_on_success(monkeypatch):
+    from app.learn.llm_advisor import LLMAdvisor
+
+    good = [{"long": [{"feat": "rsi", "op": "<", "thr": 30}], "conf": 0.6}]
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            import json as _json
+            return _FakeResponse(payload={"choices": [{"message": {"content": _json.dumps(good)}}]})
+
+    monkeypatch.setattr(LLMAdvisor, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(LLMAdvisor, "_api_key", classmethod(lambda cls: "k"))
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    R.LAST_LLM_ERROR = "stale error from a previous run"
+    out = R.propose_llm(4)
+    assert len(out) == 1
+    assert R.LAST_LLM_ERROR == ""
+
+
+# ---------------- chart-pattern awareness in LLM proposals ----------------
+
+def test_propose_llm_includes_patterns_context_in_user_message(monkeypatch):
+    from app.learn.llm_advisor import LLMAdvisor
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            captured["payload"] = kw.get("json")
+            return _FakeResponse(payload={"choices": [{"message": {"content": "[]"}}]})
+
+    monkeypatch.setattr(LLMAdvisor, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(LLMAdvisor, "_api_key", classmethod(lambda cls: "k"))
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    R.propose_llm(4, patterns_ctx="Double bottom (bullish, 0.80); structure=uptrend")
+    user_msg = captured["payload"]["messages"][1]["content"]
+    assert "Double bottom" in user_msg
+    assert "uptrend" in user_msg
+
+
+def test_propose_llm_user_message_unchanged_without_patterns_context(monkeypatch):
+    """No patterns_ctx supplied -> behaves exactly as before (no new text)."""
+    from app.learn.llm_advisor import LLMAdvisor
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            captured["payload"] = kw.get("json")
+            return _FakeResponse(payload={"choices": [{"message": {"content": "[]"}}]})
+
+    monkeypatch.setattr(LLMAdvisor, "enabled", staticmethod(lambda: True))
+    monkeypatch.setattr(LLMAdvisor, "_api_key", classmethod(lambda cls: "k"))
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    R.propose_llm(4)
+    user_msg = captured["payload"]["messages"][1]["content"]
+    assert user_msg == "Propose 4 strategy candidates."
+
+
+def test_run_once_forwards_patterns_context_to_propose_llm(monkeypatch, tmp_path):
+    """run_once must compute the current chart-pattern report once per call
+    and hand it to propose_llm, so LLM-proposed candidates can weigh the SAME
+    reversal/continuation/candlestick evidence the `pattern` strategy uses."""
+    captured = {}
+
+    def _fake_propose_llm(n=8, patterns_ctx=None):
+        captured["patterns_ctx"] = patterns_ctx
+        return []
+
+    monkeypatch.setattr(R, "propose_llm", _fake_propose_llm)
+    res = R.Researcher(store_path=str(tmp_path / "disc.json"))
+    candles = _synthetic_candles(700, seed=5, trend=0.0008)
+    res.run_once("BTC-USD", candles=candles, n_systematic=10, use_llm=True, seed=3)
+    assert "patterns_ctx" in captured
+    assert captured["patterns_ctx"] is None or isinstance(captured["patterns_ctx"], str)
+

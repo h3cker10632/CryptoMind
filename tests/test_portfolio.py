@@ -636,3 +636,55 @@ def test_restart_round_trip_preserves_shared_cash_positions_and_kill_state(
     # restored positions keep their ledger IDs (exactly-once close/settle)
     assert crypto_broker.positions["BTC-USD"].get("_ledger_id") == crypto_pos["_ledger_id"]
 
+
+def test_pm_standalone_local_cash_survives_restart_and_kill(monkeypatch, tmp_path):
+    """Pre-migration (unbound) Polymarket cash must not silently reset to
+    PM_START_CASH on a restart/kill -- it has to round-trip through state.json
+    exactly like positions/closed_trades/realized_pnl already do."""
+    from app import persistence
+    import importlib
+    pm_broker_mod = importlib.import_module("app.markets.polymarket.broker")
+    from app.markets.polymarket.broker import PMBroker
+
+    monkeypatch.setattr(persistence, "STATE_PATH", str(tmp_path / "state.json"))
+
+    pm_broker = PMBroker()
+    monkeypatch.setattr(pm_broker_mod, "broker", pm_broker)
+    pos = pm_broker.open(_pm_market(), 0, 0.40, 50.0, 0.0, 0.0, 0.1, 0.9, "t")
+    assert pos is not None
+    cash_before = pm_broker.cash
+    assert cash_before != pm_broker.start_cash        # genuinely moved
+
+    snap = persistence._capture_pm_broker()
+    assert snap["local_cash"] == cash_before
+
+    # simulate a restart: a brand-new, unbound broker (fresh PM_START_CASH)
+    fresh_broker = PMBroker()
+    monkeypatch.setattr(pm_broker_mod, "broker", fresh_broker)
+    assert fresh_broker.cash != cash_before
+
+    persistence._restore_pm_broker(snap)
+    assert fresh_broker.cash == cash_before
+    assert pos["token_id"] in fresh_broker.positions
+
+
+def test_pm_bound_broker_ignores_restored_local_cash(monkeypatch, tmp_path):
+    """Once bound to the shared ledger, a restored local_cash must NOT
+    override the durable DB-backed cash (it's read-only once bound)."""
+    from app import persistence
+    import importlib
+    pm_broker_mod = importlib.import_module("app.markets.polymarket.broker")
+    from app.markets.polymarket.broker import PMBroker
+
+    db.initialize_paper_portfolio(5_000.0, "unified-paper-v1")
+    portfolio = PaperPortfolio()
+    bound_broker = PMBroker()
+    bound_broker.bind_portfolio(portfolio)
+    monkeypatch.setattr(pm_broker_mod, "broker", bound_broker)
+
+    persistence._restore_pm_broker({"version": 1, "local_cash": 999.0,
+                                    "positions": {}, "closed_trades": [],
+                                    "realized_pnl": 0.0})
+    assert bound_broker.cash == portfolio.cash
+    assert bound_broker._local_cash != 999.0
+

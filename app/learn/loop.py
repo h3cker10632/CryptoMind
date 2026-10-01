@@ -628,6 +628,11 @@ class Learner:
         # silent sleeve cannot keep a frozen +8bps reputation at decaying n.
         from ..tunables import tv as _tv
         n_pruned = self.bandit.decay(gamma=_tv("bandit_decay_gamma"))
+        try:
+            from .exit_throttle import exit_throttle
+            exit_throttle.decay()
+        except Exception:
+            pass
 
         # 2c. a broken ML head is RESET before we mix weights or train, so this
         # cycle's samples hit a fresh net instead of 47k updates at 26% acc.
@@ -680,10 +685,19 @@ class Learner:
             "llm_advisor": self._llm_advisor_stats(),
             "model_advisor": self._model_advisor_stats(),
             "exit_advisor": self._exit_advisor_stats(),
+            "exit_throttle": self._exit_throttle_stats(),
             "direction": self._direction_stats(),
             "last_run": self.last_run,
             "last_cycle": self.last_cycle,
         }
+
+    @staticmethod
+    def _exit_throttle_stats():
+        try:
+            from .exit_throttle import exit_throttle
+            return exit_throttle.stats()
+        except Exception:
+            return {}
 
     @staticmethod
     def _exit_advisor_stats():
