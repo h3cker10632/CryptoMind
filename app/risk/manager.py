@@ -52,6 +52,16 @@ class RiskManager:
         # learn from it. Defaults False so the very first tick isn't credited.
         self._tradable_next = False
 
+    def reset_account_baselines(self, equity):
+        self.peak_equity = equity
+        self.kill_arm_peak = equity
+        self.day_start_equity = equity
+        self.day_start_ts = time.time()
+        self.day_index = _utc_day()
+
+    def reconcile_account_peak(self, saved_peak, opening_equity):
+        self.peak_equity = max(float(saved_peak or 0.0), float(opening_equity))
+
     # ---------- adaptive updates ----------
     def on_trade_closed(self, trade):
         if trade["pnl"] <= 0:

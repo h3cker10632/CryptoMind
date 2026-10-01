@@ -255,6 +255,7 @@ def build_export(history_limit=1000, include_features=True, include_analytics=Tr
             "tick_sec": config.TICK_SEC,
             "market_poll_sec": config.MARKET_POLL_SEC,
             "news_poll_sec": config.NEWS_POLL_SEC,
+            **tunables.values(),
         },
         "state_path": persistence.STATE_PATH,
         "db_path": config.DB_PATH,

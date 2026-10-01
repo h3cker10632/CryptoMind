@@ -299,6 +299,15 @@ TUNABLES = {
     "meme_max_exposure": T(0.15, 0.02, 0.60, 0.01, "meme", "Max meme exposure",
                            "Total meme notional cap as a fraction of equity — the "
                            "blast radius if a meme trade goes wrong"),
+    "meme_strategy_influence": T(1.5, 1.0, 4.0, 0.1, "meme",
+                           "Meme research/decision priority",
+                           "Multiplies the `meme` strategy's EFFECTIVE composite "
+                           "weight on classified meme coins only (non-memes are "
+                           "unaffected). The bandit's learned weight is still the "
+                           "base — a losing meme arm can still fall to zero. Does "
+                           "NOT change position size, stop/target, max concurrent "
+                           "memes or max meme exposure (meme_risk_factor/"
+                           "meme_stop_widen/meme_max_positions/meme_max_exposure)."),
     "pattern_exit_cut":  T(0.70, 0.30, 1.0, 0.05, "risk", "Pattern-exit cut threshold",
                            "Contrary-reversal threat (0-1) at/above which an open "
                            "position is CUT outright. Higher = only the clearest "
@@ -375,9 +384,9 @@ TUNABLES = {
                            "Expected z-reversion move (in $) must clear round-trip "
                            "cost on ALL FOUR fills by this multiple, or skip the pair"),
     # ---- Polymarket prediction-market sleeve (paper) ----
-    "pm_interval_sec":   T(60, 15, 3600, 5, "polymarket", "Engine cadence (s)",
+    "pm_interval_sec":   T(20, 15, 3600, 5, "polymarket", "Engine cadence (s)",
                            "Seconds between Polymarket decision cycles", True),
-    "pm_universe_size":  T(40, 5, 200, 5, "polymarket", "Universe size",
+    "pm_universe_size":  T(200, 5, 200, 5, "polymarket", "Universe size",
                            "How many top-liquidity markets to evaluate each cycle", True),
     "pm_min_liquidity":  T(5000, 0, 500000, 500, "polymarket", "Min market liquidity ($)",
                            "Skip markets with CLOB liquidity below this — thin books "

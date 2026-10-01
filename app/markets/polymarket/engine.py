@@ -25,12 +25,14 @@ import time
 from ... import db
 from ... import settings as app_settings
 from ...tunables import tv
+from ...portfolio import portfolio as paper_portfolio
 from . import signals
 from .broker import broker, PM_START_CASH
 from .client import client
 from .execution import executor, status as exec_status
 from .learner import learner, regime_of
 from .llm import llm_advisor
+from .research import research_cache
 from .risk import size as size_bet, exit_levels
 
 
@@ -46,6 +48,114 @@ def _json_safe(o):
     return o
 
 
+def _ttl_bucket(ttl_hours):
+    if ttl_hours is None:
+        return "unknown"
+    if ttl_hours <= 1:
+        return "0-1h"
+    if ttl_hours <= 24:
+        return "1-24h"
+    if ttl_hours <= 24 * 7:
+        return "1-7d"
+    if ttl_hours <= 24 * 30:
+        return "1-4w"
+    return ">1mo"
+
+
+def _forecast_metrics(rows, now=None):
+    now = time.time() if now is None else float(now)
+    resolved = [row for row in rows if row.get("resolved_outcome0") in (0, 1)]
+    unresolved = [row for row in rows if row.get("resolved_outcome0") is None]
+
+    def log_loss(probability, outcome):
+        probability = max(1e-6, min(1.0 - 1e-6, probability))
+        return -(outcome * math.log(probability)
+                 + (1 - outcome) * math.log(1.0 - probability))
+
+    bot_brier, market_brier = [], []
+    bot_log_loss, market_log_loss = [], []
+    for row in resolved:
+        outcome = int(row["resolved_outcome0"])
+        bot_p = max(0.0, min(1.0, float(row["predicted_p0"])))
+        market_p = max(0.0, min(1.0, float(row["market_p0"])))
+        bot_brier.append((bot_p - outcome) ** 2)
+        market_brier.append((market_p - outcome) ** 2)
+        bot_log_loss.append(log_loss(bot_p, outcome))
+        market_log_loss.append(log_loss(market_p, outcome))
+
+    def mean(values):
+        return round(sum(values) / len(values), 6) if values else None
+
+    covered = [row for row in rows if row.get("evidence")]
+    abstentions = 0
+    evidence_by_id = {}
+    for row in rows:
+        features = row.get("features") or {}
+        citations = (features.get("research_citations", [])
+                    if isinstance(features, dict) else [])
+        if not citations:
+            abstentions += 1
+        for doc in row.get("evidence") or []:
+            doc_id = doc.get("id")
+            if doc_id:
+                evidence_by_id.setdefault(str(doc_id), doc)
+    fresh_ages = [max(0.0, now - float(doc.get("published_ts", 0))) / 3600.0
+                  for doc in evidence_by_id.values()
+                  if 0 <= now - float(doc.get("published_ts", 0)) <= 72 * 3600]
+
+    strategy_performance = {}
+    for strategy in signals.STRATEGIES:
+        brier, losses, active_market_brier = [], [], []
+        for row in resolved:
+            outcome = int(row["resolved_outcome0"])
+            features = row.get("features") or {}
+            edge_scale = (features.get("edge_scale", 0.06)
+                          if isinstance(features, dict) else 0.06)
+            lean = (row.get("votes") or {}).get(strategy, 0.0)
+            if abs(float(lean)) < 1e-6:
+                continue
+            probability = max(0.0, min(1.0,
+                               float(row["market_p0"]) + float(lean) * float(edge_scale)))
+            brier.append((probability - outcome) ** 2)
+            losses.append(log_loss(probability, outcome))
+            active_market_brier.append((float(row["market_p0"]) - outcome) ** 2)
+        strategy_performance[strategy] = {
+            "n": len(brier),
+            "brier": mean(brier),
+            "log_loss": mean(losses),
+            "brier_delta_vs_market": (
+                round(mean(brier) - mean(active_market_brier), 6)
+                if brier else None),
+        }
+
+    bot_brier_mean = mean(bot_brier)
+    market_brier_mean = mean(market_brier)
+    bot_loss_mean = mean(bot_log_loss)
+    market_loss_mean = mean(market_log_loss)
+    return {
+        "forecast_count": len(rows),
+        "scored_forecast_count": len(resolved),
+        "unresolved_forecast_count": len(unresolved),
+        "research_covered_count": len(covered),
+        "research_abstention_count": abstentions,
+        "research_coverage": round(len(covered) / len(rows), 4) if rows else 0.0,
+        "bot_brier": bot_brier_mean,
+        "market_brier": market_brier_mean,
+        "brier_delta": (round(bot_brier_mean - market_brier_mean, 6)
+                         if bot_brier_mean is not None and market_brier_mean is not None
+                         else None),
+        "bot_log_loss": bot_loss_mean,
+        "market_log_loss": market_loss_mean,
+        "log_loss_delta": (round(bot_loss_mean - market_loss_mean, 6)
+                           if bot_loss_mean is not None and market_loss_mean is not None
+                           else None),
+        "strategy_performance": strategy_performance,
+        "fresh_evidence_documents": len(fresh_ages),
+        "stale_evidence_documents": len(evidence_by_id) - len(fresh_ages),
+        "evidence_freshness_hours": mean(fresh_ages),
+    }
+
+
 class PolymarketEngine:
     def __init__(self):
         self.running = False
@@ -54,6 +164,8 @@ class PolymarketEngine:
         self.last_error = ""
         self.decisions: list[dict] = []      # rolling window for the dashboard
         self._price_cache: dict[str, float] = {}   # token_id -> latest mid
+        self._replayed_resolutions = False
+        self._tick_resolution_cache = {}
 
     # ----------------------------- helpers -----------------------------
     def _mid_lookup(self, token_id: str):
@@ -73,6 +185,94 @@ class PolymarketEngine:
         self.decisions.insert(0, d)
         del self.decisions[200:]
 
+    def _resolution(self, condition_id):
+        if condition_id not in self._tick_resolution_cache:
+            self._tick_resolution_cache[condition_id] = client.resolution(condition_id)
+        return self._tick_resolution_cache[condition_id]
+
+    def _record_forecast(self, market, signal, evidence, research_result, edge_scale):
+        forecast_ts = time.time()
+        ttl_hours = market.get("ttl_hours")
+        due_ts = (forecast_ts + max(0.0, float(ttl_hours)) * 3600.0
+                  if ttl_hours is not None else forecast_ts + 30 * 86400.0)
+        feature_snapshot = learner.online.features(market)
+        features = {
+            "values": feature_snapshot,
+            "ttl_hours": ttl_hours,
+            "edge_scale": edge_scale,
+            "question": str(market.get("question") or "")[:280],
+            "category": str(market.get("category") or "")[:80],
+            "research_citations": research_result.get("citations", []),
+        }
+        try:
+            db.record_pm_forecast({
+                "condition_id": market["condition_id"],
+                "ttl_bucket": _ttl_bucket(ttl_hours),
+                "forecast_ts": forecast_ts,
+                "predicted_p0": signal["fair_p0"],
+                "market_p0": market["prices"][0],
+                "votes": signal["leans"],
+                "features": features,
+                "evidence": evidence,
+                "resolution_due_ts": due_ts,
+            })
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"Forecast ledger: {exc}"[:200]
+
+    def _apply_resolved_forecast(self, row):
+        feature_data = row.get("features") or {}
+        feature_snapshot = (feature_data.get("values")
+                            if isinstance(feature_data, dict) else feature_data)
+        ttl_hours = (feature_data.get("ttl_hours")
+                     if isinstance(feature_data, dict) else None)
+        if not isinstance(feature_snapshot, list):
+            return False
+        try:
+            return learner.score_forecast(
+                row["id"], ttl_hours, row.get("votes") or {},
+                row["resolved_outcome0"], feature_snapshot)
+        except (KeyError, TypeError, ValueError) as exc:
+            self.last_error = f"Forecast learning: {exc}"[:200]
+            return False
+
+    def _settle_forecasts(self):
+        if not self._replayed_resolutions:
+            after_id = 0
+            while True:
+                rows = db.resolved_pm_forecasts(after_id=after_id, limit=1000)
+                if not rows:
+                    break
+                for row in rows:
+                    self._apply_resolved_forecast(row)
+                after_id = rows[-1]["id"]
+                if len(rows) < 1000:
+                    break
+            self._replayed_resolutions = True
+
+        now = time.time()
+        checked = 0
+        for row in db.pending_pm_forecasts(limit=100, now=now):
+            if checked >= 3:
+                break
+            db.mark_pm_resolution_attempt(row["id"], now)
+            checked += 1
+            try:
+                resolution = self._resolution(row["condition_id"])
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = f"Resolution lookup: {exc}"[:200]
+                continue
+            if not resolution or not resolution.get("resolved"):
+                continue
+            winner = resolution.get("winning_index")
+            prices = resolution.get("prices") or []
+            if (winner not in (0, 1) or len(prices) != 2
+                    or prices[winner] < 0.99 or prices[1 - winner] > 0.01):
+                continue
+            outcome0_won = int(winner == 0)
+            if db.label_pm_forecast(row["id"], outcome0_won):
+                row["resolved_outcome0"] = outcome0_won
+                self._apply_resolved_forecast(row)
+
     # ----------------------------- one cycle ----------------------------
     def tick(self) -> dict:
         """Run a single decision cycle synchronously. Safe to call by hand."""
@@ -81,29 +281,20 @@ class PolymarketEngine:
         markets = client.fetch_markets(
             limit=int(tv("pm_universe_size")),
             min_liquidity=tv("pm_min_liquidity"))
+        self._tick_resolution_cache = {}
         if not markets and client.last_error:
             self.last_error = client.last_error
         self._refresh_prices(markets)
-        by_condition = {m["condition_id"]: m for m in markets}
 
         # (2) settle resolved holdings ------------------------------------
         for tid in list(broker.positions.keys()):
             pos = broker.positions[tid]
-            res = client.resolution(pos["condition_id"])
+            res = self._resolution(pos["condition_id"])
             if res and res["resolved"]:
                 won = (res["winning_index"] == pos["outcome_index"])
                 t = broker.resolve(tid, won)
                 if t:
                     learner.on_trade_closed(t)
-                    # signal teacher: outcome 0 winning?
-                    leans0 = _leans_from_votes(pos)
-                    learner.score_resolution(
-                        {**pos, "prices": res["prices"],
-                         "ttl_hours": None, "spread": 0.0,
-                         "mom_1d": 0.0, "liquidity": 0.0,
-                         "llm_lean": leans0.get("llm", 0.0)},
-                        leans0,
-                        1 if res["winning_index"] == 0 else 0)
                     db.log_event("pm", f"RESOLVED {'WON' if won else 'LOST'} "
                                  f"{pos['outcome']} pnl={t['pnl']:+.2f}")
 
@@ -113,8 +304,10 @@ class PolymarketEngine:
             db.log_event("pm", f"EXIT {t['exit_reason']} {t['outcome']} "
                          f"pnl={t['pnl']:+.2f}")
 
+        self._settle_forecasts()
+
         # (4) evaluate + (optionally) open --------------------------------
-        auto = bool(app_settings.get("pm_auto_trade"))
+        auto = bool(app_settings.get("pm_auto_trade")) and paper_portfolio.ready
         edge_scale = tv("pm_edge_scale")
         max_pos = int(tv("pm_max_positions"))
         llm_infl = tv("pm_llm_influence")
@@ -125,17 +318,32 @@ class PolymarketEngine:
             llm_advisor.refresh(markets, int(tv("pm_llm_max_queries")))
         except Exception as e:                        # noqa: BLE001
             self.last_error = f"LLM refresh: {e}"
+        try:
+            research_cache.refresh(markets)
+        except Exception as e:                        # noqa: BLE001
+            self.last_error = f"Research refresh: {e}"[:200]
+        try:
+            llm_advisor.refresh_research(
+                markets, research_cache, int(tv("pm_llm_max_queries")))
+        except Exception as e:                        # noqa: BLE001
+            self.last_error = f"Research advisor: {e}"[:200]
         opened = 0
         candidates = []
         for m in markets:
+            ll = llm_advisor.lean(m["condition_id"])
+            m["llm_lean"] = ll               # for the online-model ML feature
+            evidence = research_cache.evidence(m["condition_id"])
+            research_result = llm_advisor.research_result(
+                m["condition_id"], evidence=evidence)
+            m["research_lean"] = research_result.get("lean", 0.0)
+            w = learner.weights(m.get("ttl_hours"))
+            sig = signals.evaluate(m, w, edge_scale, llm_lean=ll,
+                                   llm_influence=llm_infl,
+                                   research_lean=m["research_lean"])
+            self._record_forecast(m, sig, evidence, research_result, edge_scale)
             if m["condition_id"] in {p["condition_id"]
                                      for p in broker.positions.values()}:
                 continue
-            ll = llm_advisor.lean(m["condition_id"])
-            m["llm_lean"] = ll               # for the online-model ML feature
-            w = learner.weights(m.get("ttl_hours"))
-            sig = signals.evaluate(m, w, edge_scale, llm_lean=ll,
-                                   llm_influence=llm_infl)
             if sig["outcome_index"] is None:
                 continue
             stake, why = size_bet(equity, broker.cash, sig["price"], sig["edge"],
@@ -231,6 +439,39 @@ class PolymarketEngine:
         return {"ok": True, **broker.stats()}
 
     # ---------------------------- reporting ----------------------------
+    def learning_report(self) -> dict:
+        report = learner.stats()
+        report_limit = 10000
+        report.update(_forecast_metrics(db.pm_forecast_rows(limit=report_limit)))
+        report["forecast_total_count"] = db.pm_forecast_count()
+        report["forecast_metrics_window"] = min(
+            report_limit, report["forecast_total_count"])
+        report["forecast_metrics_scope"] = "newest_forecasts"
+        return report
+
+    def forecasts(self, limit=25) -> dict:
+        """Return recent forecast snapshots and their source evidence for inspection."""
+        selected = db.pm_forecast_rows(limit=max(1, min(100, int(limit))))
+        forecasts = []
+        for row in selected:
+            features = row.get("features") or {}
+            if not isinstance(features, dict):
+                features = {}
+            forecasts.append({
+                "condition_id": row["condition_id"],
+                "question": features.get("question") or row["condition_id"],
+                "category": features.get("category") or "",
+                "forecast_ts": row["forecast_ts"],
+                "ttl_bucket": row["ttl_bucket"],
+                "predicted_p0": row["predicted_p0"],
+                "market_p0": row["market_p0"],
+                "resolved_outcome0": row.get("resolved_outcome0"),
+                "votes": row.get("votes") or {},
+                "research_citations": features.get("research_citations") or [],
+                "evidence": row.get("evidence") or [],
+            })
+        return _json_safe({"forecasts": forecasts})
+
     def peek(self, limit=15) -> dict:
         """Read-only: top markets with the current signal read (no trading)."""
         markets = client.fetch_markets(limit=limit,
@@ -273,11 +514,17 @@ class PolymarketEngine:
             "last_tick_ts": self.last_tick_ts,
             "last_error": self.last_error or client.last_error,
             "equity": round(eq, 2),
+            # unified paper-capital labeling (Task 5): once the shared-ledger
+            # migration is confirmed, "equity"/broker.cash above are the SAME
+            # pool the crypto sleeve uses -- this is a sleeve VIEW, not a
+            # second account. False before confirmation (legacy local cash).
+            "shared_ledger_ready": paper_portfolio.ready,
             "broker": broker.stats(),
             "positions": positions,
             "decisions": self.decisions[:25],
-            "learning": learner.stats(),
+            "learning": self.learning_report(),
             "llm": llm_advisor.stats(),
+            "research": research_cache.stats(),
         })
 
     def trades(self, limit=100) -> dict:
@@ -289,13 +536,6 @@ class PolymarketEngine:
             "reason": t["exit_reason"], "closed": t["closed"],
         } for t in broker.closed_trades[-limit:][::-1]]
         return _json_safe({"trades": rows, "stats": broker.stats()})
-
-
-def _leans_from_votes(pos: dict) -> dict:
-    """Recover per-strategy leans (signed toward outcome 0) from a stored
-    position's votes (which were signed toward the traded side)."""
-    sign = 1.0 if pos.get("outcome_index", 0) == 0 else -1.0
-    return {k: v * sign for k, v in (pos.get("votes") or {}).items()}
 
 
 engine = PolymarketEngine()

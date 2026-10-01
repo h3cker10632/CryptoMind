@@ -72,6 +72,20 @@ def test_meta_carries_config_and_products():
     assert "strategies" in meta
 
 
+def test_meta_uses_effective_runtime_tunables(monkeypatch):
+    _init()
+    from app import tunables
+    effective = {"risk_per_trade": 0.02, "fee_rate": 0.001,
+                 "slippage_bps": 0}
+    monkeypatch.setattr(tunables, "values", lambda: effective)
+
+    config = export.build_export()["meta"]["config"]
+
+    assert config["risk_per_trade"] == 0.02
+    assert config["fee_rate"] == 0.001
+    assert config["slippage_bps"] == 0
+
+
 def test_security_omits_token_value():
     _init()
     sec = export.build_export()["security"]

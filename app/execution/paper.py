@@ -10,6 +10,7 @@ critique flagged as missing:
     would liquidate it. This stops shorts from being unrealistically riskless.
 """
 import time
+import uuid
 from ..config import START_CASH
 from ..tunables import tv
 from .. import db
@@ -22,10 +23,50 @@ class Position(dict):
 
 class PaperBroker:
     def __init__(self):
-        self.cash = START_CASH
+        self._portfolio = None       # set via bind_portfolio(); None = local cash
+        self._local_cash = START_CASH
         self.positions = {}      # product -> Position
         self.closed_trades = []
         self.realized_pnl = 0.0
+
+    def bind_portfolio(self, portfolio):
+        """Route this broker's cash through the shared paper-capital ledger
+        instead of a private balance. Call once, after restoring any legacy
+        cash into the ledger's opening balance, before background loops start.
+        Standalone brokers (unit tests) stay on local cash by never calling
+        this."""
+        self._portfolio = portfolio
+
+    @property
+    def cash(self):
+        if self._portfolio is not None:
+            return self._portfolio.cash
+        return self._local_cash
+
+    @cash.setter
+    def cash(self, value):
+        if self._portfolio is not None:
+            raise RuntimeError(
+                "cash is read-only once bound to the shared paper portfolio; "
+                "use reserve/settle events (see app.portfolio) instead")
+        self._local_cash = float(value)
+
+    def _reserve(self, event_id, amount, reference):
+        """Debit `amount` once. Routes through the shared ledger when bound;
+        otherwise mutates the private balance exactly like before."""
+        if self._portfolio is not None:
+            return self._portfolio.reserve("crypto", event_id, amount, reference)
+        if amount > self._local_cash + 1e-9:
+            return False
+        self._local_cash -= amount
+        return True
+
+    def _settle(self, event_id, delta, reference):
+        """Apply one signed settlement delta once (close proceeds, funding)."""
+        if self._portfolio is not None:
+            return self._portfolio.apply("crypto", event_id, delta, reference)
+        self._local_cash += delta
+        return True
 
     # ---------- accounting ----------
     def position_value(self, pos, px):
@@ -79,11 +120,15 @@ class PaperBroker:
         qty = money.round_qty(product, notional / fill)
         if qty <= 0 or not money.meets_min_notional(product, qty, fill):
             return None
-        self.cash -= notional + fee     # long: spent; short: margin reserved
+        ledger_id = uuid.uuid4().hex
+        if not self._reserve(f"crypto-open-{ledger_id}", notional + fee,
+                             f"open {product}"):
+            return None          # lost a race to another concurrent order
         pos = Position(
             product=product, side=direction, qty=qty, entry=fill,
             stop=stop, take=take, water=fill, opened=time.time(),
             reason=reason, fees=fee)
+        pos["_ledger_id"] = ledger_id
         # MAE tracking: worst adverse price seen since entry, seeded at entry.
         # `mae_price` is the extreme AGAINST the position (min for long, max for
         # short); the stop calibrator reads it at close.
@@ -127,18 +172,19 @@ class PaperBroker:
         pos = self.positions.pop(product, None)
         if not pos:
             return None
+        close_id = f"crypto-close-{pos.get('_ledger_id') or uuid.uuid4().hex}"
         side = pos.get("side", 1)
         if side > 0:
             fill = self._fill_price(price, "sell", product)
             gross = pos["qty"] * fill
             fee = gross * tv("fee_rate")
-            self.cash += gross - fee
+            self._settle(close_id, gross - fee, f"close {product}")
             pnl = gross - fee - pos["qty"] * pos["entry"] - pos["fees"]
         else:
             fill = self._fill_price(price, "buy", product)      # buy to cover
             fee = pos["qty"] * fill * tv("fee_rate")
             move = pos["qty"] * (pos["entry"] - fill)  # short gains on drop
-            self.cash += pos["margin"] + move - fee
+            self._settle(close_id, pos["margin"] + move - fee, f"close {product}")
             pnl = move - fee - pos["fees"]
         self.realized_pnl += pnl
         trade = {**pos, "exit": fill, "closed": time.time(),
@@ -257,7 +303,10 @@ class PaperBroker:
         notional = pos["qty"] * px
         # short RECEIVES funding when rate>0; sign flips the cash effect
         pos["_last_funding"] = now
-        self.cash += notional * rate_8h * (elapsed / (8 * 3600))
+        ledger_id = pos.get("_ledger_id") or product
+        event_id = f"crypto-funding-{ledger_id}-{int(now)}"
+        self._settle(event_id, notional * rate_8h * (elapsed / (8 * 3600)),
+                    f"funding {product}")
 
     def stats(self):
         wins = [t for t in self.closed_trades if t["pnl"] > 0]

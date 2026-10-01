@@ -7,7 +7,7 @@ Saved to state.json next to the SQLite DB (atomic write via temp file).
 import json, os, time, tempfile
 from collections import deque
 from . import db
-from .config import PRODUCTS
+from .config import PRODUCTS, START_CASH
 
 STATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
 SAVE_EVERY_TICKS = 3          # ~once a minute at TICK_SEC=20
@@ -198,6 +198,9 @@ def capture():
         },
         "research": _capture_research(),
         "calendar": _capture_calendar(),
+        "polymarket_learner": _capture_polymarket_learner(),
+        "portfolio": _capture_portfolio(),
+        "polymarket_broker": _capture_pm_broker(),
     }
 
 
@@ -240,6 +243,35 @@ def _capture_research():
         "candidates": [_feed_state(f) for f in research.candidates],
         "dynamic_feeds": {p: _feed_state(f)
                           for p, f in research.dynamic_feeds.items()},
+    }
+
+
+def _capture_polymarket_learner():
+    from .markets.polymarket.learner import learner as pm_learner
+    return pm_learner.capture()
+
+
+def _capture_portfolio():
+    """Informational only — the shared ledger's cash lives durably in app.db,
+    not here. This identifies which migration produced the current account so
+    a restored snapshot can be cross-checked against it."""
+    from . import db as _db
+    from .portfolio import portfolio as paper_portfolio
+    account = _db.paper_portfolio_account()
+    return {
+        "schema_version": 1,
+        "migration_id": account["migration_id"] if account else None,
+        "ready": paper_portfolio.ready,
+    }
+
+
+def _capture_pm_broker():
+    from .markets.polymarket.broker import broker as pm_broker
+    return {
+        "version": 1,
+        "positions": {k: dict(v) for k, v in pm_broker.positions.items()},
+        "closed_trades": [dict(t) for t in pm_broker.closed_trades[-200:]],
+        "realized_pnl": pm_broker.realized_pnl,
     }
 
 
@@ -292,14 +324,19 @@ def load():
     try:
         if carry:
             b = s.get("broker", {})
-            broker.cash = b.get("cash", broker.cash)
+            # Once bound to the shared ledger, cash lives durably in app.db --
+            # restoring it here would both raise (cash is read-only once bound)
+            # and be wrong (it would ignore any Polymarket activity against the
+            # same pool since this snapshot was written).
+            if broker._portfolio is None:
+                broker.cash = b.get("cash", broker.cash)
             broker.realized_pnl = b.get("realized_pnl", 0.0)
             broker.positions = {p: Position(pos) for p, pos in
                                 b.get("positions", {}).items()}
             broker.closed_trades = b.get("closed_trades", [])
 
             r = s.get("risk", {})
-            risk.peak_equity = r.get("peak_equity", 0.0)
+            risk.reconcile_account_peak(r.get("peak_equity", 0.0), START_CASH)
             # fall back to the true peak for snapshots written before the
             # kill_arm_peak split existed.
             risk.kill_arm_peak = r.get("kill_arm_peak", risk.peak_equity)
@@ -461,6 +498,14 @@ def load():
         # ---- research corpus + source-discovery memory ----
         _restore_research(s.get("research", {}))
 
+        try:
+            from .markets.polymarket.learner import learner as pm_learner
+            pm_learner.restore(s.get("polymarket_learner"))
+        except Exception:
+            pass
+
+        _restore_pm_broker(s.get("polymarket_broker"))
+
         # ---- macro calendar (so a 429 at startup doesn't blind us) ----
         cal = s.get("calendar", {})
         if cal.get("events"):
@@ -537,3 +582,20 @@ def _restore_research(r):
                   min_interval=saved.get("min_interval", 900))
         apply(nf, saved)
         research.dynamic_feeds[p] = nf
+
+
+def _restore_pm_broker(pmb):
+    """Restore Polymarket broker positions/trades all-or-nothing: a malformed
+    or version-mismatched snapshot must not partially mutate broker state."""
+    if not isinstance(pmb, dict) or pmb.get("version") != 1:
+        return
+    try:
+        positions = {str(k): dict(v) for k, v in (pmb.get("positions") or {}).items()}
+        closed_trades = [dict(t) for t in (pmb.get("closed_trades") or [])]
+        realized_pnl = float(pmb.get("realized_pnl", 0.0))
+    except (TypeError, ValueError, AttributeError):
+        return
+    from .markets.polymarket.broker import broker as pm_broker
+    pm_broker.positions = positions
+    pm_broker.closed_trades = closed_trades
+    pm_broker.realized_pnl = realized_pnl

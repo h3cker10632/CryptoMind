@@ -7,7 +7,7 @@ Hardening vs the original:
   * retention/rollup on the equity    → the table can't grow without bound
   * order_events table                → immutable audit trail for the OMS
 """
-import sqlite3, json, time, threading, queue, atexit
+import math, sqlite3, json, time, threading, queue, atexit
 from .config import DB_PATH
 
 _lock = threading.Lock()
@@ -48,10 +48,50 @@ def init():
             composite REAL, confidence REAL, ml_confidence REAL,
             action TEXT, reason TEXT, size_pre REAL, size_post REAL,
             regime TEXT, votes TEXT);
+        CREATE TABLE IF NOT EXISTS pm_forecasts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            condition_id TEXT NOT NULL,
+            ttl_bucket TEXT NOT NULL,
+            forecast_ts REAL NOT NULL,
+            predicted_p0 REAL NOT NULL,
+            market_p0 REAL NOT NULL,
+            votes TEXT NOT NULL,
+            features TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            resolved_outcome0 INTEGER,
+            resolved_ts REAL,
+            resolution_due_ts REAL,
+            resolution_checked_ts REAL,
+            resolution_next_poll_ts REAL NOT NULL DEFAULT 0,
+            resolution_attempts INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(condition_id, ttl_bucket));
+        CREATE TABLE IF NOT EXISTS paper_portfolio(
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cash REAL NOT NULL,
+            opening_cash REAL NOT NULL,
+            migration_id TEXT NOT NULL,
+            created_ts REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS paper_capital_events(
+            event_id TEXT PRIMARY KEY,
+            sleeve TEXT NOT NULL,
+            amount REAL NOT NULL,
+            reference TEXT,
+            ts REAL NOT NULL);
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity(ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_orderev_intent ON order_events(intent_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts)")
+        pm_cols = {r[1] for r in c.execute("PRAGMA table_info(pm_forecasts)")}
+        for name, declaration in (
+            ("resolution_due_ts", "REAL"),
+            ("resolution_checked_ts", "REAL"),
+            ("resolution_next_poll_ts", "REAL NOT NULL DEFAULT 0"),
+            ("resolution_attempts", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in pm_cols:
+                c.execute(f"ALTER TABLE pm_forecasts ADD COLUMN {name} {declaration}")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pm_forecasts_pollable "
+              "ON pm_forecasts(resolved_outcome0, resolution_next_poll_ts, "
+              "resolution_due_ts, forecast_ts)")
         cols = {r[1] for r in c.execute("PRAGMA table_info(signal_scores)")}
         if "regime" not in cols:
             c.execute("ALTER TABLE signal_scores ADD COLUMN regime TEXT")
@@ -198,6 +238,204 @@ def score_signal(rowid, fwd_return):
 
 def abandon_signal(rowid):
     _enqueue("UPDATE signal_scores SET scored=1 WHERE rowid=?", (rowid,))
+
+
+def record_pm_forecast(forecast):
+    """Persist one point-in-time PM forecast, returning false for a duplicate key."""
+    with _lock, _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO pm_forecasts "
+            "(condition_id, ttl_bucket, forecast_ts, predicted_p0, market_p0, "
+            "votes, features, evidence, resolution_due_ts) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (str(forecast["condition_id"]), str(forecast["ttl_bucket"]),
+             float(forecast["forecast_ts"]), float(forecast["predicted_p0"]),
+             float(forecast["market_p0"]), json.dumps(forecast.get("votes") or {}),
+             json.dumps(forecast.get("features") or {}),
+             json.dumps(forecast.get("evidence") or []),
+             forecast.get("resolution_due_ts")))
+        return c.execute("SELECT changes()").fetchone()[0] == 1
+
+
+def _pm_forecast_row(row):
+    out = dict(row)
+    for key, default in (("votes", {}), ("features", {}), ("evidence", [])):
+        try:
+            out[key] = json.loads(out.get(key) or "")
+        except (TypeError, json.JSONDecodeError):
+            out[key] = default
+    return out
+
+
+def pending_pm_forecasts(limit=200, now=None):
+    """Read a small batch of due, retry-eligible unresolved forecasts."""
+    now = time.time() if now is None else float(now)
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM pm_forecasts WHERE resolved_outcome0 IS NULL "
+            "AND resolution_next_poll_ts<=? "
+            "AND (resolution_due_ts IS NULL OR resolution_due_ts<=?) "
+            "ORDER BY resolution_due_ts IS NULL ASC, resolution_due_ts ASC, "
+            "forecast_ts ASC LIMIT ?",
+            (now, now + 6 * 3600, max(1, min(200, int(limit))))).fetchall()
+        return [_pm_forecast_row(row) for row in rows]
+
+
+def mark_pm_resolution_attempt(forecast_id, checked_ts=None):
+    """Persist one resolution poll before network I/O and return its attempt number."""
+    checked_ts = time.time() if checked_ts is None else float(checked_ts)
+    with _lock, _conn() as c:
+        c.execute(
+            "UPDATE pm_forecasts SET resolution_attempts=resolution_attempts+1, "
+            "resolution_checked_ts=?, resolution_next_poll_ts=? + "
+            "CASE WHEN resolution_attempts>=4 THEN 3600 "
+            "WHEN resolution_attempts=3 THEN 960 "
+            "WHEN resolution_attempts=2 THEN 480 "
+            "WHEN resolution_attempts=1 THEN 240 ELSE 120 END "
+            "WHERE id=? AND resolved_outcome0 IS NULL",
+            (checked_ts, checked_ts, int(forecast_id)))
+        row = c.execute(
+            "SELECT resolution_attempts FROM pm_forecasts WHERE id=?",
+            (int(forecast_id),)).fetchone()
+        return int(row[0]) if row else 0
+
+
+def resolved_pm_forecasts(after_id=0, limit=1000):
+    """Read a labeled page for restart-safe, idempotent learner replay."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM pm_forecasts WHERE resolved_outcome0 IS NOT NULL AND id>? "
+            "ORDER BY id ASC LIMIT ?",
+            (int(after_id), max(1, int(limit)))).fetchall()
+        return [_pm_forecast_row(row) for row in rows]
+
+
+def label_pm_forecast(forecast_id, outcome0_won):
+    """Label a forecast once; repeated labels return false without a mutation."""
+    outcome = int(outcome0_won)
+    if outcome not in (0, 1):
+        raise ValueError("outcome0_won must be 0 or 1")
+    with _lock, _conn() as c:
+        cursor = c.execute(
+            "UPDATE pm_forecasts SET resolved_outcome0=?, resolved_ts=? "
+            "WHERE id=? AND resolved_outcome0 IS NULL",
+            (outcome, time.time(), int(forecast_id)))
+        return cursor.rowcount == 1
+
+
+def pm_forecast_rows(limit=10000):
+    """Read the newest bounded forecast set for reporting and audit."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM pm_forecasts ORDER BY forecast_ts DESC LIMIT ?",
+            (max(1, int(limit)),)).fetchall()
+        return [_pm_forecast_row(row) for row in rows]
+
+
+def pm_forecast_count():
+    """Count the full forecast ledger without materializing rows."""
+    with _lock, _conn() as c:
+        row = c.execute("SELECT COUNT(*) FROM pm_forecasts").fetchone()
+        return int(row[0]) if row else 0
+
+
+# ---------------- shared paper-capital ledger ----------------
+
+def initialize_paper_portfolio(opening_cash, migration_id):
+    """Create the singleton paper-portfolio account once; any later call is a
+    no-op (returns False) so a repeated startup/migration can never re-fund
+    the account or disturb its current cash."""
+    opening_cash = float(opening_cash)
+    with _lock, _conn() as c:
+        if c.execute("SELECT 1 FROM paper_portfolio WHERE id=1").fetchone():
+            return False
+        c.execute(
+            "INSERT INTO paper_portfolio(id, cash, opening_cash, migration_id, "
+            "created_ts) VALUES(1,?,?,?,?)",
+            (opening_cash, opening_cash, str(migration_id), time.time()))
+        return True
+
+
+def paper_portfolio_account():
+    """Read the singleton paper-capital account, or None before migration."""
+    with _lock, _conn() as c:
+        row = c.execute(
+            "SELECT cash, opening_cash, migration_id, created_ts "
+            "FROM paper_portfolio WHERE id=1").fetchone()
+        return dict(row) if row else None
+
+
+def reserve_paper_cash(event_id, sleeve, amount, reference):
+    """Atomically debit `amount` (> 0) from the shared account and record a
+    unique capital event in the same transaction. Returns False without any
+    mutation when the account is missing, the amount is non-finite/non-
+    positive, cash is insufficient, or `event_id` was already recorded."""
+    amount = float(amount)
+    if not math.isfinite(amount) or amount <= 0:
+        return False
+    with _lock, _conn() as c:
+        if c.execute("SELECT 1 FROM paper_capital_events WHERE event_id=?",
+                     (event_id,)).fetchone():
+            return False
+        row = c.execute("SELECT cash FROM paper_portfolio WHERE id=1").fetchone()
+        if row is None or row["cash"] + 1e-9 < amount:
+            return False
+        c.execute("UPDATE paper_portfolio SET cash=cash-? WHERE id=1", (amount,))
+        c.execute(
+            "INSERT INTO paper_capital_events(event_id, sleeve, amount, "
+            "reference, ts) VALUES(?,?,?,?,?)",
+            (str(event_id), str(sleeve), -amount, reference, time.time()))
+        return True
+
+
+def apply_paper_cash_event(event_id, sleeve, delta, reference):
+    """Apply one signed settlement/fee/funding delta idempotently. Returns
+    False without mutation when the account is missing, `delta` is non-finite,
+    or `event_id` was already recorded."""
+    delta = float(delta)
+    if not math.isfinite(delta):
+        return False
+    with _lock, _conn() as c:
+        if c.execute("SELECT 1 FROM paper_capital_events WHERE event_id=?",
+                     (event_id,)).fetchone():
+            return False
+        if not c.execute("SELECT 1 FROM paper_portfolio WHERE id=1").fetchone():
+            return False
+        c.execute("UPDATE paper_portfolio SET cash=cash+? WHERE id=1", (delta,))
+        c.execute(
+            "INSERT INTO paper_capital_events(event_id, sleeve, amount, "
+            "reference, ts) VALUES(?,?,?,?,?)",
+            (str(event_id), str(sleeve), delta, reference, time.time()))
+        return True
+
+
+def reset_paper_portfolio_for_tests():
+    """Test-only: clear the shared ledger so an isolated test run can recreate
+    the singleton account without a fresh process/DB file."""
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM paper_portfolio")
+        c.execute("DELETE FROM paper_capital_events")
+
+
+def reset_paper_portfolio_cash(opening_cash, event_id, reference="account reset"):
+    """Explicit whole-account reset: set cash to an absolute value, once per
+    `event_id`. The caller must confirm every paper sleeve is flat first --
+    this only touches the shared cash balance, never positions."""
+    opening_cash = float(opening_cash)
+    if not math.isfinite(opening_cash) or opening_cash < 0:
+        return False
+    with _lock, _conn() as c:
+        if c.execute("SELECT 1 FROM paper_capital_events WHERE event_id=?",
+                     (event_id,)).fetchone():
+            return False
+        if not c.execute("SELECT 1 FROM paper_portfolio WHERE id=1").fetchone():
+            return False
+        c.execute("UPDATE paper_portfolio SET cash=? WHERE id=1", (opening_cash,))
+        c.execute(
+            "INSERT INTO paper_capital_events(event_id, sleeve, amount, "
+            "reference, ts) VALUES(?,?,?,?,?)",
+            (str(event_id), "account", opening_cash, reference, time.time()))
+        return True
 
 
 def strategy_scores(lookback):

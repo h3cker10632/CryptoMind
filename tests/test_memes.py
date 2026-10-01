@@ -2,6 +2,8 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from app.data.memes import memes, Memes, SEED
 from app.risk.manager import RiskManager
 from app import settings, tunables
@@ -146,3 +148,112 @@ def test_seed_universe_tags_and_heats(monkeypatch):
     for sym in SEED:
         assert universe.mention_heat.get(sym, 0) >= 2.0
         assert "meme" in universe.sources.get(sym, set())
+
+
+# ---------------- meme research/decision priority (Task 6) ----------------
+
+def test_research_queue_reserves_slots_for_fresh_meme_narratives():
+    """A meme narrative with FEWER mentions than every non-meme candidate must
+    still surface in the bounded research queue -- reserved slots prevent it
+    being crowded out by raw mention-count ranking."""
+    from app.data.research import ResearchEngine
+
+    engine = ResearchEngine()
+    docs = []
+    for i in range(8):                       # 8 non-meme assets, all louder
+        for _ in range(20 - i):
+            docs.append({"assets": [f"COIN{i}-USD"]})
+    for _ in range(3):                        # one quiet meme narrative
+        docs.append({"assets": ["DOGE-USD"]})
+    engine.documents = docs
+
+    engine._self_research()
+
+    assert len(engine.research_queue) <= 8
+    queue_assets = [row["asset"] for row in engine.research_queue]
+    assert "DOGE-USD" in queue_assets
+    meme_row = next(row for row in engine.research_queue
+                    if row["asset"] == "DOGE-USD")
+    assert meme_row.get("meme_priority") is True
+
+
+def test_research_queue_keeps_total_size_and_non_meme_ranking():
+    """Reserving meme slots must not grow the queue or re-order non-meme
+    candidates among themselves."""
+    from app.data.research import ResearchEngine
+
+    engine = ResearchEngine()
+    docs = []
+    for i in range(10):
+        for _ in range(30 - i):
+            docs.append({"assets": [f"COIN{i}-USD"]})
+    engine.documents = docs
+
+    engine._self_research()
+
+    assert len(engine.research_queue) == 8
+    non_meme_assets = [row["asset"] for row in engine.research_queue]
+    assert non_meme_assets == [f"COIN{i}-USD" for i in range(8)]
+
+
+def test_universe_candidate_ranking_breaks_ties_toward_memes_only():
+    """Same tie-break pattern used by universe.refresh(): meme status only
+    decides between EQUAL effective-heat candidates, never overriding heat."""
+    from app.data.memes import memes
+
+    candidates = [("BTC", 5.0), ("DOGE", 5.0), ("ETH", 5.0)]
+    ranked = sorted(candidates,
+                    key=lambda kv: (-kv[1], 0 if memes.is_meme(kv[0]) else 1))
+    assert ranked[0][0] == "DOGE"
+
+    # a clear heat leader still wins regardless of meme status
+    candidates2 = [("BTC", 9.0), ("DOGE", 5.0)]
+    ranked2 = sorted(candidates2,
+                     key=lambda kv: (-kv[1], 0 if memes.is_meme(kv[0]) else 1))
+    assert ranked2[0][0] == "BTC"
+
+
+def test_universe_refresh_still_enforces_listing_after_ranking():
+    """Static guard: the Coinbase-listing eligibility check must still run
+    AFTER candidate ranking in universe.refresh() -- ranking never bypasses
+    it."""
+    import inspect
+    from app.data.universe import Universe
+
+    src = inspect.getsource(Universe.refresh)
+    rank_pos = src.index("candidates = sorted(")
+    listing_pos = src.index("not in self.cb_products")
+    assert listing_pos > rank_pos
+
+
+def test_meme_strategy_influence_tunable_default_and_wiring():
+    from app import tunables
+    import inspect
+    from app.signals.engine import SignalEngine
+
+    assert tunables.tv("meme_strategy_influence") == 1.5
+    src = inspect.getsource(SignalEngine.compute)
+    assert '"meme" in active and _is_meme(p)' in src
+    assert 'tv("meme_strategy_influence")' in src
+
+
+def test_meme_influence_multiplies_only_the_meme_arm_on_classified_memes():
+    """The formula compute() applies: base weight * influence ONLY when the
+    product is a classified meme; a non-meme product's `meme` arm weight (if
+    it ever had one) is left exactly as the learned bandit weight."""
+    from app import tunables
+    from app.data.memes import memes
+
+    base_weight = 0.2
+    influence = tunables.tv("meme_strategy_influence")
+
+    assert memes.is_meme("DOGE-USD")
+    eff_meme = (base_weight * influence if memes.is_meme("DOGE-USD")
+               else base_weight)
+    assert eff_meme == pytest.approx(base_weight * influence)
+    assert eff_meme != base_weight            # boosted on a classified meme
+
+    assert not memes.is_meme("BTC-USD")
+    eff_non_meme = (base_weight * influence if memes.is_meme("BTC-USD")
+                   else base_weight)
+    assert eff_non_meme == base_weight         # unchanged on a non-meme

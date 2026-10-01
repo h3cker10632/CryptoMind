@@ -228,9 +228,19 @@ class Universe:
                 perf_scores, sym,
                 min_trades=self._perf_min_trades())
 
+        def _is_meme_sym(sym):
+            try:
+                from .memes import memes
+                return memes.is_meme(sym)
+            except Exception:
+                return False
+
+        # effective heat/performance decides ranking; meme status only breaks
+        # EXACT ties (deterministic tie-breaker), never overriding it and
+        # never bypassing the listing/liquidity/universe-cap checks below.
         candidates = sorted(
             ((s, h) for s, h in self.mention_heat.items() if s not in core_syms),
-            key=lambda kv: -_eff_heat(kv[0], kv[1]))
+            key=lambda kv: (-_eff_heat(kv[0], kv[1]), 0 if _is_meme_sym(kv[0]) else 1))
 
         self.rejected = {}
         chosen = []

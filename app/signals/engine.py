@@ -346,6 +346,15 @@ class SignalEngine:
                             # share of the total across active arms
                             others = wtmp - eff["llm"]
                             eff["llm"] = floor * others / max(1e-9, 1 - floor)
+                # Meme research/decision priority (operator request): raise the
+                # `meme` arm's effective voice ONLY on classified meme coins, so
+                # its lifecycle read gets more say in the composite without
+                # touching position size, stop/target, count or exposure caps
+                # (those stay entirely in risk.can_open/size). No floor — the
+                # bandit's learned weight (still the base here) can still fall
+                # to zero on a losing meme arm.
+                if "meme" in active and _is_meme(p):
+                    eff["meme"] = self.weights.get("meme", 0.0) * tv("meme_strategy_influence")
                 wsum = sum(eff[n] for n in active) or 1e-9
                 composite = sum(eff[n] * s for n, s in active.items()) / wsum
                 # agreement: fraction of active voters on the composite's side

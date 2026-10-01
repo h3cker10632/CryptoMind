@@ -1,5 +1,5 @@
 """CryptoMind — FastAPI app: REST API + dashboard + background engines."""
-import asyncio, os, sys, time
+import asyncio, os, sys, time, uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from . import db
@@ -48,6 +48,17 @@ async def startup():
     restored = persistence.load()
     if not restored:
         db.log_event("system", "No saved state found — starting fresh ($100k paper account)")
+    from . import portfolio as portfolio_module
+    portfolio_module.bootstrap(broker.cash)
+    if portfolio_module.portfolio.ready:
+        broker.bind_portfolio(portfolio_module.portfolio)
+        from .markets.polymarket.broker import broker as pm_broker
+        pm_broker.bind_portfolio(portfolio_module.portfolio)
+    else:
+        db.log_event("system", "Shared paper portfolio migration PENDING — "
+                                "POST /api/portfolio/migration/confirm once legacy "
+                                "Polymarket positions are confirmed settled/empty. "
+                                "New entries are paused until then.")
     # Reconcile the alert/bot config (Telegram token, chat id, webhook) from
     # alerts.json BEFORE the worker tasks start, so the dashboard, /api/alerts
     # and the first outgoing alert all see the persisted credentials right away
@@ -95,6 +106,31 @@ def index():
 @app.get("/api/status")
 def status():
     return orch.snapshot()
+
+
+@app.get("/api/portfolio/migration")
+def portfolio_migration_status():
+    from . import portfolio as portfolio_module
+    return {"ready": portfolio_module.portfolio.ready,
+            "cash": portfolio_module.portfolio.cash}
+
+
+@app.post("/api/portfolio/migration/confirm")
+def confirm_portfolio_migration():
+    """Operator attestation that legacy (never-persisted) Polymarket positions
+    are settled or empty. Required once before the shared paper ledger
+    activates; a repeated call is a no-op and never adds cash."""
+    from . import portfolio as portfolio_module
+    was_ready = portfolio_module.portfolio.ready
+    if not was_ready:
+        portfolio_module.bootstrap(broker.cash, legacy_pm_confirmed=True)
+    if portfolio_module.portfolio.ready:
+        broker.bind_portfolio(portfolio_module.portfolio)
+        from .markets.polymarket.broker import broker as pm_broker
+        pm_broker.bind_portfolio(portfolio_module.portfolio)
+    return {"ok": True, "ready": portfolio_module.portfolio.ready,
+            "cash": portfolio_module.portfolio.cash,
+            "already_migrated": was_ready}
 
 
 @app.get("/api/signals")
@@ -403,6 +439,8 @@ def ml_dataset(limit: int = 100000, download: bool = True):
 
 @app.post("/api/control/pause")
 def pause():
+    from . import settings
+    settings.update({"trading_paused": True})
     orch.running = False
     db.log_event("system", "Trading PAUSED by operator")
     return {"trading_enabled": False}
@@ -410,6 +448,7 @@ def pause():
 
 @app.post("/api/control/resume")
 def resume():
+    from . import settings
     # Resuming is meaningless while the kill switch is tripped: can_open()
     # blocks every entry and the status stays KILLED. Refuse clearly instead
     # of silently flipping trading_enabled with no visible effect.
@@ -421,6 +460,7 @@ def resume():
         return {"trading_enabled": False, "blocked": "daily_halt",
                 "message": "Daily loss halt active — reset the kill switch to "
                            "clear it, or wait for the next UTC day."}
+    settings.update({"trading_paused": False})
     orch.running = True
     db.log_event("system", "Trading RESUMED by operator")
     return {"trading_enabled": True}
@@ -666,6 +706,12 @@ def polymarket_learning():
     return engine.snapshot()["learning"]
 
 
+@app.get("/api/polymarket/forecasts")
+def polymarket_forecasts(limit: int = 25):
+    from .markets.polymarket import engine
+    return engine.forecasts(limit)
+
+
 @app.post("/api/polymarket/tick")
 async def polymarket_tick():
     from .markets.polymarket import engine
@@ -813,18 +859,32 @@ def save_state():
 
 @app.post("/api/control/reset-account")
 def reset_account():
-    """Fresh $100k paper account. Learned state (models, Q-table, bandit)
-    is KEPT — only the trading account resets."""
+    """Fresh paper account. Learned state (models, Q-table, bandit) is KEPT —
+    only the trading account resets. Once the shared ledger is active this is
+    a WHOLE-ACCOUNT reset (crypto + Polymarket share one balance), so it
+    refuses while the crypto sleeve still holds open positions."""
     from .config import START_CASH
-    broker.cash = START_CASH
+    from . import portfolio as portfolio_module
+    if broker.positions:
+        return {"ok": False,
+                "error": "crypto sleeve has open positions; close them first"}
+    if portfolio_module.portfolio.ready:
+        event_id = f"account-reset-{uuid.uuid4().hex}"
+        if not portfolio_module.portfolio.reset_account(START_CASH, event_id):
+            return {"ok": False, "error": "shared portfolio reset failed"}
+    else:
+        broker.cash = START_CASH
     broker.positions = {}
     broker.closed_trades = []
     broker.realized_pnl = 0.0
-    risk.peak_equity = 0.0
-    risk.day_start_equity = None
+    risk.reset_account_baselines(START_CASH)
     risk.killed = False
+    risk.kill_reason = ""
+    risk.kill_ts = None
     risk.halted_today = False
+    risk.halt_reason = ""
     risk.consecutive_losses = 0
+    risk.risk_scale = 1.0
     risk.cooldowns = {}
     persistence.save()
     db.log_event("system", "Paper account RESET to $100k (learned state kept)")

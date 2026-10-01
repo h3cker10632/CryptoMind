@@ -156,3 +156,30 @@ def test_preflight_reports_checks():
             "risk_not_killed", "universe_nonempty"} <= names
     assert rep["ok"] in (True, False)
     assert g.preflight_ok is rep["ok"]
+
+
+def test_orchestrator_starts_paused_when_setting_is_persisted(monkeypatch):
+    from app import settings
+    from app.orchestrator import Orchestrator
+
+    monkeypatch.setattr(settings, "get", lambda key: key == "trading_paused")
+
+    assert Orchestrator().running is False
+
+
+def test_pause_and_resume_persist_operator_setting(monkeypatch):
+    from app import main, settings
+
+    changes = []
+    monkeypatch.setattr(settings, "update", lambda values: changes.append(values))
+    monkeypatch.setattr(main.db, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main.risk, "killed", False)
+    monkeypatch.setattr(main.risk, "halted_today", False)
+
+    assert main.pause()["trading_enabled"] is False
+    assert changes[-1] == {"trading_paused": True}
+    assert main.orch.running is False
+
+    assert main.resume()["trading_enabled"] is True
+    assert changes[-1] == {"trading_paused": False}
+    assert main.orch.running is True

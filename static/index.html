@@ -924,9 +924,9 @@ async function refresh(){
     }
     $('#b-regime').textContent='regime: '+(st.regime?st.regime.label:'—');
 
-    $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD) · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
+    $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD)'+(st.shared_ledger_ready?' · shared crypto+Polymarket':'')+' · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
     $('#k-pnl').innerHTML='<span class="'+cls(st.realized_pnl)+'">'+fmt(st.realized_pnl)+'</span><small>Realized PnL · '+ (st.stats.trades||0)+' trades · win '+(st.stats.win_rate!=null?fmt(st.stats.win_rate*100,0)+'%':'—')+'</small>';
-    $('#k-exposure').innerHTML=fmt(st.exposure)+'<small>Exposure · Cash '+fmt(st.cash)+'</small>';
+    $('#k-exposure').innerHTML=fmt(st.exposure)+'<small>Exposure'+(st.shared_ledger_ready?' (shared)':'')+' · Cash '+fmt(st.cash)+'</small>';
     const fg=st.fear_greed?st.fear_greed.value+' ('+st.fear_greed.label+')':'—';
     $('#k-sent').innerHTML='<span class="'+cls(st.market_sentiment)+'">'+fmt(st.market_sentiment,3)+'</span><small>Market sentiment · F&G '+fg+'</small>';
 
@@ -1941,6 +1941,7 @@ function polyPill(v,label,good){
 }
 function edgeCol(e){ return e>0 ? '#2ecc71' : (e<0?'#e74c3c':'#8b93a7'); }
 function money(x){ return (x<0?'-$':'$')+Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0}); }
+function polyEsc(x){ return String(x==null?'':x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function refreshPoly(){
   let s;
@@ -1959,9 +1960,10 @@ async function refreshPoly(){
   const b=s.broker||{};
   const pnlCol = (b.realized_pnl||0)>=0?'#2ecc71':'#e74c3c';
   $('#poly-kpis').innerHTML =
-    kpi('Equity (USDC)', money(s.equity||0)) +
+    kpi(s.shared_ledger_ready ? 'Equity (shared, USDC)' : 'Equity (USDC)',
+        money(s.equity||0)) +
     kpi('Realized PnL', money(b.realized_pnl||0), pnlCol) +
-    kpi('Cash', money(b.cash||0)) +
+    kpi(s.shared_ledger_ready ? 'Cash (shared)' : 'Cash', money(b.cash||0)) +
     kpi('Open bets', (b.open_positions||0)) +
     kpi('Closed', (b.trades||0)) +
     kpi('Win rate', b.win_rate!=null?fmtPct(b.win_rate):'—');
@@ -1975,12 +1977,24 @@ async function refreshPoly(){
   // learning
   const L=s.learning||{};
   const om=L.online_model||{};
+  const scoreFmt=x=>x==null?'—':Number(x).toFixed(3);
   let lh = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
     ${polyPill(1,'signals scored: '+(L.n_signals_scored||0), (L.n_signals_scored||0)>0)}
     ${polyPill(1,'trades learned: '+(L.n_trades_learned||0), !(L.starved))}
     ${polyPill(1,'model updates: '+(om.n_updates||0), (om.n_updates||0)>0)}
+    ${polyPill(1,'forecasts scored: '+(L.scored_forecast_count||0), (L.scored_forecast_count||0)>0)}
+    ${polyPill(1,'score window: newest '+(L.forecast_metrics_window||0)+' / '+(L.forecast_total_count||0), true)}
+    ${polyPill(1,'unresolved: '+(L.unresolved_forecast_count||0), !(L.unresolved_forecast_count||0))}
+    ${polyPill(1,'research coverage: '+fmtPct(L.research_coverage||0), (L.research_covered_count||0)>0)}
+    ${polyPill(1,'research abstentions: '+(L.research_abstention_count||0), !(L.research_abstention_count||0))}
+    ${polyPill(1,'Brier bot/market: '+scoreFmt(L.bot_brier)+' / '+scoreFmt(L.market_brier)+' (Δ '+scoreFmt(L.brier_delta)+')', L.brier_delta!=null&&L.brier_delta<0)}
+    ${polyPill(1,'Log loss bot/market: '+scoreFmt(L.bot_log_loss)+' / '+scoreFmt(L.market_log_loss), L.log_loss_delta!=null&&L.log_loss_delta<0)}
+    ${polyPill(1,'fresh evidence: '+(L.fresh_evidence_documents||0)+' · '+scoreFmt(L.evidence_freshness_hours)+'h avg', (L.fresh_evidence_documents||0)>0)}
     ${L.starved?'<span class="badge" style="color:#e8c07c;border-color:#e8c07c44">⚠ starved: no resolutions yet</span>':''}
   </div>`;
+  const perf=L.strategy_performance||{};
+  const prows=Object.keys(perf).map(k=>[k,perf[k].n,scoreFmt(perf[k].brier),scoreFmt(perf[k].brier_delta_vs_market)]);
+  lh += prows.length ? tbl(['Forecast arm','n','Brier','Δ vs market'],prows) : '';
   const attr=L.attributions||{};
   const arows=Object.keys(attr).map(k=>[k, attr[k].n, `<span style="color:${edgeCol(attr[k].net)}">${attr[k].net>=0?'+':''}${attr[k].net}</span>`]);
   lh += arows.length ? tbl(['Strategy','n','net attribution'], arows)
@@ -1997,7 +2011,10 @@ async function refreshPoly(){
 
   // markets (read-only peek) + closed trades — fetched in parallel
   try{
-    const [mk,tr]=await Promise.all([j('/api/polymarket/markets'), j('/api/polymarket/trades')]);
+    const [mk,tr,fr]=await Promise.all([
+      j('/api/polymarket/markets'), j('/api/polymarket/trades'),
+      j('/api/polymarket/forecasts?limit=25')
+    ]);
     const ms=(mk&&mk.markets)||[];
     $('#poly-markets').innerHTML = ms.length ? tbl(
       ['Market','Cat','Pick','Price','Edge','Conf'],
@@ -2011,6 +2028,20 @@ async function refreshPoly(){
         `<span style="color:${t.pnl>=0?'#2ecc71':'#e74c3c'}">${money(t.pnl)}</span>`,
         fmtPct(t.return_pct), t.reason])
     ) : '<span style="color:var(--dim)">no closed bets yet</span>';
+    const evidenceRows=[];
+    for(const f of (fr&&fr.forecasts)||[]){
+      for(const ev of f.evidence||[]){
+        let href='';
+        try{ const u=new URL(ev.url); if(u.protocol==='https:'||u.protocol==='http:')href=u.href; }catch(e){}
+        const title=polyEsc(ev.title||ev.publisher||'source');
+        const link=href?`<a href="${polyEsc(href)}" target="_blank" rel="noopener noreferrer">${title}</a>`:title;
+        const detail=`${polyEsc(f.question)}<br>${link}<br><span style="color:var(--dim)">${polyEsc(ev.excerpt||'')}</span>`;
+        evidenceRows.push([polyEsc(ev.publisher||''),detail,polyEsc(ev.published_at||'')]);
+      }
+    }
+    $('#poly-learning').innerHTML += '<h4 style="margin:10px 0 4px">Research evidence</h4>' +
+      (evidenceRows.length ? tbl(['Publisher','Market / source','Published'],evidenceRows.slice(0,12))
+                          : '<div style="color:var(--dim);font-size:12px">no market-linked evidence yet</div>');
   }catch(e){}
 }
 function tbl(head,rows){

@@ -4,6 +4,7 @@ import asyncio, time, random
 from .config import TICK_SEC
 from .tunables import tv
 from . import db
+from . import settings
 from .data.market import market
 from .data.research import research
 from .nlp.sentiment import nlp
@@ -14,6 +15,7 @@ from .learn.loop import learner
 from .risk.stance import stance
 from .strategies.hedge import hedger
 from .guardian import guardian
+from .portfolio import portfolio as paper_portfolio
 
 
 def _calendar_stats():
@@ -23,7 +25,7 @@ def _calendar_stats():
 
 class Orchestrator:
     def __init__(self):
-        self.running = True      # trading enabled (human-in-the-loop toggle)
+        self.running = not settings.get("trading_paused")
         self.tick_count = 0
         self.last_risk_status = {}
         self.started = time.time()
@@ -254,6 +256,32 @@ class Orchestrator:
         except Exception:
             pass
 
+    def _entries_enabled(self):
+        """New entries pause while the shared paper-capital ledger migration is
+        pending (see app.portfolio.bootstrap); existing positions are still
+        managed (stops/take-profit/exits) regardless."""
+        return self.running and paper_portfolio.ready
+
+    def _total_equity(self, market):
+        """Account-level equity: shared cash plus every sleeve's marked
+        positions once the ledger migration is confirmed; crypto-only
+        beforehand (matches pre-migration behavior exactly). Used for the
+        account-level kill-switch/drawdown tracker, equity logging and
+        reporting -- NOT for crypto-only gates like max_gross_exposure or
+        meme caps, which stay scoped to the crypto book (see risk.can_open)."""
+        if not paper_portfolio.ready:
+            return broker.equity(market)
+        from .markets.polymarket.engine import engine as pm_engine
+        return paper_portfolio.total_equity(market, pm_engine._mid_lookup)
+
+    def _total_exposure(self, market):
+        """Account-level committed exposure across both sleeves (reporting /
+        equity-curve logging only; crypto-only gates are unaffected)."""
+        if not paper_portfolio.ready:
+            return broker.exposure(market)
+        from .markets.polymarket.engine import engine as pm_engine
+        return paper_portfolio.total_exposure(market, pm_engine._mid_lookup)
+
     def tick(self):
         self.tick_count += 1
         if not market.tickers:
@@ -279,7 +307,7 @@ class Orchestrator:
 
         # 4. risk update
         regime = market.regime()
-        equity = broker.equity(market)
+        equity = self._total_equity(market)
         self.last_risk_status = risk.update(equity, regime)
 
         # 5. manage open positions (stops / take-profits / trailing)
@@ -378,7 +406,7 @@ class Orchestrator:
                     learner.on_trade_closed(t)
 
         # 7. entries — conviction trades at full size
-        if self.running:
+        if self._entries_enabled():
             ranked = sorted((s for s in signals.values() if s["actionable"]),
                             key=lambda s: -s["confidence"])
             for sig in ranked:
@@ -498,7 +526,7 @@ class Orchestrator:
         risk._tradable_next = tradable
 
         # 8. equity log + periodic self-improvement
-        db.log_equity(equity, broker.cash, broker.exposure(market))
+        db.log_equity(equity, broker.cash, self._total_exposure(market))
         # score the exit advisor's matured hold-vs-cut decisions against what
         # price actually did next (counterfactual learning), using the learner's
         # price history as the lookup.
@@ -677,7 +705,7 @@ class Orchestrator:
             return {}
 
     def snapshot(self):
-        eq = broker.equity(market)
+        eq = self._total_equity(market)
         return {
             "ts": time.time(),
             "uptime_sec": int(time.time() - self.started),
@@ -691,7 +719,15 @@ class Orchestrator:
             "research_healthy": research.healthy,
             "equity": round(eq, 2),
             "cash": round(broker.cash, 2),
-            "exposure": round(broker.exposure(market), 2),
+            "exposure": round(self._total_exposure(market), 2),
+            # unified paper-capital labeling (Task 5): "equity"/"cash"/
+            # "exposure" above are the SHARED account total once the ledger
+            # migration is confirmed (paper_portfolio.ready); these two extra
+            # fields always show the crypto sleeve's own view so the operator
+            # can see the breakdown, not just one combined number.
+            "shared_ledger_ready": paper_portfolio.ready,
+            "crypto_equity": round(broker.equity(market), 2),
+            "crypto_exposure": round(broker.exposure(market), 2),
             "realized_pnl": round(broker.realized_pnl, 2),
             # unrealized = sum of per-position mark-to-market vs entry, correct
             # for BOTH longs and shorts (was a convoluted, short-wrong expr).

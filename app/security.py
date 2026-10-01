@@ -80,7 +80,8 @@ def check(request: Request) -> bool:
 
 # paths that mutate state / touch secrets — everything else is read-only
 _PROTECTED_PREFIXES = ("/api/control/", "/api/settings", "/api/tunables",
-                       "/api/alerts/config", "/api/alerts/test")
+                       "/api/alerts/config", "/api/alerts/test",
+                       "/api/portfolio/migration")
 
 
 async def auth_middleware(request: Request, call_next):

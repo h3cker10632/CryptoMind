@@ -22,17 +22,53 @@ learner can credit the strategies that voted for it.
 from __future__ import annotations
 
 import time
+import uuid
 
 PM_START_CASH = 10_000.0        # separate paper bankroll from the crypto book
 
 
 class PMBroker:
     def __init__(self, start_cash: float = PM_START_CASH):
+        self._portfolio = None       # set via bind_portfolio(); None = local cash
         self.start_cash = float(start_cash)
-        self.cash = float(start_cash)
+        self._local_cash = float(start_cash)
         self.positions: dict[str, dict] = {}     # token_id -> position
         self.closed_trades: list[dict] = []
         self.realized_pnl = 0.0
+
+    def bind_portfolio(self, portfolio):
+        """Route this broker's cash through the shared paper-capital ledger
+        instead of a private balance. Standalone brokers (unit tests) stay on
+        local cash by never calling this."""
+        self._portfolio = portfolio
+
+    @property
+    def cash(self):
+        if self._portfolio is not None:
+            return self._portfolio.cash
+        return self._local_cash
+
+    @cash.setter
+    def cash(self, value):
+        if self._portfolio is not None:
+            raise RuntimeError(
+                "cash is read-only once bound to the shared paper portfolio; "
+                "use reserve/settle events (see app.portfolio) instead")
+        self._local_cash = float(value)
+
+    def _reserve(self, event_id, amount, reference):
+        if self._portfolio is not None:
+            return self._portfolio.reserve("polymarket", event_id, amount, reference)
+        if amount > self._local_cash + 1e-9:
+            return False
+        self._local_cash -= amount
+        return True
+
+    def _settle(self, event_id, delta, reference):
+        if self._portfolio is not None:
+            return self._portfolio.apply("polymarket", event_id, delta, reference)
+        self._local_cash += delta
+        return True
 
     # ------------------------------ accounting ------------------------------
     def market_value(self, pos: dict, mid: float) -> float:
@@ -77,7 +113,10 @@ class PMBroker:
         if stake < min_order:
             return None
         shares = stake / ask
-        self.cash -= stake + fee
+        ledger_id = uuid.uuid4().hex
+        if not self._reserve(f"pm-open-{ledger_id}", stake + fee,
+                             f"open {market['condition_id']}"):
+            return None          # lost a race to another concurrent order
         pos = {
             "condition_id": market["condition_id"],
             "token_id": tid,
@@ -98,6 +137,7 @@ class PMBroker:
                       if abs(v) > 0.05},
             "regime_at_entry": regime,
             "water": ask,
+            "_ledger_id": ledger_id,
         }
         self.positions[tid] = pos
         return pos
@@ -106,7 +146,8 @@ class PMBroker:
                 reason: str) -> dict:
         pnl = proceeds - pos["cost"]
         self.realized_pnl += pnl
-        self.cash += proceeds
+        close_id = f"pm-close-{pos.get('_ledger_id') or uuid.uuid4().hex}"
+        self._settle(close_id, proceeds, f"close {pos['condition_id']}")
         trade = {**pos, "exit": exit_price, "closed": time.time(),
                  "pnl": pnl, "exit_reason": reason,
                  "return_pct": pnl / pos["cost"] if pos["cost"] else 0.0}
@@ -151,9 +192,15 @@ class PMBroker:
 
     # ------------------------------ reporting ------------------------------
     def reset(self, start_cash: float | None = None):
-        if start_cash is not None:
-            self.start_cash = float(start_cash)
-        self.cash = self.start_cash
+        """Clear PM's own positions/trade history. Once bound to the shared
+        ledger, this NEVER touches cash -- a sleeve-local reset must not reset
+        money shared with the crypto book (see app.portfolio). Only an
+        explicit whole-account reset (PaperPortfolio.reset_account) may do
+        that, after confirming every sleeve is flat."""
+        if self._portfolio is None:
+            if start_cash is not None:
+                self.start_cash = float(start_cash)
+            self._local_cash = self.start_cash
         self.positions.clear()
         self.closed_trades.clear()
         self.realized_pnl = 0.0

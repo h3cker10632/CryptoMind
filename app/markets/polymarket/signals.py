@@ -27,14 +27,16 @@ from __future__ import annotations
 
 import math
 
-STRATEGIES = ("momentum", "mean_revert", "longshot_fade", "microstructure", "llm")
+STRATEGIES = ("momentum", "mean_revert", "longshot_fade", "microstructure",
+              "llm", "research")
 
 
 def _clip(x, lo=-1.0, hi=1.0):
     return max(lo, min(hi, x))
 
 
-def _leans(m: dict, llm_lean: float = 0.0) -> dict:
+def _leans(m: dict, llm_lean: float = 0.0,
+           research_lean: float = 0.0) -> dict:
     """Per-strategy leans in [-1, 1] (positive = outcome 0 underpriced)."""
     p0 = m["prices"][0]
     mom1h = m.get("mom_1h", 0.0)
@@ -51,14 +53,16 @@ def _leans(m: dict, llm_lean: float = 0.0) -> dict:
         if abs(dist) > 0.15 else 0.0
     # order-flow: last trade above the implied mid -> pressure toward outcome 0
     micro = _clip((m.get("last_trade_price", p0) - p0) * 10.0)
-    # LLM advisor lean is already signed toward outcome 0 and bounded [-1, 1].
+    # Advisor leans are signed toward outcome 0 and bounded [-1, 1].
     return {"momentum": momentum, "mean_revert": mean_revert,
             "longshot_fade": longshot_fade, "microstructure": micro,
-            "llm": _clip(llm_lean)}
+            "llm": _clip(llm_lean), "research": _clip(research_lean)}
 
 
 def evaluate(m: dict, weights: dict, edge_scale: float,
-             llm_lean: float = 0.0, llm_influence: float = 1.0) -> dict:
+             llm_lean: float = 0.0, llm_influence: float = 1.0,
+             research_lean: float = 0.0,
+             research_influence: float = 1.0) -> dict:
     """Turn a market + bandit weights into a trade candidate.
 
     Returns a dict with the chosen outcome, its price, estimated edge (fair minus
@@ -66,14 +70,17 @@ def evaluate(m: dict, weights: dict, edge_scale: float,
     attribution). `outcome_index` is which of the two tokens to buy; None means
     no actionable lean.
     """
-    leans = _leans(m, llm_lean)
+    leans = _leans(m, llm_lean, research_lean)
     # effective weights: apply the operator's LLM-influence boost to the `llm`
     # arm (governed, not an override — the bandit's learned weight is the base).
     ew = {s: abs(weights.get(s, 1.0)) for s in STRATEGIES}
     ew["llm"] = ew.get("llm", 1.0) * max(1.0, llm_influence)
+    ew["research"] = ew.get("research", 1.0) * max(1.0, research_influence)
     # weighted net lean toward outcome 0 (weights default to 1.0 per strategy)
-    wsum = sum(ew[s] for s in STRATEGIES) or 1.0
-    net = sum(ew[s] * leans[s] for s in STRATEGIES) / wsum
+    weighted_arms = [s for s in STRATEGIES
+                     if s != "research" or abs(leans[s]) > 1e-6]
+    wsum = sum(ew[s] for s in weighted_arms) or 1.0
+    net = sum(ew[s] * leans[s] for s in weighted_arms) / wsum
     net = _clip(net)
     # agreement: fraction of non-zero strategies that point the same way as net
     active = [leans[s] for s in STRATEGIES if abs(leans[s]) > 1e-6]
@@ -100,6 +107,7 @@ def evaluate(m: dict, weights: dict, edge_scale: float,
         "outcome": m["outcomes"][idx],
         "price": price,
         "fair": round(fair, 4),
+        "fair_p0": round(fair0, 4),
         "edge": round(edge, 4),
         "confidence": round(confidence, 3),
         "net_lean": round(net, 3),

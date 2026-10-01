@@ -215,25 +215,50 @@ class ResearchEngine:
 
     # ---------------- self-directed research loop ----------------
     def _self_research(self):
+        MAX_QUEUE = 8
+        MEME_RESERVED_SLOTS = 2
         counts = {}
         for d in self.documents:
             for a in d["assets"]:
                 counts[a] = counts.get(a, 0) + 1
-        queue = []
-        for a, n in sorted(counts.items(), key=lambda kv: -kv[1]):
-            if n >= 3:
-                queue.append({"asset": a, "mentions": n,
-                              "task": f"Narrative heating up on {a} ({n} mentions) — "
-                                      f"cross-check momentum, order-book imbalance and sentiment."})
-        # also surface universe discovery work
+        ranked = [(a, n) for a, n in sorted(counts.items(), key=lambda kv: -kv[1])
+                 if n >= 3]
+
+        try:
+            from .memes import memes
+            is_meme = memes.is_meme
+        except Exception:
+            is_meme = lambda a: False
+
+        meme_ranked = [(a, n) for a, n in ranked if is_meme(a)]
+        other_ranked = [(a, n) for a, n in ranked if not is_meme(a)]
+
+        def _task_row(a, n):
+            return {"asset": a, "mentions": n,
+                    "task": f"Narrative heating up on {a} ({n} mentions) — "
+                            f"cross-check momentum, order-book imbalance and sentiment."}
+
+        # reserve bounded slots for fresh meme narratives FIRST, so a hot meme
+        # with fewer mentions than mainstream coins still surfaces for research
+        # rather than being crowded out by raw mention-count ranking.
+        queue = [_task_row(a, n) for a, n in meme_ranked[:MEME_RESERVED_SLOTS]]
+        for row in queue:
+            row["meme_priority"] = True
+        rest = sorted(other_ranked + meme_ranked[MEME_RESERVED_SLOTS:],
+                     key=lambda kv: -kv[1])
+        queue.extend(_task_row(a, n) for a, n in rest[:MAX_QUEUE - len(queue)])
+
+        # also surface universe discovery work (fills any remaining room)
         try:
             from .universe import universe
             for sym, why in list(universe.rejected.items())[:3]:
+                if len(queue) >= MAX_QUEUE:
+                    break
                 queue.append({"asset": sym, "mentions": 0,
                               "task": f"Watching {sym}: trending in research but {why}."})
         except Exception:
             pass
-        self.research_queue = queue[:8]
+        self.research_queue = queue[:MAX_QUEUE]
 
     # ---------------- main loop ----------------
     async def run(self):

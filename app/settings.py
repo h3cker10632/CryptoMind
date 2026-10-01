@@ -13,6 +13,8 @@ DEFAULTS = {
     # paper account — learned intelligence (models, bandit, Q-table, GA
     # champion, universe) is ALWAYS restored either way.
     "carry_equity": True,
+    # Keep new entries paused across process restarts until explicitly resumed.
+    "trading_paused": False,
     # If True the system may open SHORT positions (margin-style paper).
     "allow_shorts": True,
     # Trading stance: "passive" | "auto" | "aggressive".

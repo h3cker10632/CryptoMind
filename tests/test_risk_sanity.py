@@ -148,3 +148,22 @@ def test_reset_clears_kill_reason():
     r.reset_kill()
     assert r.kill_reason == ""
     assert r.kill_ts is None
+
+
+def test_account_reset_seeds_both_drawdown_peaks():
+    r = RiskManager()
+    r.peak_equity = 74_200.0
+    r.kill_arm_peak = 66_598.0
+
+    r.reset_account_baselines(100_000.0)
+
+    assert r.peak_equity == 100_000.0
+    assert r.kill_arm_peak == 100_000.0
+
+
+def test_restored_account_peak_cannot_fall_below_opening_equity():
+    r = RiskManager()
+
+    r.reconcile_account_peak(74_200.0, 100_000.0)
+
+    assert r.peak_equity == 100_000.0
