@@ -269,6 +269,77 @@ def test_signal_leans_toward_underpriced_side_and_bounds_edge():
     assert 0.0 <= sig["confidence"] <= 1.0
 
 
+# ---------------- heuristic-edge sensitivity tunables ----------------
+
+def test_momentum_gain_tunable_scales_lean():
+    T.reset()
+    m = _market(p0=0.40, mom1h=0.02, mom1d=0.02)
+    T.update({"pm_momentum_gain": 2.0})
+    low = signals._leans(m)["momentum"]
+    T.update({"pm_momentum_gain": 12.0})
+    high = signals._leans(m)["momentum"]
+    assert abs(high) > abs(low)
+    T.reset()
+
+
+def test_mean_revert_threshold_tunable_gates_activation():
+    T.reset()
+    m = _market(p0=0.40, mom1h=0.03)
+    T.update({"pm_mean_revert_threshold": 0.10})   # 0.03 move no longer qualifies
+    assert signals._leans(m)["mean_revert"] == 0.0
+    T.update({"pm_mean_revert_threshold": 0.01})    # now it qualifies
+    assert signals._leans(m)["mean_revert"] != 0.0
+    T.reset()
+
+
+def test_mean_revert_gain_tunable_scales_lean():
+    T.reset()
+    m = _market(p0=0.40, mom1h=0.08)
+    T.update({"pm_mean_revert_gain": 2.0})
+    low = abs(signals._leans(m)["mean_revert"])
+    T.update({"pm_mean_revert_gain": 18.0})
+    high = abs(signals._leans(m)["mean_revert"])
+    assert high > low
+    T.reset()
+
+
+def test_longshot_threshold_and_gain_tunables():
+    T.reset()
+    m = _market(p0=0.30)      # |0.30-0.5| = 0.20
+    T.update({"pm_longshot_threshold": 0.30})   # 0.20 no longer qualifies
+    assert signals._leans(m)["longshot_fade"] == 0.0
+    T.update({"pm_longshot_threshold": 0.05, "pm_longshot_gain": 1.0})
+    low = abs(signals._leans(m)["longshot_fade"])
+    T.update({"pm_longshot_gain": 4.0})
+    high = abs(signals._leans(m)["longshot_fade"])
+    assert high >= low
+    T.reset()
+
+
+def test_microstructure_gain_tunable_scales_lean():
+    T.reset()
+    m = _market(p0=0.40, last=0.45)
+    T.update({"pm_microstructure_gain": 2.0})
+    low = abs(signals._leans(m)["microstructure"])
+    T.update({"pm_microstructure_gain": 25.0})
+    high = abs(signals._leans(m)["microstructure"])
+    assert high > low
+    T.reset()
+
+
+def test_research_influence_tunable_boosts_research_arm():
+    """pm_research_influence must boost the `research` arm's effective weight
+    the same way pm_llm_influence boosts `llm` (engine.tick wiring)."""
+    T.reset()
+    m = _market(p0=0.40, mom1h=0.0, mom1d=0.0)
+    sig_low = signals.evaluate(m, weights={"research": 1.0}, edge_scale=0.06,
+                              research_lean=0.8, research_influence=1.0)
+    sig_high = signals.evaluate(m, weights={"research": 1.0}, edge_scale=0.06,
+                               research_lean=0.8, research_influence=6.0)
+    assert abs(sig_high["edge"]) >= abs(sig_low["edge"])
+
+
+
 def test_signal_no_lean_is_flat():
     sig = signals.evaluate(_market(p0=0.50, mom1h=0.0, mom1d=0.0, last=0.50),
                            weights={}, edge_scale=0.06)

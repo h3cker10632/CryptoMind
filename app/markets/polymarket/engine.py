@@ -311,6 +311,7 @@ class PolymarketEngine:
         edge_scale = tv("pm_edge_scale")
         max_pos = int(tv("pm_max_positions"))
         llm_infl = tv("pm_llm_influence")
+        research_infl = tv("pm_research_influence")
         equity = broker.equity(self._mid_lookup)
         # refresh a bounded batch of LLM leans (cached; no-op if the LLM sleeve
         # is off) BEFORE evaluating, so the `llm` strategy + ML feature see them.
@@ -339,7 +340,8 @@ class PolymarketEngine:
             w = learner.weights(m.get("ttl_hours"))
             sig = signals.evaluate(m, w, edge_scale, llm_lean=ll,
                                    llm_influence=llm_infl,
-                                   research_lean=m["research_lean"])
+                                   research_lean=m["research_lean"],
+                                   research_influence=research_infl)
             self._record_forecast(m, sig, evidence, research_result, edge_scale)
             if m["condition_id"] in {p["condition_id"]
                                      for p in broker.positions.values()}:

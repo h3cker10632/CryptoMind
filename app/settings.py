@@ -26,8 +26,8 @@ DEFAULTS = {
     # Optional LLM advisor sleeve. When True (and an API key is set via
     # CRYPTOMIND_LLM_KEY / OPENAI_API_KEY) the advisor contributes ONE
     # directional vote that the bandit weights like any other strategy — it is
-    # never the driver. Off by default: no key, no cost, no effect.
-    "llm_advisor_enabled": False,
+    # never the driver. Inert with no key configured (no cost, no effect).
+    "llm_advisor_enabled": True,
     # LLM advisor credentials/config, settable from the dashboard (no file edit).
     # llm_api_key is a SECRET (stored in .secrets.json, masked in the API, never
     # committed). Blank model/base fall back to the Gemini defaults in the
@@ -39,17 +39,17 @@ DEFAULTS = {
     # Optional ML-model advisor sleeve. When True (and a validated crypto_ml_lab
     # artifact exists at model_artifact/ or $CRYPTOMIND_MODEL_DIR) the advisor
     # contributes ONE directional vote that the bandit weights like any other
-    # strategy — never the driver. Off by default: no artifact, no effect.
-    "model_advisor_enabled": False,
+    # strategy — never the driver. Inert with no artifact present (no effect).
+    "model_advisor_enabled": True,
     # Autonomous, metric-gated ML retraining (closes the crypto_ml_lab loop
     # without operator input). When True AND crypto_ml is installed, the system
     # periodically checks whether enough NEW labeled rows have matured and, if
     # so, runs export->validate->prepare->train->backtest, then AUTO-PROMOTES the
     # fresh artifact into the model advisor ONLY IF the backtest gates pass
-    # (OOS Sharpe / trade count / beats-baseline). Off by default. Enabling it on
-    # a machine without crypto_ml simply records "lab not installed" and promotes
+    # (OOS Sharpe / trade count / beats-baseline). Enabling it on a machine
+    # without crypto_ml simply records "lab not installed" and promotes
     # nothing. Governance note: promotion is measurement-gated, never on vibes.
-    "ml_autotrain_enabled": False,
+    "ml_autotrain_enabled": True,
     "ml_autotrain_min_new_labels": 200,  # retrain only after N new matured labels
     "ml_autotrain_check_sec": 3600,      # how often the loop checks the trigger
     "ml_lab_cmd": "python -m crypto_ml.cli",  # base command to invoke the lab
@@ -78,33 +78,33 @@ DEFAULTS = {
     # are actually earning their keep per regime, and dials their trigger bar
     # up/down accordingly. Never touches stop-loss/take-profit/kill-switch.
     "exit_throttle_enabled": True,
-    # ---- Polymarket prediction-market sleeve (standalone, off by default) ----
+    # ---- Polymarket prediction-market sleeve (standalone, paper only) ----
     # Master switch for the Polymarket engine loop. When False the sleeve is
     # completely dormant (no fetch, no trading); the read-only "peek" endpoint
     # still works so the operator can inspect markets before enabling it.
-    "polymarket_enabled": False,
+    "polymarket_enabled": True,
     # When True (and the engine is enabled) the engine may OPEN paper bets that
     # clear the edge/cost gate. When False it only evaluates + records
     # would-open decisions, so the operator can watch it think before it trades.
-    "pm_auto_trade": False,
+    "pm_auto_trade": True,
     # ---- External-signal ingest (crawl4ai / Maxun / any standalone producer) ----
     # Master switch for accepting ingested external rows via /api/ingest/push.
     # When False the endpoint rejects pushes; the store is still readable.
-    "ingest_enabled": False,
+    "ingest_enabled": True,
     # When True, the LLM advisor injects the freshest crawled web signal +
     # headlines (from app.data.ingest) into its per-asset context, so its
-    # bandit-weighted vote reflects current news. Off by default; measured, never
-    # a blind copy. Requires the LLM advisor to be enabled + keyed to have effect.
-    "llm_web_context": False,
+    # bandit-weighted vote reflects current news. Measured, never a blind copy.
+    # Requires the LLM advisor to be enabled + keyed to have effect.
+    "llm_web_context": True,
     # Strategy Researcher: autonomous discovery of NEW strategy shapes (see
     # app/learn/researcher.py). When True the system periodically searches a safe
     # rule DSL, validates each candidate on a purged walk-forward + deflated-Sharpe
     # gate, and AUTO-PROMOTES passers into the bandit-weighted `discovered`
-    # ensemble arm (its live weight is still learned from realized PnL). Off by
-    # default. researcher_use_llm additionally asks the LLM advisor to PROPOSE
+    # ensemble arm (its live weight is still learned from realized PnL).
+    # researcher_use_llm additionally asks the LLM advisor to PROPOSE
     # candidate specs (still gated identically); needs the LLM advisor keyed.
-    "researcher_enabled": False,
-    "researcher_use_llm": False,
+    "researcher_enabled": True,
+    "researcher_use_llm": True,
     "researcher_candidates": 60,      # systematic candidates sampled per run
     # crawl4ai producer config (used by the standalone tools/crawl4ai_signal):
     # JSON mapping asset symbol -> list of URLs to crawl. Blank = nothing to do.
@@ -112,13 +112,13 @@ DEFAULTS = {
     # When True, the crawl4ai producer FINDS its own news sources per traded asset
     # (Google News RSS, key-less) instead of only using the hand-curated
     # crawl4ai_sources map. Discovered signals still enter as MEASURED features.
-    "crawl4ai_autodiscover": False,
+    "crawl4ai_autodiscover": True,
     "crawl4ai_max_urls": 4,           # max articles discovered per asset per run
     # Run the crawl4ai producer INSIDE the app on a schedule (no manual CLI). It
     # crawls/scores sources off the hot path and pushes rows into the ingest seam.
-    # Off by default. The core imports the producer lazily + defensively, so a
-    # missing crawl4ai (Apache-2.0, optional) never affects trading.
-    "crawl4ai_producer_enabled": False,
+    # The core imports the producer lazily + defensively, so a missing crawl4ai
+    # (Apache-2.0, optional) never affects trading.
+    "crawl4ai_producer_enabled": True,
     "crawl4ai_interval_sec": 900,     # producer cadence (15 min default)
     # Real on-chain execution. Inert unless this is True AND a pm_wallet_key
     # secret is present AND py-clob-client is installed (see execution.py).

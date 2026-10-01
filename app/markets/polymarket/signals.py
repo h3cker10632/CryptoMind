@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import math
 
+from ...tunables import tv
+
 STRATEGIES = ("momentum", "mean_revert", "longshot_fade", "microstructure",
               "llm", "research")
 
@@ -43,16 +45,18 @@ def _leans(m: dict, llm_lean: float = 0.0,
     mom1d = m.get("mom_1d", 0.0)
     # `mom_*` on Gamma is the change in outcome-0's price. A rise in p0 is
     # bullish momentum FOR outcome 0.
-    momentum = _clip((0.5 * mom1h + 0.5 * mom1d) * 6.0)
+    momentum = _clip((0.5 * mom1h + 0.5 * mom1d) * tv("pm_momentum_gain"))
     # sharp single-hour spikes tend to partly retrace -> fade the 1h move
-    mean_revert = _clip(-mom1h * 8.0) if abs(mom1h) > 0.05 else 0.0
+    mean_revert = (_clip(-mom1h * tv("pm_mean_revert_gain"))
+                  if abs(mom1h) > tv("pm_mean_revert_threshold") else 0.0)
     # favourite-longshot bias: if outcome 0 is a deep longshot (cheap), lean
     # AWAY from it (negative); if it's the heavy favourite, lean toward it.
     dist = p0 - 0.5
-    longshot_fade = _clip(math.copysign(min(abs(dist) * 2.0, 1.0), dist)) \
-        if abs(dist) > 0.15 else 0.0
+    longshot_fade = (_clip(math.copysign(
+                        min(abs(dist) * tv("pm_longshot_gain"), 1.0), dist))
+                     if abs(dist) > tv("pm_longshot_threshold") else 0.0)
     # order-flow: last trade above the implied mid -> pressure toward outcome 0
-    micro = _clip((m.get("last_trade_price", p0) - p0) * 10.0)
+    micro = _clip((m.get("last_trade_price", p0) - p0) * tv("pm_microstructure_gain"))
     # Advisor leans are signed toward outcome 0 and bounded [-1, 1].
     return {"momentum": momentum, "mean_revert": mean_revert,
             "longshot_fade": longshot_fade, "microstructure": micro,

@@ -442,6 +442,43 @@ TUNABLES = {
                            "Max LLM calls per Polymarket cycle (bounded for cost); "
                            "leans are cached with the llm_lean_ttl_sec TTL. 0 = "
                            "never query (LLM sleeve off for Polymarket).", True),
+    "pm_research_influence": T(1.5, 1.0, 8.0, 0.1, "polymarket",
+                           "Research vote influence",
+                           "Operator boost on the web-research advisor's weight "
+                           "in the Polymarket composite (same lever as "
+                           "pm_llm_influence, for the `research` arm). The "
+                           "bandit still learns its real trust from resolutions; "
+                           "this only raises its baseline voice."),
+    # ---- Polymarket heuristic-edge sensitivities (app.markets.polymarket.
+    # signals._leans) — how strongly each transparent prior argues, and when it
+    # activates at all. These do NOT change what counts as a real edge (that's
+    # pm_min_edge/pm_edge_scale/pm_cost_multiple); they shape the raw per-
+    # strategy lean the bandit then learns to trust or distrust from actual
+    # resolutions, exactly like the crypto side's strategy weights.
+    "pm_momentum_gain": T(6.0, 1.0, 15.0, 0.5, "polymarket", "Momentum gain",
+                           "Sensitivity of the `momentum` prior to blended 1h/1d "
+                           "outcome-0 price drift (higher = a given drift claims "
+                           "a stronger lean)"),
+    "pm_mean_revert_gain": T(8.0, 1.0, 20.0, 0.5, "polymarket",
+                           "Mean-reversion gain",
+                           "Sensitivity of the `mean_revert` prior to a sharp 1h "
+                           "move (fades it) once past pm_mean_revert_threshold"),
+    "pm_mean_revert_threshold": T(0.05, 0.0, 0.20, 0.005, "polymarket",
+                           "Mean-reversion threshold",
+                           "Minimum |1h move| in outcome-0 price before the "
+                           "mean-reversion fade activates at all"),
+    "pm_longshot_gain": T(2.0, 0.5, 5.0, 0.1, "polymarket", "Longshot-fade gain",
+                           "Sensitivity of the favourite-longshot-bias fade to "
+                           "how far outcome 0's price sits from a coin-flip, "
+                           "once past pm_longshot_threshold"),
+    "pm_longshot_threshold": T(0.15, 0.0, 0.40, 0.01, "polymarket",
+                           "Longshot-fade threshold",
+                           "Minimum |price - 0.5| before the favourite-longshot "
+                           "fade activates at all"),
+    "pm_microstructure_gain": T(10.0, 1.0, 30.0, 0.5, "polymarket",
+                           "Microstructure gain",
+                           "Sensitivity of the order-flow prior to the gap "
+                           "between the last trade price and the implied mid"),
 }
 
 _overrides = None
