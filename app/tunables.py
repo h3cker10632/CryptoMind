@@ -24,40 +24,68 @@ TUNABLES = {
                            "Base cap on concurrent positions (stance scales it)", True),
     "max_gross_exposure":T(0.60, 0.10, 1.00, 0.05, "risk", "Max gross exposure",
                            "Total deployed capital cap as a fraction of equity"),
-    "stop_atr_mult":     T(2.0, 0.5, 6.0, 0.1, "risk", "Stop ATR mult",
+    "stop_atr_mult":     T(3.0, 0.5, 6.0, 0.1, "risk", "Stop ATR mult",
                            "Initial stop distance in ATR multiples"),
-    "take_profit_atr_mult": T(3.0, 1.0, 10.0, 0.1, "risk", "Take-profit ATR mult",
+    "take_profit_atr_mult": T(6.0, 1.0, 10.0, 0.1, "risk", "Take-profit ATR mult",
                            "Target distance in ATR multiples (cost floor may widen it)"),
-    "trail_atr_mult":    T(2.5, 0.5, 6.0, 0.1, "risk", "Trailing stop ATR mult",
+    "trail_atr_mult":    T(3.0, 0.5, 6.0, 0.1, "risk", "Trailing stop ATR mult",
                            "Trailing stop distance from the high/low-water mark"),
-    "swing_atr_bars":    T(12, 1, 48, 1, "risk", "Swing ATR timeframe (x5m bars)",
-                           "5m candles folded into one ATR bar for sizing stops/"
-                           "targets: 12=1h, 3=15m, 1=native 5m. Bigger = wider, "
+    "swing_atr_bars":    T(1, 1, 48, 1, "risk", "Swing ATR timeframe (x native bars)",
+                           "Native candles (1h since the 1h switch) folded into one "
+                           "ATR bar for sizing stops/targets: 1 = native 1h, 4 = 4h. Bigger = wider, "
                            "more cost-viable swing stops (a different strategy, "
                            "not a looser scalp).", True),
     "max_drawdown_kill": T(0.15, 0.03, 0.50, 0.01, "risk", "Kill-switch drawdown",
                            "Peak-to-trough drawdown that trips the kill switch"),
     "daily_loss_limit":  T(0.05, 0.01, 0.25, 0.005, "risk", "Daily loss halt",
                            "Daily loss that halts new entries until tomorrow"),
-    "cooldown_sec":      T(900, 0, 7200, 60, "risk", "Re-entry cooldown (s)",
+    "cooldown_sec":      T(43200, 0, 172800, 60, "risk", "Re-entry cooldown (s)",
                            "Seconds before re-entering a product after an exit", True),
     "max_spread_bps":    T(0, 0, 200, 1, "risk", "Max entry spread (bps)",
                            "Skip a NEW entry when the live bid/ask spread is wider "
                            "than this (basis points) — a wide spread eats the edge "
                            "before the trade even moves. 0 = disabled (freqtrade "
                            "SpreadFilter idea).", True),
-    "min_hold_sec":      T(300, 0, 14400, 30, "risk", "Minimum hold (s)",
+    "min_hold_sec":      T(43200, 0, 172800, 30, "risk", "Minimum hold (s)",
                            "A position younger than this is exempt from signal-flip "
                            "and trailing-giveback exits (its hard stop/target still "
                            "apply) — stops same-tick churn", True),
-    "max_entries_per_hour": T(12, 0, 120, 1, "risk", "Max entries / hour",
+    "max_entries_per_hour": T(2, 0, 120, 1, "risk", "Max entries / hour",
                            "Hard cap on NEW position opens per rolling hour "
                            "(0 = unlimited); anti-overtrading circuit", True),
-    "trail_giveback_pct": T(0.35, 0.0, 0.90, 0.05, "risk", "Peak-giveback exit",
-                           "Close a WINNING position once it gives back this "
+    "maker_fee_rate":    T(0.004, 0.0, 0.02, 0.0001, "costs", "Maker fee rate",
+                           "Fee per side for a resting LIMIT (maker) fill — used when "
+                           "the `entry_order_type` setting is 'maker'. Set to your "
+                           "exchange's current maker rate."),
+    "maker_timeout_sec": T(3600, 60, 86400, 60, "costs", "Limit order timeout (s)",
+                           "A limit entry that hasn't filled after this long is "
+                           "cancelled (no trade, no fee)", True),
+    "chop_er_min":       T(0.12, 0.0, 0.6, 0.01, "signals", "Chop filter threshold",
+                           "Market-wide trendiness (median efficiency ratio across "
+                           "coins) below which the chop filter pauses NEW entries. "
+                           "0.12 ~= a random walk over 48 bars, i.e. 'no more "
+                           "directional than noise'."),
+    "chop_lookback_bars": T(48, 12, 240, 1, "signals", "Chop filter lookback (bars)",
+                           "Bars over which market trendiness is measured", True),
+    "filter_strictness": T(1.0, 0.5, 1.5, 0.05, "signals", "Trade filter strictness",
+                           "The trade filter takes a signal only if its predicted "
+                           "chance of a net-of-cost win is >= the historical base "
+                           "win rate x this (1.0 = skip below-average signals)"),
+    "replay_brake_mult": T(0.5, 0.0, 1.0, 0.05, "risk", "Replay brake",
+                           "Position-risk multiplier applied to NEW entries while the "
+                           "automatic strategy replay is negative in BOTH halves of "
+                           "its window (over >= replay_brake_min_trades trades). "
+                           "1.0 = brake off; 0 = stop opening new positions."),
+    "replay_brake_min_trades": T(30, 0, 1000, 1, "risk", "Replay brake min trades",
+                           "The replay must contain at least this many trades before "
+                           "it can engage the brake (too few = noise)", True),
+    "trail_giveback_pct": T(0.0, 0.0, 0.90, 0.05, "risk", "Peak-giveback exit",
+                           "OFF by default: in the 1h replay it sold winners at ~+1% "
+                           "net while losers ran to the stop (-15.8% vs -6.1% "
+                           "with it off). Close a WINNING position once it gives back this "
                            "fraction of its peak unrealized gain (price-basis). "
                            "0 = disabled. Arms only after a real move (see arm %)."),
-    "trail_giveback_arm_pct": T(0.010, 0.0, 0.10, 0.001, "risk", "Giveback arm move",
+    "trail_giveback_arm_pct": T(0.03, 0.0, 0.10, 0.001, "risk", "Giveback arm move",
                            "Peak unrealized gain (as a fraction of entry price) "
                            "required before the peak-giveback exit can trigger — "
                            "prevents arming on noise"),
@@ -132,7 +160,7 @@ TUNABLES = {
                            "Base signal confidence needed for a full-size entry"),
     "explore_min_confidence": T(0.25, 0.05, 0.60, 0.01, "signals", "Probe floor",
                            "Minimum confidence for small exploration probes"),
-    "explore_prob":      T(0.12, 0.0, 1.0, 0.01, "signals", "Probe probability",
+    "explore_prob":      T(0.0, 0.0, 1.0, 0.01, "signals", "Probe probability",
                            "Chance per decision tick of firing one probe trade"),
     "explore_size_factor": T(0.4, 0.05, 1.0, 0.05, "signals", "Probe size factor",
                            "Probe size as a fraction of a normal position"),
@@ -149,10 +177,12 @@ TUNABLES = {
                            "Minimum closed trades for a coin before its realized "
                            "edge adjusts its universe ranking", True),
     # ---- learning ----
-    "bandit_decay_gamma": T(0.995, 0.90, 1.0, 0.001, "learning", "Bandit forgetting γ",
+    "bandit_decay_gamma": T(0.9997, 0.90, 1.0, 0.001, "learning", "Bandit forgetting γ",
                            "Per-cycle decay on bandit n, variance, AND mean (idle "
-                           "edge forgets toward 0; 1.0 = never forget; 0.995 ≈ 7h "
-                           "half-life). Lower = adapts faster to regime change"),
+                           "edge forgets toward 0; 1.0 = never forget; 0.9997 ≈ 5-day "
+                           "half-life at ~3-min cycles, 0.995 ≈ 7h). Lower = adapts "
+                           "faster to regime change but forgets the sparse trade "
+                           "evidence before it can accumulate"),
     "evolve_every_sec":  T(1200, 120, 21600, 60, "learning", "GA cadence (s)",
                            "Seconds between genetic-evolution runs (universe rotates)", True),
     # ---- evolution (GA champion promotion gate) ----
@@ -236,17 +266,20 @@ TUNABLES = {
                            "Scale on closed-trade net PnL fed to the bandit "
                            "(the premium, real-money learning signal)"),
     "signal_learn_weight": T(0.15, 0.0, 1.0, 0.01, "learning", "Signal-stream weight",
-                           "Scale on the GROSS directional signal-scoring stream fed "
+                           "Scale on the NET-of-cost signal-scoring stream fed "
                            "to the bandit. This is abundant (100-1000x the trade "
-                           "count) but lower quality (pre-cost, not a real fill), so "
+                           "count) but lower quality (not a real fill), so "
                            "it's discounted well below trade_weight. 0 disables it — "
                            "restoring the old dashboard-only behaviour."),
-    "signal_learn_clip":  T(0.01, 0.001, 0.05, 0.001, "learning", "Signal-stream clip",
-                           "Clip each gross signal forward-return to +/- this before "
+    "signal_learn_clip":  T(0.04, 0.001, 0.10, 0.001, "learning", "Signal-stream clip",
+                           "Clip each net-of-cost signal forward-return (24h horizon) to +/- this before "
                            "feeding the bandit, so one violent bar can't dominate the "
                            "abundant-but-noisy signal stream"),
-    "loss_lesson_mult":  T(5.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
-                           "A losing trade teaches N-times harder than a winner (DeepAlpha heuristic)"),
+    "loss_lesson_mult":  T(1.0, 1.0, 10.0, 0.5, "learning", "Loss lesson multiplier",
+                           "A losing trade teaches N-times harder than a winner. Keep at 1.0: "
+                           "anything higher biases the bandit against low-win-rate, "
+                           "high-payoff sleeves (trend/breakout), which are exactly "
+                           "the ones that clear costs"),
     "skip_learn_weight": T(0.5, 0.0, 2.0, 0.05, "learning", "Skip counterfactual weight",
                            "Scale on the NET-of-cost counterfactual return of an "
                            "ACTIONABLE conviction signal that was gated out (risk/"
@@ -274,7 +307,7 @@ TUNABLES = {
                            "this. Blocks premature cuts of losers the calibrated band "
                            "still gives a real chance of bouncing. 0 = require the "
                            "whole interval non-positive; higher = cut more readily"),
-    "exit_horizon_sec":  T(1800, 300, 14400, 60, "learning", "Loss-cut learn horizon (s)",
+    "exit_horizon_sec":  T(43200, 300, 172800, 60, "learning", "Loss-cut learn horizon (s)",
                            "Forward window used to score hold-vs-cut decisions "
                            "against what price actually did next", True),
     # ---- direction (long vs short) learner ----
@@ -323,21 +356,21 @@ TUNABLES = {
     "pattern_exit_tighten_atr": T(1.0, 0.3, 3.0, 0.1, "risk", "Pattern-exit stop distance (ATR)",
                            "When a reversal tightens a stop, place it this many swing-"
                            "ATR from the current price (smaller = tighter)."),
-    "exit_throttle_horizon_sec": T(1800, 300, 14400, 60, "risk",
+    "exit_throttle_horizon_sec": T(43200, 300, 172800, 60, "risk",
                            "Exit-throttle learn horizon (s)",
                            "Forward window used to score whether a pattern_exit/"
                            "signal-flip cut was validated (price kept moving against "
                            "the position) or a false alarm (price recovered)", True),
-    "llm_refresh_sec":   T(900, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
+    "llm_refresh_sec":   T(3600, 60, 7200, 30, "learning", "LLM advisor cadence (s)",
                            "Seconds between LLM-advisor lean refreshes (only when "
                            "the advisor is enabled + a key is configured)", True),
-    "llm_lean_ttl_sec":  T(3600, 300, 21600, 60, "learning", "LLM lean TTL (s)",
+    "llm_lean_ttl_sec":  T(7200, 300, 21600, 60, "learning", "LLM lean TTL (s)",
                            "A cached LLM lean expires (→ no vote) after this long, "
                            "so a stale opinion can't dominate the ensemble", True),
-    "model_refresh_sec": T(300, 30, 3600, 30, "learning", "Model advisor cadence (s)",
+    "model_refresh_sec": T(3600, 30, 3600, 30, "learning", "Model advisor cadence (s)",
                            "Seconds between ML-model-advisor inference refreshes "
                            "(only when enabled + a validated artifact is loaded)", True),
-    "model_lean_ttl_sec": T(1800, 120, 21600, 60, "learning", "Model lean TTL (s)",
+    "model_lean_ttl_sec": T(7200, 120, 21600, 60, "learning", "Model lean TTL (s)",
                             "A cached model lean expires (→ no vote) after this "
                             "long, so a stale prediction can't dominate the ensemble",
                             True),

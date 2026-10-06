@@ -1,12 +1,36 @@
 """Market Data Feed — live candles, tickers and order-book stats from
 Coinbase Exchange public REST API (no keys required)."""
-import asyncio, time
+import asyncio, math, time
 import httpx
-from ..config import PRODUCTS, CANDLE_GRANULARITY, CANDLE_HISTORY, MARKET_POLL_SEC
+from ..config import (PRODUCTS, CANDLE_GRANULARITY, CANDLE_HISTORY, MARKET_POLL_SEC,
+                      MTF_TIMEFRAMES)
 from .. import db
 from .features import features_from_ohlcv
 
 BASE = "https://api.exchange.coinbase.com"
+
+
+def trendiness(candles_by_product, n=48, min_coins=5):
+    """Market-wide trendiness in [0, 1]: the MEDIAN across coins of Kaufman's
+    efficiency ratio over the last `n` bars,
+        |close_now - close_n_ago| / sum(|bar-to-bar close changes|).
+    1 = every coin moved in a straight line; a random walk scores about
+    sqrt(2 / (pi * n)) (~0.12 for n=48). Trend-following loses money in chop,
+    so the chop filter pauses new entries when this is low. None if fewer than
+    `min_coins` coins have enough history."""
+    ers = []
+    for cs in candles_by_product.values():
+        if not cs or len(cs) <= n:
+            continue
+        closes = [c[4] for c in cs[-(n + 1):]]
+        path = sum(abs(b - a) for a, b in zip(closes, closes[1:]))
+        if path > 0:
+            ers.append(abs(closes[-1] - closes[0]) / path)
+    if len(ers) < min_coins:
+        return None
+    ers.sort()
+    m = len(ers) // 2
+    return ers[m] if len(ers) % 2 else (ers[m - 1] + ers[m]) / 2
 
 
 class MarketData:
@@ -81,9 +105,34 @@ class MarketData:
                 await asyncio.sleep(MARKET_POLL_SEC)
 
     # ---------- derived features ----------
+    # A live tick further than this from the latest candle close is treated
+    # as a bad print (not a real move) and ignored. Crypto can move fast, but
+    # not 35% between a ~30s ticker poll and the current candle.
+    MAX_TICK_DEVIATION = 0.35
+
     def price(self, p):
+        """Latest trusted price, or None.
+
+        Rejects 0 / NaN / negative ticks and ticks wildly off the latest candle
+        close. Everything downstream (stops, marks, fills, learning labels)
+        reads price through here, so one guard protects the whole system."""
         t = self.tickers.get(p)
-        return t["price"] if t else None
+        if not t:
+            return None
+        px = t.get("price")
+        try:
+            if px is None or not math.isfinite(px) or px <= 0:
+                return None
+        except TypeError:
+            return None
+        cs = self.candles.get(p) or []
+        # compare against the latest candle only while it is fresh (a stale
+        # candle after a long gap is not a valid reference)
+        if cs and time.time() - cs[-1][0] < 3 * CANDLE_GRANULARITY:
+            ref = cs[-1][4]
+            if ref and ref > 0 and abs(px / ref - 1) > self.MAX_TICK_DEVIATION:
+                return None
+        return px
 
     def closes(self, p):
         return [c[4] for c in self.candles.get(p, [])]
@@ -128,6 +177,11 @@ class MarketData:
         # several timeframes aligned is a far cleaner signal than one 5m read;
         # `mtf_align` in [-1,1] is the mean trend agreement across timeframes,
         # exposed both to the strategies (trend confirmation) and the ML model.
+        # cross-sectional momentum: this coin's 72-bar return as a z-score vs
+        # every other tracked coin (relative strength). Live-only; 0 if the
+        # universe is too small to rank.
+        feat["xs_mom"] = self.xs_momentum().get(p, 0.0)
+
         mtf = self._mtf(highs, lows, closes)
         feat["mtf_align"] = mtf["align"]
         feat["mtf_trend_15m"] = mtf["t15"]
@@ -147,11 +201,56 @@ class MarketData:
             feat["patterns"] = None
         return feat
 
+    def trendiness(self, n=48):
+        """Market-wide trendiness (see module-level trendiness()), cached per
+        latest-candle timestamp."""
+        key = tuple(sorted((p, cs[-1][0]) for p, cs in self.candles.items() if cs))
+        c = getattr(self, "_trend_cache", None)
+        if c and c[0] == (key, n):
+            return c[1]
+        v = trendiness(self.candles, n)
+        self._trend_cache = ((key, n), v)
+        return v
+
+    def xs_momentum(self, lookback=72):
+        """{product: z-score of its `lookback`-bar return across the universe}.
+
+        Cached per latest-candle timestamp so the per-tick cost is one pass.
+        Cross-sectional momentum (buy relative winners, avoid/short relative
+        losers) was the strongest after-cost family in the hourly backtest."""
+        key = tuple(sorted((p, cs[-1][0]) for p, cs in self.candles.items() if cs))
+        cache = getattr(self, "_xs_cache", None)
+        if cache and cache[0] == key:
+            return cache[1]
+        rets = {}
+        for p, cs in self.candles.items():
+            if len(cs) > lookback and cs[-lookback - 1][4] > 0:
+                rets[p] = cs[-1][4] / cs[-lookback - 1][4] - 1
+        out = {}
+        if len(rets) >= 5:
+            vals = list(rets.values())
+            mu = sum(vals) / len(vals)
+            sd = (sum((v - mu) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
+            if sd > 0:
+                out = {p: (r - mu) / sd for p, r in rets.items()}
+        self._xs_cache = (key, out)
+        return out
+
     @staticmethod
     def _mtf(highs, lows, closes):
-        """Multi-timeframe trend/RSI from aggregated 5m bars.
+        """Multi-timeframe trend/RSI from aggregated native bars.
 
-        For each timeframe (15m=3, 1h=12, 4h=48 native 5m bars) we fold the
+        The three timeframes come from config.MTF_TIMEFRAMES (1h / 4h / 12h on
+        native 1h bars). The result keys keep their historical names
+        (t15 / t1h / t4h = fastest / middle / slowest timeframe) so the
+        dashboard, ML features and persistence schema are unchanged.
+
+        BUG FIXED: on 5m bars the "4h" fold needed 48*12 = 576 native bars but
+        only CANDLE_HISTORY=300 were kept, so the slowest trend was ALWAYS 0
+        and the filter never vetoed anything. Folds are now derived from the
+        native granularity and all fit inside the history.
+
+        For each timeframe we fold the
         trailing bars into higher-TF closes, then read the trend as the sign of
         a fast-vs-slow EMA cross on that series. `align` is the mean of the
         per-timeframe trend signs, in [-1, 1]: +1 = every timeframe bullish,
@@ -202,10 +301,11 @@ class MarketData:
             ag, al = gains / period, losses / period
             return 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
 
-        t15, t1h, t4h = trend_sign(3), trend_sign(12), trend_sign(48)
+        f1, f2, f3 = (max(1, int(tf // CANDLE_GRANULARITY)) for tf in MTF_TIMEFRAMES)
+        t15, t1h, t4h = trend_sign(f1), trend_sign(f2), trend_sign(f3)
         align = (t15 + t1h + t4h) / 3.0
         return {"t15": t15, "t1h": t1h, "t4h": t4h, "align": align,
-                "rsi_1h": rsi_tf(12)}
+                "rsi_1h": rsi_tf(max(1, int(3600 // CANDLE_GRANULARITY)))}
 
     @staticmethod
     def _swing_atr(highs, lows, closes, period=14):
@@ -257,7 +357,10 @@ class MarketData:
             return {"label": "unknown", "vol": 0}
         trend = "bull" if f["sma20"] > f["sma50"] * 1.002 else \
                 "bear" if f["sma20"] < f["sma50"] * 0.998 else "sideways"
-        vol_state = "high-vol" if f["volatility"] > 0.004 else "normal"
+        # 0.004 was calibrated as a per-5m-bar volatility; scale by sqrt(time)
+        # so the threshold means the same thing on any native bar size.
+        vol_thr = 0.004 * (CANDLE_GRANULARITY / 300) ** 0.5
+        vol_state = "high-vol" if f["volatility"] > vol_thr else "normal"
         return {"label": f"{trend}/{vol_state}", "trend": trend,
                 "vol_state": vol_state, "vol": f["volatility"]}
 

@@ -27,12 +27,12 @@ def test_ghost_evolved_gets_zero_weight_and_dropped_arm():
         evolution.champion_portfolios = {}
         L = Learner()
         L.bandit.update("sideways/normal", "evolved", 0.002)
-        L.bandit.update("sideways/normal", "trend", 0.001)
+        L.bandit.update("sideways/normal", "trend_slow", 0.001)
         silent = L._silent_sleeves()
         assert "evolved" in silent
         w = L._allocate("sideways/normal", silent)
         assert w["evolved"] == 0.0
-        assert w["trend"] > 0
+        assert w["trend_slow"] > 0
         assert all(s != "evolved" for (_, s) in L.bandit.arms)
     finally:
         evolution.champions = orig_c
@@ -132,13 +132,13 @@ def test_signal_stream_feeds_bandit_when_enabled(monkeypatch):
         evolution.champions = {}
         evolution.champion_portfolios = {}
         for _ in range(40):
-            L.bandit.update("bull", "trend", 0.002)
-        n0, mean0, _ = L.bandit.arms[("bull", "trend")]
+            L.bandit.update("bull", "trend_slow", 0.002)
+        n0, mean0, _ = L.bandit.arms[("bull", "trend_slow")]
 
         monkeypatch.setattr("app.learn.loop.db.unscored_signals",
                             lambda older: [{"rowid": 1, "product": "BTC-USD",
                                             "ts": 0, "direction": 1,
-                                            "strategy": "trend",
+                                            "strategy": "trend_slow",
                                             "confidence": 1.0,
                                             "regime": "bull"}])
         monkeypatch.setattr("app.learn.loop.db.score_signal", lambda *a, **k: None)
@@ -159,7 +159,7 @@ def test_signal_stream_feeds_bandit_when_enabled(monkeypatch):
                 return 102.0
 
         L.run(M(), {"label": "bull"})
-        n1, mean1, _ = L.bandit.arms[("bull", "trend")]
+        n1, mean1, _ = L.bandit.arms[("bull", "trend_slow")]
         # the signal update ADDS an observation on top of decay, so n barely
         # drops (or rises) vs the pure-decay case, and the arm is still positive
         assert n1 > n0 * 0.99                           # gained an obs vs decay-only
@@ -184,13 +184,13 @@ def test_signal_stream_disabled_when_weight_zero(monkeypatch):
         evolution.champions = {}
         evolution.champion_portfolios = {}
         for _ in range(40):
-            L.bandit.update("bull", "trend", 0.002)
-        n0, mean0, _ = L.bandit.arms[("bull", "trend")]
+            L.bandit.update("bull", "trend_slow", 0.002)
+        n0, mean0, _ = L.bandit.arms[("bull", "trend_slow")]
 
         monkeypatch.setattr("app.learn.loop.db.unscored_signals",
                             lambda older: [{"rowid": 1, "product": "BTC-USD",
                                             "ts": 0, "direction": 1,
-                                            "strategy": "trend",
+                                            "strategy": "trend_slow",
                                             "confidence": 1.0,
                                             "regime": "bull"}])
         monkeypatch.setattr("app.learn.loop.db.score_signal", lambda *a, **k: None)
@@ -209,7 +209,7 @@ def test_signal_stream_disabled_when_weight_zero(monkeypatch):
                 return 100.0
 
         L.run(M(), {"label": "bull"})
-        n1, mean1, _ = L.bandit.arms[("bull", "trend")]
+        n1, mean1, _ = L.bandit.arms[("bull", "trend_slow")]
         assert n1 < n0                                 # decay only, no new obs
         assert abs(mean1) < abs(mean0)                 # idle mean toward 0
         assert L.last_cycle["ghost_weight"] == 0.0
@@ -232,7 +232,7 @@ def test_successive_cycles_shrink_idle_abs_mean(monkeypatch):
         evolution.champions = {}
         evolution.champion_portfolios = {}
         for _ in range(60):
-            L.bandit.update("bull", "trend", 0.004)
+            L.bandit.update("bull", "trend_slow", 0.004)
         monkeypatch.setattr("app.learn.loop.db.unscored_signals", lambda older: [])
         monkeypatch.setattr("app.learn.loop.db.strategy_scores", lambda *a, **k: [])
         monkeypatch.setattr("app.learn.loop.db.log_event", lambda *a, **k: None)

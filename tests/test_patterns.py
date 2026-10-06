@@ -168,22 +168,24 @@ def test_pattern_sleeve_registered():
 
 def test_ml_vector_width_matches_n_in():
     from app.learn.online_model import build_x, N_IN, FEAT_NAMES
-    # 18 core + 6 chart-pattern + 2 advisor-lean features
-    assert N_IN == len(FEAT_NAMES) == 26
+    # 18 core + 6 chart-pattern + 2 advisor-lean + 4 slow-horizon features
+    assert N_IN == len(FEAT_NAMES) == 30
     f = {"rsi": 55, "macd": 0.1, "macd_delta": 0.02, "mom_1h": 0.001,
          "mom_4h": 0.002, "vol_ratio": 1.1, "imbalance": 0.1, "spread_bps": 3,
          "price": 100, "sma20": 99, "sma50": 98, "volatility": 0.003, "atr": 0.5}
     # no pattern report -> zeros appended, still N_IN wide
     assert len(build_x(f, 0.2, 0.1, None)) == N_IN
     # advisor-lean slots are the LAST two and default to 0.0 (inert)
-    assert build_x(f, 0.2, 0.1, None)[-2:] == [0.0, 0.0]
+    assert build_x(f, 0.2, 0.1, None)[-6:-4] == [0.0, 0.0]
     # with a pattern report -> still N_IN wide, pattern slots populated. They now
     # sit just BEFORE the two advisor-lean features (which stay appended last).
     f2 = dict(f, patterns={"features": {k: 0.5 for k in PATTERN_FEATURES}})
     x = build_x(f2, 0.2, 0.1, None)
     assert len(x) == N_IN
     npat = len(PATTERN_FEATURES)
-    assert x[-(npat + 2):-2] == [0.5] * npat
+    # pattern inputs are MASKED (held at 0) since the efficiency round: they
+    # measured ~no edge and don't exist in the history warm-start
+    assert x[-(npat + 6):-6] == [0.0] * npat
     # advisor leans flow through when stamped on the features dict
     f3 = dict(f2, llm_lean=0.7, model_lean=-0.3)
-    assert build_x(f3, 0.2, 0.1, None)[-2:] == [0.7, -0.3]
+    assert build_x(f3, 0.2, 0.1, None)[-6:-4] == [0.7, -0.3]

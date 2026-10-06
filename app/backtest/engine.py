@@ -80,16 +80,26 @@ def clear_history_cache():
 
 
 async def _fetch_history_raw(product, granularity=3600, chunks=3):
-    """Fetch up to ~900 hourly bars (Coinbase returns 300 per call). No cache."""
+    """Fetch up to chunks*300 bars, newest first (Coinbase returns 300 per
+    call). No cache. Long pulls (the replay asks for ~a year) are paced and
+    retry on HTTP 429 so they stay inside Coinbase's public rate limit; a coin
+    newer than the requested range simply returns what exists."""
+    import asyncio
     out = []
     async with httpx.AsyncClient(headers={"User-Agent": "CryptoMind/1.0"}) as c:
         end = None
-        for _ in range(chunks):
+        for i in range(chunks):
             params = {"granularity": granularity}
             if end:
                 params["end"] = end
                 params["start"] = end - granularity * 300
-            r = await c.get(f"{BASE}/products/{product}/candles", params=params, timeout=20)
+            if i and chunks > 3:
+                await asyncio.sleep(0.15)
+            for attempt in range(4):
+                r = await c.get(f"{BASE}/products/{product}/candles", params=params, timeout=20)
+                if r.status_code != 429:
+                    break
+                await asyncio.sleep(1.0 * (attempt + 1))
             r.raise_for_status()
             batch = sorted(r.json(), key=lambda x: x[0])
             if not batch:

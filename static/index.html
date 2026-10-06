@@ -4,11 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CryptoMind — Autonomous Trading System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0b0e14; --panel:#12161f; --panel2:#181d29; --border:#232a3a;
-    --text:#dbe2f0; --dim:#7c8798; --green:#2ecc71; --red:#e74c3c;
-    --accent:#4f8ef7; --amber:#f5a623;
+    --bg:#090c12; --panel:#10141c; --panel2:#161b26; --border:#202838; --border-soft:#19202d;
+    --text:#e7ecf5; --dim:#8b95a8; --muted:#5d6879; --green:#34d399; --red:#f87171;
+    --accent:#6aa1ff; --amber:#fbbf24; --violet:#a78bfa;
+    --radius:14px; --shadow:0 1px 0 rgba(255,255,255,.035) inset, 0 10px 28px rgba(0,0,0,.28);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font:14px/1.45 'Segoe UI',system-ui,sans-serif;padding:16px}
@@ -103,11 +107,90 @@
   .event .t{color:var(--dim)}
   pre{font-size:11.5px;white-space:pre-wrap;color:#a9c1e8}
   .mono{font-family:ui-monospace,Consolas,monospace}
+
+/* ================= UI refresh (2026-10) ================= */
+html{scrollbar-color:#2a3345 transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#252e3f;border-radius:10px;border:2px solid var(--bg)}
+::-webkit-scrollbar-track{background:transparent}
+body{font-family:Inter,'Segoe UI',system-ui,sans-serif;font-size:13.5px;padding:0 20px 28px;
+  background:radial-gradient(1200px 500px at 15% -10%,rgba(106,161,255,.07),transparent 60%),
+             radial-gradient(900px 400px at 100% 0%,rgba(167,139,250,.05),transparent 55%),var(--bg);
+  background-attachment:fixed;-webkit-font-smoothing:antialiased}
+.mono,pre,code{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
+td,.kv b,.kpi{font-variant-numeric:tabular-nums}
+/* top bar */
+header{position:sticky;top:0;z-index:40;margin:0 -20px 0;padding:12px 20px;gap:10px;
+  background:rgba(9,12,18,.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border-soft)}
+header h1{font-size:17px;font-weight:700;letter-spacing:.2px;margin-right:6px}
+header h1 span{font-size:12.5px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;
+  font-size:11.5px;font-weight:600;background:var(--panel2);border:1px solid var(--border)}
+.badge::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.85;
+  box-shadow:0 0 0 3px color-mix(in srgb,currentColor 18%,transparent)}
+/* tabs */
+.tabs{gap:4px;padding:14px 0 14px;margin:0;display:flex;flex-wrap:wrap}
+.tab-btn{border-radius:999px;padding:7px 15px;border:1px solid var(--border);background:var(--panel);
+  color:var(--dim);font-weight:600;font-size:12.5px;transition:all .15s}
+.tab-btn:hover{color:var(--text);border-color:#33405a}
+.tab-btn.active{background:linear-gradient(180deg,#1d2b47,#18233a);color:#cfe0ff;border-color:#3a5688;
+  box-shadow:0 0 0 3px rgba(106,161,255,.12)}
+/* grid + cards */
+.grid{gap:14px}
+.card{border-radius:var(--radius);padding:16px 18px;border-color:var(--border);
+  background:linear-gradient(180deg,rgba(255,255,255,.018),rgba(255,255,255,0) 40%),var(--panel);
+  box-shadow:var(--shadow);transition:border-color .2s}
+.card:hover{border-color:#2a3446}
+h2{font-size:11.5px;font-weight:600;letter-spacing:.09em;color:var(--dim);margin-bottom:12px}
+h2 span{letter-spacing:0}
+/* KPI tiles: label above a big number */
+.kpi{display:flex;flex-direction:column-reverse;gap:6px;font-size:27px;font-weight:700;letter-spacing:-.5px;line-height:1.1}
+.kpi small{font-size:12px;font-weight:500;letter-spacing:0;color:var(--dim);line-height:1.35}
+header button{padding:6px 11px;font-size:12px}
+#view-dash>.card:has(.kpi){padding:16px 18px 18px;position:relative;overflow:hidden}
+#view-dash>.card:has(.kpi)::after{content:'';position:absolute;inset:auto -30% -60% auto;width:160px;height:160px;
+  border-radius:50%;background:radial-gradient(circle,rgba(106,161,255,.10),transparent 70%);pointer-events:none}
+/* tables */
+table{font-size:12.5px}
+th{font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);
+  padding:6px 10px;border-bottom:1px solid var(--border)}
+td{padding:7px 10px;border-bottom:1px solid var(--border-soft)}
+tbody tr{transition:background .12s}
+tbody tr:hover td{background:rgba(255,255,255,.025)}
+tbody tr:last-child td{border-bottom:none}
+.pos{color:var(--green)} .neg{color:var(--red)} .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+/* buttons + inputs */
+button{border-radius:9px;padding:7px 13px;font-weight:600;transition:background .15s,border-color .15s,transform .05s}
+button:hover:not(:disabled){background:#1d2331;border-color:#3a4864}
+button:active:not(:disabled){transform:translateY(1px)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid rgba(106,161,255,.55);outline-offset:2px}
+select,input[type=number],input[type=text]{border-radius:8px}
+.tag{border-radius:6px;padding:2px 7px;font-weight:600;letter-spacing:.02em}
+.kv{padding:6px 0;border-bottom:1px solid var(--border-soft)}
+.kv:last-child{border-bottom:none}
+.chip{border-radius:999px;padding:2px 9px}
+.event{padding:5px 0;border-bottom:1px solid var(--border-soft)}
+.doc{padding:7px 0;border-bottom:1px solid var(--border-soft)}
+canvas{border-radius:10px}
+.chart-tip{border-radius:10px;background:rgba(14,19,30,.96);backdrop-filter:blur(6px)}
+/* section label + collapsible diagnostics */
+.section-label{grid-column:span 12;display:flex;align-items:center;gap:10px;margin:10px 2px -2px;
+  font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.section-label::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
+details.legacy{grid-column:span 12;border:1px dashed var(--border);border-radius:var(--radius);padding:4px 14px;background:rgba(16,20,28,.45)}
+details.legacy>summary{cursor:pointer;list-style:none;padding:12px 4px;font-size:12.5px;font-weight:600;color:var(--dim);
+  display:flex;align-items:center;gap:10px}
+details.legacy>summary::-webkit-details-marker{display:none}
+details.legacy>summary::before{content:'▸';transition:transform .15s;color:var(--muted)}
+details.legacy[open]>summary::before{transform:rotate(90deg)}
+details.legacy>summary small{font-weight:400;color:var(--muted)}
+details.legacy>.grid{padding:4px 0 16px}
 </style>
 </head>
 <body>
 <header>
-  <h1>⚡ CryptoMind <span style="color:var(--dim);font-weight:400">— self-learning crypto trading system</span></h1>
+  <h1>⚡ CryptoMind <span style="color:var(--dim);font-weight:500">· self-learning trading</span></h1>
   <span class="badge" id="b-mode">PAPER TRADING</span>
   <span class="badge" id="b-data">data: …</span>
   <span class="badge" id="b-trading">trading: …</span>
@@ -161,7 +244,13 @@
   <div class="card span3"><div class="kpi" id="k-exposure">—<small>Exposure / Cash</small></div></div>
   <div class="card span3"><div class="kpi" id="k-sent">—<small>Market sentiment · Fear&Greed</small></div></div>
 
-  <div class="card span8">
+  <div class="card span12">
+    <h2>🧭 Scorecard <span style="text-transform:none;color:var(--dim);font-size:11px">— what the core runs and why, vs simply holding BTC (backtest = history; forward = days since a config was frozen)</span></h2>
+    <div id="scorecard">loading…</div>
+  </div>
+
+  <div class="section-label">Portfolio</div>
+  <div class="card span6">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
       <h2 style="margin:0">Equity curve</h2>
       <div class="tf-bar" id="eq-tf">
@@ -178,95 +267,6 @@
       <canvas id="chart-equity" height="150"></canvas>
       <div class="chart-tip" id="eq-tip"></div>
     </div>
-  </div>
-  <div class="card span4">
-    <h2>Adaptive strategy weights <span style="text-transform:none">(Thompson bandit, per regime)</span></h2>
-    <div id="weights"></div>
-  </div>
-
-  <div class="card span12">
-    <h2>🧠 Learning intelligence stack</h2>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px" id="learn-grid">
-      <div>
-        <h2>Online neural net (continual)</h2>
-        <div id="ml-stats" style="font-size:12.5px"></div>
-      </div>
-      <div>
-        <h2>RL risk controller (Q-learning)</h2>
-        <div id="rl-stats" style="font-size:12.5px"></div>
-      </div>
-      <div>
-        <h2>Drift detection (PSI)</h2>
-        <div id="drift-stats" style="font-size:12.5px"></div>
-      </div>
-      <div>
-        <h2>Genetic evolution <button id="btn-evolve" style="padding:2px 8px;font-size:11px">▶ run now</button></h2>
-        <div id="evo-stats" style="font-size:12.5px"></div>
-        <div id="evo-universe" style="margin-top:12px;padding:10px;border:1px solid var(--accent);border-radius:8px">
-          <h2 style="margin:0 0 6px">🌐 Cross-sectional champion
-            <button id="btn-evolve-universe" style="padding:2px 8px;font-size:11px">▶ run cross-sectional now</button>
-            <span style="text-transform:none;color:var(--muted);font-weight:400">— one genome validated by BREADTH across the basket</span></h2>
-          <div id="evo-universe-stats" style="font-size:12.5px"></div>
-          <h2 style="margin:8px 0 4px;font-size:12px">Per-product breakdown</h2>
-          <table id="tbl-evo-universe" style="font-size:12px"><thead><tr>
-            <th>Product</th><th title="Out-of-sample trades this product contributed to the pooled evidence">OOS trades</th><th title="This product's pooled per-trade OOS Sharpe">Pooled Sharpe</th><th>Edge +</th>
-          </tr></thead><tbody></tbody></table>
-        </div>
-        <h2 style="margin-top:10px">Per-product gate diagnostics <span style="text-transform:none;color:var(--muted);font-weight:400">— best DSR seen vs the gate, across every attempted coin</span></h2>
-        <table id="tbl-evo-attempts" style="font-size:12px"><thead><tr>
-          <th>Product</th><th title="Highest deflated Sharpe observed on the front (probability true OOS Sharpe > 0, after multiple-testing deflation)">Best DSR seen</th><th title="Highest raw pooled OOS Sharpe observed (before deflation)">Best pooled Sharpe</th><th>Blocked by</th><th>Promoted</th>
-        </tr></thead><tbody></tbody></table>
-      </div>
-    </div>
-    <h2 style="margin-top:12px">Bandit posteriors — current regime <span id="bandit-regime" style="text-transform:none;color:var(--accent)"></span></h2>
-    <table id="tbl-bandit"><thead><tr>
-      <th>Strategy</th><th title="Effective sample size (recent evidence is weighted more; old evidence decays)">Eff. samples (regime / pool)</th><th>Mean aligned return (bps)</th><th>Std (bps)</th><th>Hit rate</th><th>Weight</th>
-    </tr></thead><tbody></tbody></table>
-
-    <div id="ml-autotrain-card" style="margin-top:14px;padding:10px;border:1px solid var(--accent);border-radius:8px">
-      <h2 style="margin:0 0 6px">🤖 Autonomous ML retraining
-        <button id="btn-ml-train" style="padding:2px 8px;font-size:11px">▶ run full pipeline now</button>
-        <span style="text-transform:none;color:var(--muted);font-weight:400">— retrains from matured labels &amp; auto-promotes ONLY if the backtest gates pass</span></h2>
-      <div id="ml-autotrain-stats" style="font-size:12.5px">loading…</div>
-    </div>
-  </div>
-
-  <div class="card span12">
-    <h2>🔭 Dynamic universe &amp; source discovery</h2>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-      <div>
-        <h2>Trading universe</h2>
-        <div id="uni-core" style="margin-bottom:6px"></div>
-        <div id="uni-disc" style="margin-bottom:8px"></div>
-        <h2>Narrative heat (mentions)</h2>
-        <div id="uni-heat"></div>
-      </div>
-      <div>
-        <h2>Watching / rejected candidates</h2>
-        <div id="uni-rej" style="font-size:12.5px"></div>
-        <h2 style="margin-top:10px">CoinGecko trending</h2>
-        <div id="uni-trend"></div>
-      </div>
-      <div>
-        <h2>Data sources</h2>
-        <div id="src-list" style="font-size:12px"></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card span12">
-    <h2>Derivatives intelligence — OKX perp markets <span id="deriv-health" style="text-transform:none"></span></h2>
-    <table id="tbl-deriv"><thead><tr>
-      <th>Asset</th><th>Funding /8h</th><th>Funding APR</th><th>Open interest</th><th>OI Δ24h</th>
-      <th>Long/Short ratio</th><th>Taker buy %</th><th>Read</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card span6">
-    <h2>Live signals</h2>
-    <table id="tbl-signals"><thead><tr>
-      <th>Asset</th><th>Price</th><th>Dir</th><th>Conf</th><th>RSI</th><th>Sent</th><th>Edge bps</th><th>Action</th>
-    </tr></thead><tbody></tbody></table>
   </div>
   <div class="card span6">
     <h2>Open positions</h2>
@@ -306,18 +306,6 @@
   </div>
 
   <div class="card span4">
-    <h2>Research feed (live news &amp; social)</h2>
-    <div style="margin-bottom:8px;font-size:12.5px" id="macro-line"></div>
-    <div style="margin-bottom:8px;font-size:12px" id="macro-cal"></div>
-    <div id="docs"></div>
-  </div>
-  <div class="card span4">
-    <h2>Self-directed research queue &amp; narratives</h2>
-    <div id="queue"></div>
-    <h2 style="margin-top:12px">Top narratives</h2>
-    <div id="narratives"></div>
-  </div>
-  <div class="card span4">
     <h2>Audit log</h2>
     <div id="events"></div>
     <h2 style="margin-top:14px">🔔 Alerts <span id="alert-chan" style="text-transform:none;font-size:11px"></span></h2>
@@ -329,39 +317,147 @@
     <div id="alerts-feed"></div>
   </div>
 
-  <div class="card span6">
-    <h2>🛰 Shadow execution &amp; live-vs-paper divergence</h2>
-    <div style="color:var(--dim);font-size:11px;margin-bottom:8px">
-      An OMS-driven mirror account (client order IDs, partial-fill VWAP,
-      reconciliation) runs in parallel — <b>no real money</b>. Divergence is
-      the roadmap's key Stage-3 discovery, measured safely up front.
-    </div>
-    <div id="shadow-panel" style="font-size:12px">loading…</div>
-  </div>
-
-  <div class="card span6">
-    <h2>🔐 Control-API security</h2>
-    <div id="security-panel" style="font-size:12px">loading…</div>
-  </div>
-
+  <div class="section-label">Hourly bot</div>
   <div class="card span12">
-    <h2>Backtesting &amp; validation (real data · benchmark · walk-forward · DSR/PBO)</h2>
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-      <select id="bt-product"></select>
-      <select id="bt-strategy">
-        <option value="trend">trend</option>
-        <option value="meanrev">meanrev</option>
-        <option value="breakout">breakout</option>
-      </select>
-      <button id="btn-bt">Run single-strategy backtest</button>
-      <button id="btn-bt-comp" style="background:#6c5ce7">Validate REAL ensemble ▶</button>
-      <span id="bt-status" style="color:var(--dim)"></span>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <pre id="bt-result">Run a backtest, or "Validate REAL ensemble" for the composite system vs buy-and-hold with Deflated Sharpe / PBO / walk-forward gates…</pre>
-      <canvas id="chart-bt" height="150"></canvas>
-    </div>
+    <h2>Live signals</h2>
+    <table id="tbl-signals"><thead><tr>
+      <th>Asset</th><th>Price</th><th>Dir</th><th>Conf</th><th>RSI</th><th>Sent</th><th>Edge bps</th><th>Action</th>
+    </tr></thead><tbody></tbody></table>
   </div>
+  <details class="legacy">
+    <summary>Diagnostics &amp; legacy subsystems <small>— bandit weights, learning stack, universe, derivatives, research feed, shadow execution, security, single-strategy backtests (most are switched off by evidence)</small></summary>
+    <div class="grid">
+      <div class="card span4">
+        <h2>Adaptive strategy weights <span style="text-transform:none">(Thompson bandit, per regime)</span></h2>
+        <div id="weights"></div>
+      </div>
+
+      <div class="card span12">
+        <h2>🧠 Learning intelligence stack</h2>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px" id="learn-grid">
+          <div>
+            <h2>Online neural net (continual)</h2>
+            <div id="ml-stats" style="font-size:12.5px"></div>
+          </div>
+          <div>
+            <h2>RL risk controller (Q-learning)</h2>
+            <div id="rl-stats" style="font-size:12.5px"></div>
+          </div>
+          <div>
+            <h2>Drift detection (PSI)</h2>
+            <div id="drift-stats" style="font-size:12.5px"></div>
+          </div>
+          <div>
+            <h2>Genetic evolution <button id="btn-evolve" style="padding:2px 8px;font-size:11px">▶ run now</button></h2>
+            <div id="evo-stats" style="font-size:12.5px"></div>
+            <div id="evo-universe" style="margin-top:12px;padding:10px;border:1px solid var(--accent);border-radius:8px">
+              <h2 style="margin:0 0 6px">🌐 Cross-sectional champion
+                <button id="btn-evolve-universe" style="padding:2px 8px;font-size:11px">▶ run cross-sectional now</button>
+                <span style="text-transform:none;color:var(--muted);font-weight:400">— one genome validated by BREADTH across the basket</span></h2>
+              <div id="evo-universe-stats" style="font-size:12.5px"></div>
+              <h2 style="margin:8px 0 4px;font-size:12px">Per-product breakdown</h2>
+              <table id="tbl-evo-universe" style="font-size:12px"><thead><tr>
+                <th>Product</th><th title="Out-of-sample trades this product contributed to the pooled evidence">OOS trades</th><th title="This product's pooled per-trade OOS Sharpe">Pooled Sharpe</th><th>Edge +</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+            <h2 style="margin-top:10px">Per-product gate diagnostics <span style="text-transform:none;color:var(--muted);font-weight:400">— best DSR seen vs the gate, across every attempted coin</span></h2>
+            <table id="tbl-evo-attempts" style="font-size:12px"><thead><tr>
+              <th>Product</th><th title="Highest deflated Sharpe observed on the front (probability true OOS Sharpe > 0, after multiple-testing deflation)">Best DSR seen</th><th title="Highest raw pooled OOS Sharpe observed (before deflation)">Best pooled Sharpe</th><th>Blocked by</th><th>Promoted</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <h2 style="margin-top:12px">Bandit posteriors — current regime <span id="bandit-regime" style="text-transform:none;color:var(--accent)"></span></h2>
+        <table id="tbl-bandit"><thead><tr>
+          <th>Strategy</th><th title="Effective sample size (recent evidence is weighted more; old evidence decays)">Eff. samples (regime / pool)</th><th>Mean aligned return (bps)</th><th>Std (bps)</th><th>Hit rate</th><th>Weight</th>
+        </tr></thead><tbody></tbody></table>
+
+        <div id="ml-autotrain-card" style="margin-top:14px;padding:10px;border:1px solid var(--accent);border-radius:8px">
+          <h2 style="margin:0 0 6px">🤖 Autonomous ML retraining
+            <button id="btn-ml-train" style="padding:2px 8px;font-size:11px">▶ run full pipeline now</button>
+            <span style="text-transform:none;color:var(--muted);font-weight:400">— retrains from matured labels &amp; auto-promotes ONLY if the backtest gates pass</span></h2>
+          <div id="ml-autotrain-stats" style="font-size:12.5px">loading…</div>
+        </div>
+      </div>
+
+      <div class="card span12">
+        <h2>🔭 Dynamic universe &amp; source discovery</h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div>
+            <h2>Trading universe</h2>
+            <div id="uni-core" style="margin-bottom:6px"></div>
+            <div id="uni-disc" style="margin-bottom:8px"></div>
+            <h2>Narrative heat (mentions)</h2>
+            <div id="uni-heat"></div>
+          </div>
+          <div>
+            <h2>Watching / rejected candidates</h2>
+            <div id="uni-rej" style="font-size:12.5px"></div>
+            <h2 style="margin-top:10px">CoinGecko trending</h2>
+            <div id="uni-trend"></div>
+          </div>
+          <div>
+            <h2>Data sources</h2>
+            <div id="src-list" style="font-size:12px"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card span12">
+        <h2>Derivatives intelligence — OKX perp markets <span id="deriv-health" style="text-transform:none"></span></h2>
+        <table id="tbl-deriv"><thead><tr>
+          <th>Asset</th><th>Funding /8h</th><th>Funding APR</th><th>Open interest</th><th>OI Δ24h</th>
+          <th>Long/Short ratio</th><th>Taker buy %</th><th>Read</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+
+      <div class="card span4">
+        <h2>Research feed (live news &amp; social)</h2>
+        <div style="margin-bottom:8px;font-size:12.5px" id="macro-line"></div>
+        <div style="margin-bottom:8px;font-size:12px" id="macro-cal"></div>
+        <div id="docs"></div>
+      </div>
+      <div class="card span4">
+        <h2>Self-directed research queue &amp; narratives</h2>
+        <div id="queue"></div>
+        <h2 style="margin-top:12px">Top narratives</h2>
+        <div id="narratives"></div>
+      </div>
+      <div class="card span6">
+        <h2>🛰 Shadow execution &amp; live-vs-paper divergence</h2>
+        <div style="color:var(--dim);font-size:11px;margin-bottom:8px">
+          An OMS-driven mirror account (client order IDs, partial-fill VWAP,
+          reconciliation) runs in parallel — <b>no real money</b>. Divergence is
+          the roadmap's key Stage-3 discovery, measured safely up front.
+        </div>
+        <div id="shadow-panel" style="font-size:12px">loading…</div>
+      </div>
+
+      <div class="card span6">
+        <h2>🔐 Control-API security</h2>
+        <div id="security-panel" style="font-size:12px">loading…</div>
+      </div>
+
+      <div class="card span12">
+        <h2>Backtesting &amp; validation (real data · benchmark · walk-forward · DSR/PBO)</h2>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+          <select id="bt-product"></select>
+          <select id="bt-strategy">
+            <option value="trend">trend</option>
+            <option value="meanrev">meanrev</option>
+            <option value="breakout">breakout</option>
+          </select>
+          <button id="btn-bt">Run single-strategy backtest</button>
+          <button id="btn-bt-comp" style="background:#6c5ce7">Validate REAL ensemble ▶</button>
+          <span id="bt-status" style="color:var(--dim)"></span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <pre id="bt-result">Run a backtest, or "Validate REAL ensemble" for the composite system vs buy-and-hold with Deflated Sharpe / PBO / walk-forward gates…</pre>
+          <canvas id="chart-bt" height="150"></canvas>
+        </div>
+      </div>
+
+    </div>
+  </details>
 </div>
 
 <div class="grid" id="view-ml" style="display:none">
@@ -983,10 +1079,25 @@ async function refresh(){
       $('#stance-now').textContent=`${icon} ${sc.label} (${(sc.score*100).toFixed(0)}%) — risk×${sc.risk_mult} gate ${sc.conf_gate}`;
       $('#stance-now').title=(sc.reasons||[]).join('\n');
     }
-    $('#tbl-pos tbody').innerHTML=(st.positions||[]).map(p=>
+    // core holdings live in their own book (app/strategies/core.py), not in
+    // st.positions — list them too so every open holding is visible
+    const coreRows=Object.entries(((st.core_holding||{}).positions)||{}).map(([a,p])=>{
+      const px=p.price||p.entry, u=p.qty*(px-p.entry);
+      return `<tr><td>${a} <span class="tag" style="background:#1d2f3a;color:#9fd3ff">CORE</span></td>
+      <td class="mono">${fmt(p.qty,6)}</td><td>${fmt(p.entry)}</td><td>${fmt(px)}</td>
+      <td colspan="2" style="color:var(--dim)">trend exit</td>
+      <td class="${cls(u)}">${fmt(u)}</td></tr>`;}).join('')
+      + Object.entries(st.exploration||{}).flatMap(([n,mbr])=>Object.entries(mbr.positions||{}).map(([a,p])=>{
+      const px=p.price||p.entry, u=p.qty*(px-p.entry);
+      return `<tr><td>${a} <span class="tag" style="background:#2a1d3a;color:#d3b3ff" title="${n}">EXPLORE</span>
+      <span style="color:var(--dim);font-size:11px">${n}</span></td>
+      <td class="mono">${fmt(p.qty,6)}</td><td>${fmt(p.entry)}</td><td>${fmt(px)}</td>
+      <td colspan="2" style="color:var(--dim)">signal exit</td>
+      <td class="${cls(u)}">${fmt(u)}</td></tr>`;})).join('');
+    $('#tbl-pos tbody').innerHTML=((st.positions||[]).map(p=>
       `<tr><td>${p.product} ${p.side<0?'<span class="tag" style="background:#3a1d1d;color:#ff9f9f">SHORT</span>':''}</td><td class="mono">${fmt(p.qty,6)}</td><td>${fmt(p.entry)}</td>
       <td>${fmt(p.price)}</td><td>${fmt(p.stop)}</td><td>${fmt(p.take)}</td>
-      <td class="${cls(p.unrealized)}">${fmt(p.unrealized)}</td></tr>`).join('')
+      <td class="${cls(p.unrealized)}">${fmt(p.unrealized)}</td></tr>`).join('')+coreRows)
       ||'<tr><td colspan="7" style="color:var(--dim)">no open positions</td></tr>';
 
     $('#tbl-closed tbody').innerHTML=(tr.closed||[]).slice(-8).reverse().map(t=>
@@ -1554,6 +1665,44 @@ async function refreshTearsheet(){
 }
 $('#ts-exhedge').onchange=refreshTearsheet;
 refreshTearsheet(); setInterval(refreshTearsheet,10000);
+
+function scEsc(s){return String(s==null?'—':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function refreshScorecard(){
+  try{
+    const r=await fetch('/api/scorecard',{cache:'no-store'}); if(!r.ok) return;
+    const s=await r.json(), L=s.live||{}, G=s.gates||{}, ch=s.champion||{};
+    const pct=v=>v==null?'—':(v>0?'+':'')+Number(v).toFixed(2)+'%';
+    const col=(a,b)=>a==null||b==null?'':(a>=b?'#7fe0a7':'#ff7675');
+    const rows=Object.entries(s.candidates||{}).map(([n,c])=>`<tr>
+      <td>${n===ch.name?'🏆 ':''}${scEsc(n)}</td><td>${scEsc(c.sharpe)}</td>
+      <td>${scEsc((c.halves||[]).join(' / '))}</td><td>${scEsc(c.cagr_pct)}%</td>
+      <td>${scEsc(c.max_dd_pct)}%</td><td>${scEsc(c.deflated_sharpe)}</td>
+      <td>${scEsc(c.forward_days)}</td><td>${c.eligible?'✅':'—'}</td></tr>`).join('');
+    const learners=Object.entries(G.learners||{}).map(([n,a])=>`${scEsc(n)} ${a?'on':'off'}`).join(' · ');
+    $('#scorecard').innerHTML=`
+      <div class="kv"><span>Live since forward baseline (${scEsc(L.days)} days)</span>
+        <b style="color:${col(L.account_return_pct,L.btc_hold_pct)}">${pct(L.account_return_pct)}</b></div>
+      <div class="kv"><span>…holding BTC instead</span><b>${pct(L.btc_hold_pct)}</b></div>
+      <div class="kv"><span>…holding BTC+ETH instead</span><b>${pct(L.btc_eth_hold_pct)}</b></div>
+      <div class="kv"><span>Core runs</span><b>${scEsc(ch.name)} (${scEsc((s.core||{}).allocation_pct)}% of account)</b></div>
+      ${Object.keys(s.exploration||{}).length?`<table style="width:100%;margin-top:8px;font-size:12px"><thead><tr>
+        <th>Exploration strategy</th><th>Status</th><th>Capital</th><th>Equity</th><th>Return</th><th>30-day</th><th>Trades</th></tr></thead><tbody>${
+        Object.entries(s.exploration).map(([n,e])=>`<tr><td>${scEsc(n)}</td>
+        <td style="color:${e.status==='active'?'#7fe0a7':'#ff7675'}">${scEsc(e.status)}</td>
+        <td>${fmt(e.capital)}</td><td>${fmt(e.equity)}</td>
+        <td class="${cls(e.nav_return_pct)}">${pct(e.nav_return_pct)}</td>
+        <td class="${cls(e.r30_pct)}">${pct(e.r30_pct)}</td><td>${scEsc(e.trades)}</td></tr>`).join('')}</tbody></table>`:''}
+      <table style="width:100%;margin-top:8px;font-size:12px"><thead><tr>
+        <th>Candidate</th><th>Sharpe</th><th>Halves</th><th>CAGR</th><th>Max DD</th>
+        <th>Deflated Sharpe</th><th>Forward days</th><th>Promotable</th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="8">research loop has not run yet</td></tr>'}</tbody></table>
+      <div style="color:var(--dim);font-size:11px;margin-top:6px">
+        Trials counted for deflated Sharpe: ${scEsc(s.trials_counted)} ·
+        hourly bot: ${scEsc(G.hourly_bot_mode)} → ${G.hourly_bot_active?'ON':'OFF'} (replay: ${scEsc(G.hourly_replay_verdict)}) ·
+        learners: ${learners||'—'} · data store last sync ${scEsc((s.data||{}).store_age_hours)}h ago</div>`;
+  }catch(e){}
+}
+refreshScorecard(); setInterval(refreshScorecard,30000);
 
 // backtest
 const PRODUCTS=['BTC-USD','ETH-USD','SOL-USD','DOGE-USD','LINK-USD','AVAX-USD'];

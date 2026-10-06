@@ -19,7 +19,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ----------------------------------------------------------------- A1
-def test_sitout_does_not_zero_conviction_scale():
+def test_sitout_does_not_zero_conviction_scale(monkeypatch):
+    from app import settings
+    real_get = settings.get
+    monkeypatch.setattr(settings, "get",                 # live default is off
+                        lambda k: "on" if k == "rl_risk_mode" else real_get(k))
     from app.risk.manager import risk, RL_CONVICTION_FLOOR
     from app.learn.rl_risk import agent
     # force the agent to sit out

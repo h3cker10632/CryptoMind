@@ -37,6 +37,12 @@ class RiskManager:
         self.halt_reason = ""
         self.cooldowns = {}          # product -> ts of last exit/entry
         self.risk_scale = 1.0        # adaptive multiplier
+        # REPLAY BRAKE: whole-portfolio risk multiplier set by the automatic
+        # strategy replay (orchestrator.replay_loop). 1.0 = no brake; drops to
+        # `replay_brake_mult` while the replay is negative in BOTH halves of its
+        # window. A risk control, not a forecast — see _replay_brake_for().
+        self.replay_brake = 1.0
+        self.replay_brake_reason = ""
         self.consecutive_losses = 0
         # CONFORMAL stop calibrator: learns the ATR stop multiple that contains
         # (1-alpha) of realized adverse excursions, so the stop sits just
@@ -148,6 +154,11 @@ class RiskManager:
         # otherwise flat equity is a locked door, not a good sit-out call.
         rl_scale = rl_agent.act(regime, dd, self.consecutive_losses, equity,
                                 tradable=self._tradable_next)
+        # Gated off (app/learn/gate.py): the agent keeps learning, but its
+        # choice is not applied.
+        from ..learn.gate import active as _learner_active
+        if not _learner_active("rl_risk"):
+            rl_scale = 1.0
         rl_sit_out = (rl_scale == 0.0)
         # CRITICAL CONTRACT: sit-out means "skip discretionary probes / extra
         # names", NOT "size a cost-viable conviction trade to zero". So the
@@ -294,7 +305,8 @@ class RiskManager:
         never zeroes, a trade the rest of the stack still wants."""
         from .stance import stance
         st = stance.current()
-        scale = risk_status["effective_risk_scale"] * st["risk_mult"]
+        scale = (risk_status["effective_risk_scale"] * st["risk_mult"]
+                 * getattr(self, "replay_brake", 1.0))
         ml_mult = 0.4 + 0.6 * max(0.0, min(1.0, ml_confidence))   # 0.4x .. 1.0x
         # ---- meme risk envelope ----
         # A meme position risks a fraction of the normal dollar risk and uses a
@@ -329,7 +341,8 @@ class RiskManager:
         # widen the target to the cost floor — doing that quietly distorts the
         # stop and, on a low-ATR penny coin, balloons notional straight to the
         # position cap (exactly the PUMP-USD failure).
-        round_trip = 2 * tv("fee_rate") + 2 * tv("slippage_bps") / 1e4
+        from ..execution.costs import round_trip_cost
+        round_trip = round_trip_cost()
         min_take_dist = round_trip * tv("cost_multiple") * price
         if take_dist < min_take_dist:
             return 0, 0, 0        # unprofitable after costs -> no trade
@@ -360,7 +373,7 @@ class RiskManager:
         caps were silently computed against another asset's volume). We fall
         back to the old hack only if no product was supplied.
 
-        Uses the market feed's stored 5-min candles (288 bars ≈ 24h). Returns
+        Uses the market feed's stored candles (the last 24h of native bars). Returns
         None if we can't estimate it (then no liquidity cap is applied).
         """
         from ..data.market import market
@@ -371,7 +384,8 @@ class RiskManager:
         cs = market.candles.get(p, [])
         if len(cs) < 12:
             return None
-        recent = cs[-288:]
+        from ..config import BARS_PER_DAY
+        recent = cs[-BARS_PER_DAY:]
         base_vol = sum(c[5] for c in recent)      # base-asset volume
         return base_vol * price
 

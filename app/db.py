@@ -535,6 +535,22 @@ def order_events(intent_id=None, limit=200):
         return [dict(r) for r in rows]
 
 
+def prune_signals(retention_sec=60 * 86400):
+    """Drop SCORED/abandoned strategy signals older than the window. They were
+    logged every 20s tick before learning v2 (1.35M rows); the learner only
+    ever reads recent ones. Unscored rows are kept until they're scored."""
+    cutoff = time.time() - retention_sec
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM signal_scores WHERE scored=1 AND ts < ?", (cutoff,))
+
+
+def prune_events(retention_sec=90 * 86400):
+    """Keep ~3 months of the event log."""
+    cutoff = time.time() - retention_sec
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+
+
 def prune_equity(retention_sec=EQUITY_RETENTION_SEC):
     """Delete equity samples older than the retention window (called rarely)."""
     cutoff = time.time() - retention_sec

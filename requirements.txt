@@ -4,6 +4,10 @@ httpx>=0.27
 websockets>=12.0
 Pillow>=10.0
 numpy>=1.26
+# Learned trade filter (app/learn/trade_filter.py) uses gradient-boosted trees
+# when scikit-learn is installed; without it, it falls back to a simpler
+# built-in numpy model automatically.
+scikit-learn>=1.3
 # Optional: JIT-accelerates the composite backtester's feature precompute
 # (~20x). The code falls back to a bit-identical pure-Python kernel if absent.
 numba>=0.59

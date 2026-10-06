@@ -9,6 +9,7 @@ critique flagged as missing:
     maintenance buffer), the position is force-closed, exactly as a venue
     would liquidate it. This stops shorts from being unrealistically riskless.
 """
+import math
 import time
 import uuid
 from ..config import START_CASH
@@ -19,6 +20,17 @@ from .. import money
 
 class Position(dict):
     pass
+
+
+def _valid_price(px):
+    """A fill/mark price is usable only if it is a finite, strictly positive
+    number. A 0 / NaN / negative print (a broken ticker tick) must NEVER mark,
+    stop out or fill a position — that is exactly how PUMP-USD was "sold" at
+    $0.00 for a -$13.7k paper loss."""
+    try:
+        return px is not None and math.isfinite(px) and px > 0
+    except TypeError:
+        return False
 
 
 class PaperBroker:
@@ -95,7 +107,7 @@ class PaperBroker:
 
     def open(self, product, direction, notional, price, stop, take, reason,
              votes=None, regime_at_entry=None, is_hedge=False, atr_at_entry=None,
-             mtf_at_entry=None):
+             mtf_at_entry=None, maker=False):
         """direction: +1 long, -1 short (margin-style).
 
         `votes` (per-strategy vote dict at entry) and `regime_at_entry` are
@@ -111,9 +123,18 @@ class PaperBroker:
 
         `atr_at_entry` is stamped so the conformal stop calibrator can normalise
         the trade's realized adverse excursion into ATR units at close.
+
+        `maker=True` is a filled LIMIT order: it fills exactly at `price` (the
+        limit) with no slippage and pays the maker fee.
         """
-        fill = self._fill_price(price, "buy" if direction > 0 else "sell", product)
-        fee = notional * tv("fee_rate")
+        if not _valid_price(price):
+            return None
+        if maker:
+            fill = money.round_price(product, price) if product else price
+            fee = notional * tv("maker_fee_rate")
+        else:
+            fill = self._fill_price(price, "buy" if direction > 0 else "sell", product)
+            fee = notional * tv("fee_rate")
         if notional + fee > self.cash:
             return None
         # enforce exchange lot/step + min-notional like a real venue would
@@ -129,6 +150,8 @@ class PaperBroker:
             stop=stop, take=take, water=fill, opened=time.time(),
             reason=reason, fees=fee)
         pos["_ledger_id"] = ledger_id
+        if maker:
+            pos["maker_entry"] = True
         # MAE tracking: worst adverse price seen since entry, seeded at entry.
         # `mae_price` is the extreme AGAINST the position (min for long, max for
         # short); the stop calibrator reads it at close.
@@ -167,22 +190,33 @@ class PaperBroker:
     def buy(self, product, notional, price, stop, take, reason):
         return self.open(product, 1, notional, price, stop, take, reason)
 
-    def sell(self, product, price, reason):
-        """Close a position (long OR short). Name kept for compatibility."""
+    def sell(self, product, price, reason, maker=False):
+        """Close a position (long OR short). Name kept for compatibility.
+        `maker=True`: a resting limit (e.g. take-profit) filled exactly at
+        `price` with the maker fee and no slippage."""
+        if not _valid_price(price):
+            # refuse to close on a junk print; the position stays open and is
+            # re-evaluated next tick against a sane price
+            db.log_event("error", f"refused close of {product} at invalid "
+                                  f"price {price!r} ({reason})")
+            return None
         pos = self.positions.pop(product, None)
         if not pos:
             return None
         close_id = f"crypto-close-{pos.get('_ledger_id') or uuid.uuid4().hex}"
         side = pos.get("side", 1)
+        fee_rate = tv("maker_fee_rate") if maker else tv("fee_rate")
         if side > 0:
-            fill = self._fill_price(price, "sell", product)
+            fill = (money.round_price(product, price) if maker and product else
+                    price if maker else self._fill_price(price, "sell", product))
             gross = pos["qty"] * fill
-            fee = gross * tv("fee_rate")
+            fee = gross * fee_rate
             self._settle(close_id, gross - fee, f"close {product}")
             pnl = gross - fee - pos["qty"] * pos["entry"] - pos["fees"]
         else:
-            fill = self._fill_price(price, "buy", product)      # buy to cover
-            fee = pos["qty"] * fill * tv("fee_rate")
+            fill = (money.round_price(product, price) if maker and product else
+                    price if maker else self._fill_price(price, "buy", product))
+            fee = pos["qty"] * fill * fee_rate
             move = pos["qty"] * (pos["entry"] - fill)  # short gains on drop
             self._settle(close_id, pos["margin"] + move - fee, f"close {product}")
             pnl = move - fee - pos["fees"]
@@ -206,7 +240,7 @@ class PaperBroker:
     def manage(self, market, trail_atr_mult, atr_lookup):
         for p in list(self.positions.keys()):
             px = market.price(p)
-            if px is None:
+            if not _valid_price(px):
                 continue
             pos = self.positions[p]
             side = pos.get("side", 1)
@@ -227,7 +261,7 @@ class PaperBroker:
                 if px <= pos["stop"]:
                     self.sell(p, px, "stop-loss/trail")
                 elif px >= pos["take"]:
-                    self.sell(p, px, "take-profit")
+                    self._take_profit(p, pos, px)
                 elif self._giveback_hit(pos, px):
                     self.sell(p, px, "peak-giveback")
             else:
@@ -248,9 +282,17 @@ class PaperBroker:
                 if px >= pos["stop"]:
                     self.sell(p, px, "stop-loss/trail")
                 elif px <= pos["take"]:
-                    self.sell(p, px, "take-profit")
+                    self._take_profit(p, pos, px)
                 elif self._giveback_hit(pos, px):
                     self.sell(p, px, "peak-giveback")
+
+    def _take_profit(self, p, pos, px):
+        """A position entered by limit order keeps its take-profit as a RESTING
+        limit: it fills exactly at the target with the maker fee. Market-entered
+        positions take profit at market (taker)."""
+        if pos.get("maker_entry") and _valid_price(pos.get("take")):
+            return self.sell(p, pos["take"], "take-profit", maker=True)
+        return self.sell(p, px, "take-profit")
 
     def _giveback_hit(self, pos, px):
         """Peak-giveback trailing exit (NOFX idea): lock in a WINNER that hands

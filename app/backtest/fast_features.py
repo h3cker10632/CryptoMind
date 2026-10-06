@@ -204,4 +204,20 @@ def precompute(candles):
             "mom_1h": float(mom_1h[i]), "mom_4h": float(mom_4h[i]),
             "imbalance": 0.0, "spread_bps": 0.0,
         }
+        feats[i].update(_slow_feats(highs, lows, closes, i))
     return feats
+
+
+def _slow_feats(highs, lows, closes, i):
+    """Slow-horizon keys (ema24/ema96/mom_72/hi48/lo48) for bar i, computed
+    with the SAME windowed arithmetic as features_from_ohlcv (it reseeds the
+    EMA at the window start, so passing just the trailing window is exact)."""
+    from ..data.features import _ema
+    n = i + 1
+    return {
+        "ema24": _ema(closes[i - 23:n], 24) if n >= 24 else None,
+        "ema96": _ema(closes[i - 95:n], 96) if n >= 96 else None,
+        "mom_72": closes[i] / closes[i - 72] - 1 if n >= 73 else None,
+        "hi48": max(highs[i - 48:i]) if n >= 49 else None,
+        "lo48": min(lows[i - 48:i]) if n >= 49 else None,
+    }

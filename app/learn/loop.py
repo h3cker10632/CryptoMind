@@ -20,7 +20,8 @@ Layers
 """
 import time, threading, asyncio
 from collections import deque
-from ..config import ALLOC_LOOKBACK, SIGNAL_EVAL_HORIZON_SEC, ALLOC_TEMPERATURE
+from ..config import (ALLOC_LOOKBACK, SIGNAL_EVAL_HORIZON_SEC, ALLOC_TEMPERATURE,
+                      CANDLE_GRANULARITY, DISABLED_STRATEGIES)
 from .. import db
 from ..signals.engine import STRATEGIES
 from .online_model import (model, committee, build_x, FEAT_NAMES, N_IN,
@@ -30,18 +31,29 @@ from .drift import detector, page_hinkley
 from .rl_risk import agent as rl_agent
 from .evolution import evolution
 
-ML_HORIZON_SEC = 1800          # online model label horizon (30 min), primary head
+# Online-model label horizon for the PRIMARY head = the trading horizon. It
+# was 30 min, i.e. the model learned to predict moves far too small to ever pay
+# the ~1.2% round-trip cost. Samples are now taken once per native bar.
+ML_HORIZON_SEC = SIGNAL_EVAL_HORIZON_SEC
 # Auxiliary multi-horizon labels (Phase 2). Each entry is (aux_head_index,
 # horizon_seconds): a FAST head that labels in minutes for quick feedback, and a
 # SLOW head that carries longer-context structure. These train the aux heads in
 # online_model (shared hidden layer) — the primary 30-min head is unchanged.
 # Kept within the 3h price-history / candle window so labels can be resolved.
-AUX_HORIZONS = [(0, 300), (1, 7200)]   # head 0 = 5 min, head 1 = 2 h
-SKIP_EVAL_HORIZON_SEC = 1800   # Phase 3: counterfactual horizon for skipped
-                               # conviction entries (30 min — one swing leg)
+AUX_HORIZONS = [(0, 4 * 3600), (1, 72 * 3600)]   # head 0 = 4 h, head 1 = 72 h
+SKIP_EVAL_HORIZON_SEC = SIGNAL_EVAL_HORIZON_SEC   # Phase 3: counterfactual
+                               # horizon for skipped conviction entries
 EVOLVE_EVERY_SEC = 1200        # a GA run every 20 min, rotating the universe
 WEIGHT_SMOOTH = 0.35           # EMA smoothing of bandit draws (stability)
-LOOKUP_GIVE_UP_SEC = 3 * 3600  # abandon unscored signals after this (no train)
+# abandon an unscorable signal this long AFTER its horizon has elapsed
+LOOKUP_GIVE_UP_SEC = 6 * 3600
+# nearest-price lookups may be off by up to one native bar
+PRICE_LOOKUP_TOL_SEC = max(600, CANDLE_GRANULARITY)
+
+
+def _bandit_enabled():
+    from .gate import active
+    return active("bandit")
 
 
 class Learner:
@@ -95,13 +107,19 @@ class Learner:
                 best = (t, px)
         if best and abs(best[0] - ts) < 600:
             return best[1]
+        # candle fallback: a candle's ts is its OPEN; use the close of the bar
+        # that contains `ts` (i.e. the last bar opened at or before ts) so 1h
+        # bars resolve labels hours/days back without look-ahead.
         if market is not None:
-            closest = None
+            containing = None
             for c in market.candles.get(product, []):
-                if closest is None or abs(c[0] - ts) < abs(closest[0] - ts):
-                    closest = c
-            if closest and abs(closest[0] - ts) < 600:
-                return closest[4]
+                if c[0] <= ts:
+                    containing = c
+                else:
+                    break
+            if containing and ts - containing[0] < PRICE_LOOKUP_TOL_SEC \
+                    and containing[4] and containing[4] > 0:
+                return containing[4]
         return None
 
     # ------------------------------------------------ per-tick ML sampling
@@ -110,10 +128,19 @@ class Learner:
         these get labeled with forward returns for online training."""
         from ..data.derivatives import derivatives
         now = time.time()
+        last_bar = self.__dict__.setdefault("_feat_bar", {})
         for p in market.tickers:
+            # one training sample per product per native bar: sampling every
+            # 20s tick made ~180 near-duplicate, overlapping samples per bar
+            # (and at a multi-hour horizon would overflow the pending queues)
+            cs = market.candles.get(p) or []
+            bar_ts = cs[-1][0] if cs else None
+            if bar_ts is not None and last_bar.get(p) == bar_ts:
+                continue
             f = market.features(p)
             if not f:
                 continue
+            last_bar[p] = bar_ts
             asset_sent, _ = nlp.asset_score(p)
             _stamp_advisor_leans(f, p)
             x = build_x(f, asset_sent, nlp.market_sentiment,
@@ -147,7 +174,8 @@ class Learner:
                 # stream for a creeping breakdown of the input→return relation.
                 # Never boost a head that's already at/below a coin flip.
                 if pred is not None:
-                    target = max(-1.0, min(1.0, fwd / 0.004))
+                    from .online_model import TARGET_SCALE
+                    target = max(-1.0, min(1.0, fwd / TARGET_SCALE))
                     ph_hit = page_hinkley.add(abs(pred - target))
                     acc = model.stats()["directional_accuracy"]
                     working = (acc is not None and acc > 0.50 and model.n_updates >= 40)
@@ -363,6 +391,7 @@ class Learner:
         if entry_notional <= 0:
             return
         net_return = trade["pnl"] / entry_notional     # after fees+slippage
+        side = 1 if trade.get("side", 1) > 0 else -1
         total_w = sum(abs(v) for v in votes.values()) or 1e-9
         # `hedge` is an attributable sleeve (the market-neutral pair book) even
         # though it is not a directional strategy that votes in the composite —
@@ -372,9 +401,12 @@ class Learner:
             if strat not in attributable:
                 continue
             share = abs(v) / total_w
-            # a strategy that voted long gets the trade's return as-is;
-            # one that voted AGAINST the entry gets the inverse credit
-            aligned = net_return if v > 0 else -net_return
+            # A strategy that voted WITH the trade's side gets the trade's net
+            # return as-is; one that voted AGAINST it gets the inverse credit.
+            # BUG FIXED: this used `v > 0` (voted long) regardless of side, so
+            # on every SHORT the correct short-voters were punished for a
+            # winning short and the long-voters were rewarded for it.
+            aligned = net_return if v * side > 0 else -net_return
             # weight trade outcomes over signal outcomes (real money, real
             # costs), and losing trades N-times harder than winners —
             # "every losing trade is a lesson worth 5x more than a winner"
@@ -414,8 +446,8 @@ class Learner:
         """Fractional round-trip cost (both fills): 2x(fee + slippage). Matches
         the cost the paper broker actually charges, so the counterfactual return
         is comparable to a real closed trade's net PnL."""
-        from ..tunables import tv
-        return 2.0 * (tv("fee_rate") + tv("slippage_bps") / 1e4)
+        from ..execution.costs import round_trip_cost
+        return round_trip_cost()
 
     def _score_skips(self, market):
         """Mature skipped-entry counterfactuals and teach the bandit the net-of-
@@ -448,7 +480,8 @@ class Learner:
             total_w = sum(abs(v) for v in votes.values()) or 1e-9
             for strat, v in votes.items():
                 share = abs(v) / total_w
-                aligned = net if v > 0 else -net
+                # same side-aware credit as on_trade_closed (was `v > 0`)
+                aligned = net if v * direction > 0 else -net
                 w = w0 * (loss_mult if aligned < 0 else 1.0)
                 self.bandit.update(regime, strat, aligned * share * w)
             self.skip_attributions += 1
@@ -476,19 +509,17 @@ class Learner:
         warmup/just-reset preds are abstentions now, so a near-empty acc_window
         must not trigger a reset that would wipe a head before it has been fairly
         measured (this was the ml-sleeve doom loop)."""
-        st = model.stats()
-        acc = st["directional_accuracy"]
-        n_scored = st.get("acc_samples", 0)
-        return (model.n_updates >= 40 and acc is not None
-                and n_scored >= 20 and acc <= 0.50)
+        from .online_model import confidently_broken
+        return confidently_broken(model.stats())
 
     def _silent_sleeves(self):
-        silent = set()
+        silent = set(DISABLED_STRATEGIES)
         if not self._evolved_live():
             silent.add("evolved")
         # ml votes 0 until acc > 50%; don't give it a 4% floor in the meantime
         acc = model.stats()["directional_accuracy"]
-        if acc is None or acc <= 0.50:
+        from .gate import active
+        if acc is None or acc <= 0.50 or not active("online_ml"):
             silent.add("ml")
         return silent
 
@@ -561,9 +592,9 @@ class Learner:
         self.current_regime_label = regime_label
 
         # 1. score matured strategy signals.
-        # The GROSS (pre-cost) forward return measures a sleeve's DIRECTIONAL
-        # skill. We store it for the dashboard AND feed it to the bandit as a
-        # separate, heavily-discounted teacher (signal_learn_weight). Rationale:
+        # The GROSS forward return is stored for the dashboard; the bandit is
+        # fed the NET-of-cost version (see below) at the trading horizon.
+        # Rationale for using the signal stream at all:
         # closed-trade PnL is the premium signal but is desperately sparse (a
         # handful of fills/hour across all regime×strategy arms — it can take
         # weeks to fill one arm to NET_EDGE_N). The signal stream is 100-1000x
@@ -585,13 +616,19 @@ class Learner:
                 db.score_signal(s["rowid"], fwd)   # store GROSS fwd for the UI
                 n_scored += 1
                 # feed the bandit a discounted, clipped, confidence-weighted
-                # directional lesson (only for arms it actually allocates to)
-                if sig_w > 0 and s["strategy"] in STRATEGIES:
-                    aligned = max(-sig_clip, min(sig_clip, fwd))
+                # lesson (only for arms it actually allocates to). NET of the
+                # round-trip cost: the bandit must learn what trading the signal
+                # would EARN, not merely whether it guessed direction — the gross
+                # stream (+5 bps avg, 1.35M samples) outvoted ~450 real losing
+                # trades ~40:1 and kept the losing sleeves funded.
+                if sig_w > 0 and s["strategy"] in STRATEGIES \
+                        and s["strategy"] not in DISABLED_STRATEGIES:
+                    net = fwd - self._round_trip_cost()
+                    aligned = max(-sig_clip, min(sig_clip, net))
                     reg = s.get("regime") or "unknown"
                     self.bandit.update(reg, s["strategy"],
                                        aligned * s["confidence"] * sig_w)
-            elif now - s["ts"] > LOOKUP_GIVE_UP_SEC:
+            elif now - s["ts"] > SIGNAL_EVAL_HORIZON_SEC + LOOKUP_GIVE_UP_SEC:
                 db.abandon_signal(s["rowid"])
                 n_abandon += 1
             else:
@@ -641,7 +678,14 @@ class Learner:
 
         # 3. Thompson-sampled weights. Silent sleeves (no evolved champion, ML
         # ≤ coin-flip) are hard-zeroed — not floored at 4%, not EMA-carried.
-        self.weights = self._allocate(regime_label, silent)
+        # The bandit keeps learning either way; while gated off (see gate.py) its
+        # draws aren't used and live sleeves get equal weight.
+        if _bandit_enabled():
+            self.weights = self._allocate(regime_label, silent)
+        else:
+            live = [k for k in STRATEGIES if k not in silent]
+            self.weights = {k: (round(1.0 / len(live), 4) if k in live else 0.0)
+                            for k in STRATEGIES}
 
         # 4. online model training + drift check
         n_trained = self._train_online_model(market)
@@ -671,7 +715,9 @@ class Learner:
 
     # ------------------------------------------------ introspection
     def full_stats(self):
+        from .gate import status as _gate_status
         return {
+            "learner_gate": _gate_status(),
             "weights": self.weights,
             "regime": self.current_regime_label,
             "strategy_stats": self.strategy_stats,

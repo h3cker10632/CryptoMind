@@ -34,6 +34,15 @@ class DirectionLearner:
         # that replaces the hard mtf_align threshold once it has enough evidence.
         from .direction_conformal import DirectionConformalGate
         self.conformal = DirectionConformalGate()
+        # None = follow the evidence gate (app/learn/gate.py); True/False
+        # forces it (the learner ablation forces it on for its own copy).
+        self.enabled = None
+
+    def _on(self):
+        if self.enabled is not None:
+            return self.enabled
+        from .gate import active
+        return active("direction")
 
     @staticmethod
     def _tv(key, default):
@@ -92,6 +101,8 @@ class DirectionLearner:
     def adjust(self, regime, composite, mtf_align):
         """Apply the learned bias to a composite and report whether the sign
         flipped. Returns (new_composite, flipped)."""
+        if not self._on():
+            return composite, False
         b = self.bias(regime, composite)
         if b == 0.0:
             return composite, False
@@ -113,7 +124,8 @@ class DirectionLearner:
         ambiguous set — we fall back to the original hard-threshold check so
         behaviour is unchanged cold-start."""
         try:
-            cv, cwhy = self.conformal.veto(direction, mtf_align)
+            cv, cwhy = (self.conformal.veto(direction, mtf_align) if self._on()
+                        else (False, ""))
         except Exception:
             cv, cwhy = False, ""
         if cv:

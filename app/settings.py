@@ -21,13 +21,16 @@ DEFAULTS = {
     # auto = system scores current conditions and adapts on its own.
     "trade_mode": "auto",
     # Market-neutral pair hedging (2.7-sigma relative-strength divergence,
-    # long the laggard / short the leader in equal notional).
-    "hedge_enabled": True,
+    # long the laggard / short the leader in equal notional). OFF by default:
+    # each pair pays FOUR taker fills (~2.4% round trip) to harvest a spread
+    # that reverted only ~0.01% on average over 23-min holds — it lost
+    # -$17.4k of paper capital, the largest strategy loss in the book.
+    "hedge_enabled": False,
     # Optional LLM advisor sleeve. When True (and an API key is set via
     # CRYPTOMIND_LLM_KEY / OPENAI_API_KEY) the advisor contributes ONE
     # directional vote that the bandit weights like any other strategy — it is
     # never the driver. Inert with no key configured (no cost, no effect).
-    "llm_advisor_enabled": True,
+    "llm_advisor_enabled": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     # LLM advisor credentials/config, settable from the dashboard (no file edit).
     # llm_api_key is a SECRET (stored in .secrets.json, masked in the API, never
     # committed). Blank model/base fall back to the Gemini defaults in the
@@ -40,7 +43,7 @@ DEFAULTS = {
     # artifact exists at model_artifact/ or $CRYPTOMIND_MODEL_DIR) the advisor
     # contributes ONE directional vote that the bandit weights like any other
     # strategy — never the driver. Inert with no artifact present (no effect).
-    "model_advisor_enabled": True,
+    "model_advisor_enabled": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     # Autonomous, metric-gated ML retraining (closes the crypto_ml_lab loop
     # without operator input). When True AND crypto_ml is installed, the system
     # periodically checks whether enough NEW labeled rows have matured and, if
@@ -49,7 +52,7 @@ DEFAULTS = {
     # (OOS Sharpe / trade count / beats-baseline). Enabling it on a machine
     # without crypto_ml simply records "lab not installed" and promotes
     # nothing. Governance note: promotion is measurement-gated, never on vibes.
-    "ml_autotrain_enabled": True,
+    "ml_autotrain_enabled": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     "ml_autotrain_min_new_labels": 200,  # retrain only after N new matured labels
     "ml_autotrain_check_sec": 3600,      # how often the loop checks the trigger
     "ml_lab_cmd": "python -m crypto_ml.cli",  # base command to invoke the lab
@@ -73,7 +76,23 @@ DEFAULTS = {
     # Predictive, self-learning early loss-cut. When True, a losing position the
     # system confidently expects to keep moving against it is cut before the
     # hard stop. Learns hold-vs-cut per market state from realized outcomes.
+    # Master switch; whether it actually acts is `exit_advisor_mode` below.
     "exit_advisor_enabled": True,
+    # ---- learner evidence gate (app/learn/gate.py) ----
+    # Each learner: "off", "on", or "auto" = drives live decisions only while
+    # the weekly learner ablation (tools/learner_ablation.py) shows it beating
+    # the plain strategy in BOTH halves of the replay (sizing learners must
+    # also beat a fixed size of the same average). Gated-off learners keep
+    # learning in the background. On 2026-10-02 none passed.
+    "bandit_mode": "auto",              # Thompson strategy weights (off = equal)
+    "direction_learner_mode": "auto",   # regime bias + conformal HTF veto
+    "exit_advisor_mode": "auto",        # predictive loss-cut
+    "rl_risk_mode": "auto",             # Q-learning risk scale (off = 1.0)
+    "ml_vote_mode": "auto",             # online-model committee vote
+    "learner_ablation_interval_sec": 604800,   # re-run the ablation weekly
+    "data_sync_interval_sec": 86400,    # refresh the market data store daily
+    "research_loop_interval_sec": 86400,    # champion / challenger loop daily
+    "learner_gate_max_age_days": 10,    # older evidence counts as none
     # Learns whether the DISCRETIONARY early exits (pattern_exit, signal-flip)
     # are actually earning their keep per regime, and dials their trigger bar
     # up/down accordingly. Never touches stop-loss/take-profit/kill-switch.
@@ -90,12 +109,12 @@ DEFAULTS = {
     # ---- External-signal ingest (crawl4ai / Maxun / any standalone producer) ----
     # Master switch for accepting ingested external rows via /api/ingest/push.
     # When False the endpoint rejects pushes; the store is still readable.
-    "ingest_enabled": True,
+    "ingest_enabled": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     # When True, the LLM advisor injects the freshest crawled web signal +
     # headlines (from app.data.ingest) into its per-asset context, so its
     # bandit-weighted vote reflects current news. Measured, never a blind copy.
     # Requires the LLM advisor to be enabled + keyed to have effect.
-    "llm_web_context": True,
+    "llm_web_context": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     # Strategy Researcher: autonomous discovery of NEW strategy shapes (see
     # app/learn/researcher.py). When True the system periodically searches a safe
     # rule DSL, validates each candidate on a purged walk-forward + deflated-Sharpe
@@ -103,8 +122,8 @@ DEFAULTS = {
     # ensemble arm (its live weight is still learned from realized PnL).
     # researcher_use_llm additionally asks the LLM advisor to PROPOSE
     # candidate specs (still gated identically); needs the LLM advisor keyed.
-    "researcher_enabled": True,
-    "researcher_use_llm": True,
+    "researcher_enabled": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
+    "researcher_use_llm": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     "researcher_candidates": 60,      # systematic candidates sampled per run
     # crawl4ai producer config (used by the standalone tools/crawl4ai_signal):
     # JSON mapping asset symbol -> list of URLs to crawl. Blank = nothing to do.
@@ -118,7 +137,7 @@ DEFAULTS = {
     # crawls/scores sources off the hot path and pushes rows into the ingest seam.
     # The core imports the producer lazily + defensively, so a missing crawl4ai
     # (Apache-2.0, optional) never affects trading.
-    "crawl4ai_producer_enabled": True,
+    "crawl4ai_producer_enabled": False,   # rebuild step 5: only fed the hourly bot (gated off by evidence)
     "crawl4ai_interval_sec": 900,     # producer cadence (15 min default)
     # Real on-chain execution. Inert unless this is True AND a pm_wallet_key
     # secret is present AND py-clob-client is installed (see execution.py).
@@ -138,13 +157,99 @@ DEFAULTS = {
     # envelope (smaller size, wider stops, concurrent + total exposure caps).
     # High variance by nature. Enabled per the operator's request to "see how
     # it plays out"; toggle off any time on the dashboard.
-    "meme_trading_enabled": True,
+    "meme_trading_enabled": False,
+    # Automatic strategy replay (app/backtest/replay.py): re-backtest the LIVE
+    # strategy over the whole trading universe on fresh hourly history every
+    # `replay_interval_sec`, AND immediately whenever a new coin joins the
+    # universe. Results are logged, saved to reports/replay_latest.json and
+    # pushed as an alert. Informational only — it never changes trading.
+    # Entry order type for the paper broker: "maker" = post-only LIMIT order at
+    # the signal price that fills only if price trades THROUGH it within
+    # `maker_timeout_sec` (maker fee, no slippage; unfilled orders are
+    # cancelled — some trades are missed, which is the honest cost of the
+    # cheaper fee). "taker" = immediate market order (taker fee + slippage).
+    # Stops/flips/loss-cuts are always taker; take-profits are maker when
+    # entries are.
+    "entry_order_type": "maker",
+    # Chop filter (pause new entries while the whole market is no more
+    # directional than noise): "off", "on", or "auto" = ON only while the
+    # daily replay shows the filter beats no-filter in BOTH halves of its
+    # history window (the bot gathers the evidence; nobody hand-fits it).
+    # ON: it was the only layer that helped in both halves of the learner
+    # ablation (2026-10-02).
+    "chop_filter_mode": "on",
+    # Learned trade filter (app/learn/trade_filter.py): "off", "on", or "auto"
+    # = on only while the daily replay's walk-forward A/B shows it beating
+    # no-filter in BOTH halves.
+    "trade_filter_mode": "auto",
+    # Optional CORE holding (app/strategies/core.py): percent of account equity
+    # held in `core_assets` (comma-separated), split equally, beside the
+    # trading bot. 0 = OFF. With `core_trend_filter`, each asset is held only
+    # while its daily close is above its 50-day average.
+    "core_allocation_pct": 0,
+    # "champion": the core holds the research loop's champion strategy
+    # (app/engine/challengers.py) — backtested, forward-tracked, promoted only
+    # on evidence. "settings": the core_* settings below.
+    "core_strategy": "champion",
+    # The hourly trading bot: "off", "on", or "auto" = new entries only while
+    # its daily replay is positive in BOTH halves (it was -75%/yr on the
+    # 2026-10 replay). Existing positions are always managed to their exits.
+    "hourly_bot_mode": "auto",
+    # ---- exploration sleeve (app/strategies/exploration.py) ----
+    # fast strategies trading live paper side by side on their own slices;
+    # money follows 30-day live results; a member down `bench_drawdown` of its
+    # capital is benched (tracked, can come back after `reinstate_days`)
+    "exploration_enabled": False,
+    "exploration_allocation_pct": 50,
+    "exploration_bench_drawdown": 0.20,
+    "exploration_reinstate_days": 30,
+    # champion / challenger promotion bar (app/engine/challengers.py)
+    "research_min_forward_days": 30,
+    "research_min_dsr": 0.97,
+    # BTC/ETH: the only coins with no survivorship question (top two the whole
+    # time). On the survivorship-free universe no altcoin rule beat holding BTC.
+    "core_assets": "BTC-USD,ETH-USD",
+    "core_trend_filter": True,
+    # days in the core holding's trend average (50 = faster, 100 = steadier);
+    # core_assets may be "UNIVERSE" to apply the rule to every tracked coin
+    # 125 = middle of the plateau (Sharpe 0.9-1.17 for 50..200 days over
+    # 2017-2026); the single best cell was not chosen (selection is noise:
+    # probability of backtest overfitting 0.46 across settings)
+    "core_sma_days": 125,
+    # buffer around the average: switch in above avg x 1.02, out below
+    # avg x 0.98 — cut turnover ~13x -> ~5x a year and improved most settings
+    "core_hysteresis": 0.02,
+    # Core selection / sizing (app/backtest/daily_lab.py): "auto" = the
+    # variant the weekly daily lab found beating trend+equal on Sharpe in both
+    # halves of years of out-of-sample daily history; else trend+equal.
+    # NOT auto: the daily lab's winners (momentum, vol-target) were measured on
+    # today's coins = survivorship bias; on the point-in-time universe incl.
+    # delisted coins they did not beat holding BTC (rebuild step 3).
+    "core_selection": "trend",          # trend | momentum | rank | auto
+    "core_sizing": "equal",             # equal | inverse_vol | vol_target | auto
+    "core_top_k": 5,                    # coins held by momentum / rank
+    "core_vol_target": 0.5,             # annual volatility for vol_target sizing
+    # weekly picks split into this many slices re-picked on different days
+    # (removes pick-day luck: one weekday vs another moved Sharpe 1.03-1.37)
+    "core_tranches": 7,
+    "daily_lab_interval_sec": 604800,   # re-run the daily lab weekly
+    "daily_lab_max_age_days": 14,
+    "replay_enabled": True,
+    # Let the replay put the whole-portfolio risk brake on (tunable
+    # replay_brake_mult, default half size) while the strategy replays negative
+    # in BOTH halves. Off = replay stays purely informational.
+    "replay_brake_enabled": True,
+    "replay_interval_sec": 86400,
+    # How much hourly history the replay downloads per coin. ~40 days is one
+    # market regime; a year covers rallies, sell-offs and chop. A coin listed
+    # more recently simply contributes what exists.
+    "replay_history_days": 365,
     # Periodic full-state export. When True, the system writes a timestamped
     # JSON report (the same document as GET /api/export) to the reports/ folder
     # every `auto_export_interval_sec` seconds. The interval is operator-tunable
     # from the dashboard slider and takes effect on the next cycle (no restart).
     "auto_export_enabled": True,
-    "auto_export_interval_sec": 300,   # default: every 5 minutes
+    "auto_export_interval_sec": 14400,  # default: every 4 hours (each report is ~2.7 MB)
 
     # ---------------- Invo copy-signal study (measurement only) ----------------
     # Master switch for the Invo positioning signal *study*. This NEVER wires the
@@ -187,6 +292,18 @@ DEFAULTS = {
 }
 
 STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"},
+            "entry_order_type": {"maker", "taker"},
+            "chop_filter_mode": {"off", "on", "auto"},
+            "trade_filter_mode": {"off", "on", "auto"},
+            "bandit_mode": {"off", "on", "auto"},
+            "direction_learner_mode": {"off", "on", "auto"},
+            "exit_advisor_mode": {"off", "on", "auto"},
+            "rl_risk_mode": {"off", "on", "auto"},
+            "ml_vote_mode": {"off", "on", "auto"},
+            "core_selection": {"trend", "momentum", "rank", "auto"},
+            "core_strategy": {"champion", "settings"},
+            "hourly_bot_mode": {"off", "on", "auto"},
+            "core_sizing": {"equal", "inverse_vol", "vol_target", "auto"},
             "invo_method": {"GET", "POST"},
             "invo_positions_method": {"GET", "POST"}}
 
@@ -205,6 +322,7 @@ TEXT_KEYS = {
     # {"BTC": ["https://…/news"], "ETH": ["https://…"]}. Consumed by the
     # standalone tools/crawl4ai_signal producer, not the core.
     "crawl4ai_sources",
+    "core_assets",
 }
 
 # Secret settings: stored, but MASKED in the public payload and never clobbered
@@ -219,6 +337,10 @@ FLOAT_KEYS = {
     "ml_gate_min_return": (-1.0, 1000000.0),
     "ml_gate_max_drawdown": (0.0, 1.0),
     "ml_gate_min_frac_folds_positive": (0.0, 1.0),
+    "core_vol_target": (0.1, 1.5),
+    "core_hysteresis": (0.0, 0.2),
+    "exploration_bench_drawdown": (0.05, 0.9),
+    "research_min_dsr": (0.5, 0.999),
 }
 
 # Integer settings: (min, max) inclusive clamp. Everything else is treated as
@@ -235,6 +357,21 @@ INT_KEYS = {
     "researcher_candidates": (10, 500),
     "crawl4ai_max_urls": (1, 15),
     "crawl4ai_interval_sec": (60, 86400),    # 1min .. 24h
+    "replay_interval_sec": (3600, 604800),   # 1h .. 7d
+    "replay_history_days": (30, 1095),       # 1 month .. 3 years
+    "core_allocation_pct": (0, 100),
+    "core_sma_days": (10, 250),
+    "learner_ablation_interval_sec": (86400, 2592000),   # 1d .. 30d
+    "data_sync_interval_sec": (3600, 604800),
+    "research_loop_interval_sec": (86400, 2592000),
+    "learner_gate_max_age_days": (1, 60),
+    "core_top_k": (2, 15),
+    "core_tranches": (1, 7),
+    "exploration_allocation_pct": (0, 100),
+    "exploration_reinstate_days": (1, 365),
+    "research_min_forward_days": (7, 365),
+    "daily_lab_interval_sec": (86400, 2592000),
+    "daily_lab_max_age_days": (1, 60),
 }
 
 

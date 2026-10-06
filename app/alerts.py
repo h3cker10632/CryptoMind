@@ -428,6 +428,7 @@ HELP_TEXT = (
     "/balance — cash, equity, exposure\n"
     "/stats — trade statistics\n"
     "/brains — how much the system has learned (models/DB)\n"
+    "/replay — latest strategy replay over the universe (/replay now = run it)\n"
     "/signals — current actionable signals\n"
     "/diag — per-coin: why each isn't trading (or would)\n"
     "/decisions [n] — recent decision audit trail (paper trail)\n"
@@ -1045,6 +1046,54 @@ def _cmd_tunables():
     return "\n".join(out)
 
 
+def _cmd_replay(args):
+    """Latest automatic replay (per-coin best/worst), or start one with 'now'."""
+    import asyncio
+    from .orchestrator import orch
+    if args and args[0].lower() == "now":
+        try:
+            asyncio.get_running_loop().create_task(orch.run_replay_now(reason="manual (Telegram)"))
+            return "Replay started over the whole universe — results arrive as an alert in ~1 min."
+        except RuntimeError:
+            return "Can't start a replay from here (no running event loop)."
+    rep = getattr(orch, "last_replay", None)
+    if not rep or not (rep.get("full") or {}).get("ok"):
+        return "No strategy replay yet. Send /replay now to run one."
+    f, h1, h2 = rep["full"], rep.get("first_half") or {}, rep.get("second_half") or {}
+    out = [f"*Strategy replay* — {rep.get('verdict')}",
+           f"{len(rep.get('universe') or [])} coins, {f['days']} days, {rep.get('reason')}",
+           f"Return {f['return_pct']:+.2f}% · max DD {f['max_drawdown_pct']}% · "
+           f"{f['trades']} trades · win {f['win_rate_pct']}%",
+           f"Halves {h1.get('return_pct')}% / {h2.get('return_pct')}% · "
+           f"buy&hold {f.get('buy_hold_equal_weight_pct')}%"]
+    try:
+        ft = orch.forward_test()
+    except Exception:
+        ft = None
+    if ft and ft.get("return_pct") is not None:
+        out.append(f"Live since restart ({ft['days']} d): {ft['return_pct']:+.2f}% "
+                   f"vs buy&hold {ft['buy_hold_pct']:+.2f}%")
+    from .risk.manager import risk
+    brake = getattr(risk, "replay_brake", 1.0)
+    out.append(f"Risk brake: ON — new positions at {brake:.0%} size" if brake < 1.0
+               else "Risk brake: off")
+    try:
+        from .learn.trade_filter import trade_filter
+        snap = trade_filter.snapshot()
+        if snap["trained"]:
+            out.append(f"Trade filter: {'ACTIVE' if snap['active'] else 'inactive'} "
+                       f"({snap['backend']}, {snap['train_samples']:,} samples, "
+                       f"base win rate {snap['base_win_rate']:.0%})")
+    except Exception:
+        pass
+    pp = sorted(((p, r) for p, r in (rep.get("per_product") or {}).items() if r["trades"]),
+                key=lambda kv: kv[1]["net_usd"])
+    if pp:
+        out.append("Worst: " + ", ".join(f"{p} ${r['net_usd']:+,.0f}" for p, r in pp[:3]))
+        out.append("Best: " + ", ".join(f"{p} ${r['net_usd']:+,.0f}" for p, r in pp[-3:][::-1]))
+    return "\n".join(out)
+
+
 def handle_command(text):
     """Parse and execute one command; return the reply text."""
     parts = text.strip().split()
@@ -1072,6 +1121,8 @@ def handle_command(text):
             return _cmd_stats()
         if cmd in ("brains", "learning", "learn"):
             return _cmd_brains()
+        if cmd in ("replay", "backtest"):
+            return _cmd_replay(args)
         if cmd == "signals":
             return _cmd_signals()
         if cmd in ("diag", "diagnose", "why_not"):

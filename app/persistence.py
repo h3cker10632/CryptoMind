@@ -15,6 +15,12 @@ SAVE_EVERY_TICKS = 3          # ~once a minute at TICK_SEC=20
 
 # ---------------- serialization helpers ----------------
 
+
+# Bump when the meaning of saved learning state changes so stale beliefs are
+# discarded instead of restored. v2 = side-aware trade credit, net-of-cost
+# signal scoring, 1h bars / 24h horizon.
+LEARN_VERSION = 2
+
 def _tup_key(k, sep="||"):
     return sep.join(map(str, k))
 
@@ -144,6 +150,7 @@ def capture():
             "protections": risk.protections.to_dict(),
         },
         "learner": {
+            "learn_version": LEARN_VERSION,
             "weights": learner.weights,
             "bandit_arms": _save_dict_tupkeys(
                 {k: list(v) for k, v in learner.bandit.arms.items()}),
@@ -187,6 +194,7 @@ def capture():
             "last_attempt": evolution.last_attempt,
         },
         "exit_advisor": _capture_exit_advisor(),
+        "core": _capture_core(),
         "exit_throttle": _capture_exit_throttle(),
         "direction": _capture_direction(),
         "universe": {
@@ -203,6 +211,14 @@ def capture():
         "portfolio": _capture_portfolio(),
         "polymarket_broker": _capture_pm_broker(),
     }
+
+
+def _capture_core():
+    try:
+        from .strategies.core import core
+        return core.to_dict()
+    except Exception:
+        return None
 
 
 def _capture_exit_advisor():
@@ -345,6 +361,13 @@ def load():
             broker.positions = {p: Position(pos) for p, pos in
                                 b.get("positions", {}).items()}
             broker.closed_trades = b.get("closed_trades", [])
+            # the optional core holding's book: its cash already left the
+            # broker's balance above, so it is restored together with it
+            try:
+                from .strategies.core import core
+                core.load_dict(s.get("core"))
+            except Exception:
+                pass
 
             r = s.get("risk", {})
             risk.reconcile_account_peak(r.get("peak_equity", 0.0), START_CASH)
@@ -380,10 +403,20 @@ def load():
                                    "account (learned state still restored)")
 
         l = s.get("learner", {})
-        if l.get("weights"):
-            # merge: keep defaults for any newly added strategies
-            learner.weights.update(l["weights"])
-        learner.bandit.arms = _load_arms(l.get("bandit_arms", {}))
+        if l.get("learn_version", 1) < LEARN_VERSION:
+            # Bandit evidence written before LEARN_VERSION 2 was corrupted: SHORT
+            # trades credited the wrong strategies (sign bug), and the gross
+            # signal stream at a 1h horizon outvoted real net PnL. Start the
+            # allocation fresh instead of carrying those beliefs forward.
+            db.log_event("learn", "Learning upgrade v2: discarded old bandit "
+                                  "arms/weights (short-credit sign bug + "
+                                  "gross-of-cost scoring) — relearning from "
+                                  "net-of-cost outcomes on 1h bars")
+        else:
+            if l.get("weights"):
+                # merge: keep defaults for any newly added strategies
+                learner.weights.update(l["weights"])
+            learner.bandit.arms = _load_arms(l.get("bandit_arms", {}))
         learner.trade_attributions = l.get("trade_attributions",
                                            learner.trade_attributions)
         # Restore the pending ML label queue + price history so samples recorded

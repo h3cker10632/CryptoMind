@@ -175,7 +175,7 @@ def test_auto_export_settings_exist_and_clamp():
     from app import settings
     settings._settings = None
     assert "auto_export_enabled" in settings.DEFAULTS
-    assert settings.DEFAULTS["auto_export_interval_sec"] == 300
+    assert settings.DEFAULTS["auto_export_interval_sec"] == 14400   # 4h (~2.7 MB/report)
     # clamps to [30, 86400]
     settings.update({"auto_export_interval_sec": 5})
     assert settings.get("auto_export_interval_sec") == 30
@@ -185,7 +185,7 @@ def test_auto_export_settings_exist_and_clamp():
     assert settings.get("auto_export_interval_sec") == 450
     # garbage falls back to default
     settings.update({"auto_export_interval_sec": "nope"})
-    assert settings.get("auto_export_interval_sec") == 300
+    assert settings.get("auto_export_interval_sec") == settings.DEFAULTS["auto_export_interval_sec"]
     settings._settings = None
 
 

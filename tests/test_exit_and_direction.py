@@ -136,6 +136,7 @@ def test_direction_bias_favours_side_that_paid():
 
 def test_direction_bias_can_flip_marginal_call():
     dl = DirectionLearner()
+    dl.enabled = True                     # live default is off; test the learner
     bull = "bull/normal"
     for _ in range(20):
         dl.on_trade_closed({"regime_at_entry": bull, "side": -1, "qty": 1,

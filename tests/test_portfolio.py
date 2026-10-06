@@ -147,6 +147,9 @@ def test_portfolio_migration_prefix_is_authenticated():
 def test_entries_enabled_requires_running_and_portfolio_ready(monkeypatch):
     from app.orchestrator import Orchestrator
 
+    from app import settings
+    real = settings.get                          # isolate from the hourly-bot gate
+    monkeypatch.setattr(settings, "get", lambda k: "on" if k == "hourly_bot_mode" else real(k))
     orch = Orchestrator()
     orch.running = True
     monkeypatch.setattr(db, "paper_portfolio_account", lambda: None)
@@ -169,7 +172,8 @@ def test_tick_gates_new_entries_on_entries_enabled():
     import app.orchestrator as orch_mod
 
     src = inspect.getsource(orch_mod.Orchestrator.tick)
-    assert "if self._entries_enabled():" in src
+    assert "if self._entries_enabled() and not self._chop_blocks_entries():" in src
+    assert "if self.running" not in src
 
 
 # ---------------- Task 3: crypto routed through shared cash ----------------
@@ -319,19 +323,35 @@ def test_reset_account_endpoint_refuses_with_open_crypto_positions(monkeypatch):
     assert PaperPortfolio().cash == 100_000.0
 
 
-def test_reset_account_endpoint_resets_shared_cash_once_flat(monkeypatch):
+def test_reset_account_endpoint_resets_shared_cash_once_flat(monkeypatch, tmp_path):
     from app import main
     from app.config import START_CASH
+    from app.markets.polymarket.broker import broker as pm_broker
+    from app.strategies.core import core
 
     db.initialize_paper_portfolio(5_000.0, "unified-paper-v1")
     monkeypatch.setattr(main.broker, "_portfolio", PaperPortfolio())
     monkeypatch.setattr(main.broker, "positions", {})
     monkeypatch.setattr(main.db, "log_event", lambda *a, **kw: None)
     monkeypatch.setattr(main.persistence, "save", lambda: True)
+    # NEVER touch the real reports/ folder from a test
+    monkeypatch.setattr(main.orch, "_replay_path", lambda name: str(tmp_path / name))
+    from app.strategies.exploration import manager as explore
+    monkeypatch.setattr(explore, "path", str(tmp_path / "exploration_state.json"))
+    (tmp_path / "forward_test_baseline.json").write_text("{}")
+    monkeypatch.setattr(core, "positions", {"BTC-USD": {"qty": 1.0, "entry": 1.0, "opened": 0}})
 
+    monkeypatch.setattr(pm_broker, "positions", {"tok": {"shares": 1.0}})
+    refused = main.reset_account()                    # Polymarket not flat -> refuse
+    assert refused["ok"] is False and "Polymarket" in refused["error"]
+    assert core.positions                             # nothing touched on refusal
+
+    monkeypatch.setattr(pm_broker, "positions", {})
     result = main.reset_account()
     assert result["reset"] is True
     assert main.broker.cash == START_CASH
+    assert core.positions == {}                       # the core book is part of the account
+    assert not (tmp_path / "forward_test_baseline.json").exists()   # fresh forward test
 
 
 # ---------------- Task 4: Polymarket routed through shared cash ----------------

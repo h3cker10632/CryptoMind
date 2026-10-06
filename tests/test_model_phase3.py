@@ -9,12 +9,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.learn.online_model import TinyMLP, Committee, N_IN
 
 
+from app.learn.online_model import TARGET_SCALE
+
+
 def _train(net_or_committee, n=500, seed=0):
     r = random.Random(seed)
     for _ in range(n):
         f0 = r.gauss(0, 1)
         x = [f0] + [r.gauss(0, 1) for _ in range(N_IN - 1)]
-        fwd = 0.002 * f0 + r.gauss(0, 0.0004)
+        fwd = (0.5 * f0 + r.gauss(0, 0.1)) * TARGET_SCALE
         net_or_committee.update(x, fwd)
     return r
 

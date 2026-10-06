@@ -43,9 +43,10 @@ class ExitAdvisor:
     def _enabled():
         try:
             from .. import settings
-            return bool(settings.get("exit_advisor_enabled"))
+            from .gate import active
+            return bool(settings.get("exit_advisor_enabled")) and active("exit_advisor")
         except Exception:
-            return True
+            return False
 
     @staticmethod
     def _tv(key, default):
@@ -140,10 +141,12 @@ class ExitAdvisor:
                       f"learned={v:+.3%}@{vc:.0%}{guard})")
         return action, reason, expected
 
-    def record(self, product, side, price, unrealized_pct, ml_pos, regime, atr_pct):
-        """Log the decision context so the next horizon can score it."""
+    def record(self, product, side, price, unrealized_pct, ml_pos, regime, atr_pct,
+               ts=None):
+        """Log the decision context so the next horizon can score it. `ts`
+        defaults to now (the replay ablation passes the bar time)."""
         state = self._state(side, unrealized_pct, ml_pos, regime, atr_pct)
-        self.pending.append((time.time(), product, side, price, state))
+        self.pending.append((time.time() if ts is None else ts, product, side, price, state))
 
     def note_cut(self):
         self.n_cuts += 1

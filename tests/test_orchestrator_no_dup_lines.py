@@ -35,11 +35,11 @@ def test_single_audit_method():
 
 
 def test_single_guardian_note_entry_per_entry_block():
-    """note_entry must appear once per entry path (conviction + explore = 2),
-    never doubled within a block."""
+    """note_entry must appear once per entry path (limit-order placement +
+    market conviction + explore = 3), never doubled within a block."""
     with open(ORCH) as fh:
         lines = fh.read().split("\n")
     note_lines = [i for i, l in enumerate(lines) if "guardian.note_entry()" in l]
-    # exactly two call sites, and no two adjacent
-    assert len(note_lines) == 2
-    assert note_lines[1] - note_lines[0] > 1
+    # exactly three call sites, and no two adjacent
+    assert len(note_lines) == 3
+    assert all(b - a > 1 for a, b in zip(note_lines, note_lines[1:]))

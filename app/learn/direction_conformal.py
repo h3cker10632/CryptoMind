@@ -104,12 +104,22 @@ class DirectionConformalGate:
         return pl if y == 1 else (1.0 - pl)
 
     def _qhat(self):
+        # O(n^2) over the calibration set, and it only changes when a point is
+        # added, so cache it: veto() runs per coin per tick (and per bar in the
+        # learner ablation), recomputing it every call cost ~1s/tick live.
+        key = (self.n_seen, len(self.points), self.points[-1] if self.points else None,
+               self.alpha, self.h)
+        cached = getattr(self, "_qhat_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
         # nonconformity of each calibration point under the all-data estimate
         scores = [1.0 - self._p(a, fav) for a, fav in self.points]
         scores.sort()
         n = len(scores)
         rank = min(1.0, max(0.0, (1.0 - self.alpha) * (n + 1) / n))
-        return _quantile_sorted(scores, rank)
+        q = _quantile_sorted(scores, rank)
+        self._qhat_cache = (key, q)
+        return q
 
     def prediction_set(self, align):
         """Return the calibrated set of plausible favored sides at this align."""

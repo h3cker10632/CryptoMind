@@ -73,6 +73,7 @@ def test_direction_learner_integration_and_fallback():
     """The learner uses the hard threshold while cold, the conformal gate once
     warm, and both paths increment the veto counter."""
     dl = DirectionLearner()
+    dl.enabled = True                     # live default is off; test the learner
     # cold: hard-threshold fallback still vetoes a short vs strong bull align
     v, why = dl.veto(-1, 0.9)
     assert v and dl.n_conformal_vetoes == 0        # fell back to legacy path

@@ -16,9 +16,10 @@ Uncertainty features (Phase 3):
     the model is unsure and only presses size when the heads agree.
 """
 import math, random
+from ..config import CANDLE_GRANULARITY as _GRAN
 from collections import deque
 
-N_IN = 26          # 18 core + 6 chart-pattern + 2 advisor-lean (see build_x / FEAT_NAMES)
+N_IN = 30          # 18 core + 6 chart-pattern + 2 advisor-lean + 4 slow-horizon (see build_x / FEAT_NAMES)
 N_HID = 16
 
 # Minimum |prediction| (on the scaled ±1 return axis) for a recorded prediction
@@ -27,6 +28,24 @@ N_HID = 16
 # pinned accuracy near zero and triggered perpetual resets, which kept the ml
 # sleeve at zero weight forever. A near-zero stance is abstention, not a miss.
 ACC_MIN_CONVICTION = 0.05
+
+# Reset rule for a head that has fitted the wrong mapping. It used to fire at
+# acc <= 50% after only 20 scored predictions — pure noise for a coin-flip
+# head (SE ~11%), so it reset ~1,000 times in a one-year replay and never kept
+# anything it learned. Now: a real sample, and accuracy CONFIDENTLY below a
+# coin flip (2 standard errors).
+RESET_MIN_UPDATES = 500
+RESET_MIN_SCORED = 200
+
+
+def confidently_broken(stats):
+    """True when a head's measured directional accuracy is reliably worse than
+    a coin flip (see RESET_MIN_* above)."""
+    acc, n = stats.get("directional_accuracy"), stats.get("acc_samples", 0)
+    if acc is None or n < RESET_MIN_SCORED or stats.get("n_updates", 0) < RESET_MIN_UPDATES:
+        return False
+    return acc < 0.5 - 2 * math.sqrt(0.25 / n)
+
 
 # quantile levels for the aleatoric band (P10 / P90)
 QUANTILES = (0.10, 0.90)
@@ -52,24 +71,55 @@ FEAT_NAMES = ["rsi", "macd", "macd_delta", "mom_1h", "mom_4h", "vol_ratio",
               # advisor leans appended LAST so the model can learn whether the
               # LLM / trained-model opinions add predictive value. Zero (and thus
               # inert) unless the respective advisor is enabled + llm_ml_feature.
-              "llm_lean", "model_lean"]
+              "llm_lean", "model_lean",
+              # slow-horizon features (see build_x)
+              "ema24_vs_96", "mom_72", "brk48_pos", "xs_mom"]
+
+
+# Label scale: a forward return of +/- TARGET_SCALE maps to a full +/-1 target.
+# Set to roughly the ~1.2% round-trip trading cost, so "full signal" means
+# "a move big enough to pay for the trade". (Was 0.4%, i.e. sized for a 30-min
+# 5m-bar horizon where no prediction could ever clear costs.)
+TARGET_SCALE = 0.012
+# accuracy only counts samples whose move was >= this fraction of TARGET_SCALE
+ACC_MIN_MOVE = 0.5
 
 
 def _clip(x, lo=-3.0, hi=3.0):
     return max(lo, min(hi, x))
 
 
+# Inputs held at a constant 0 (they stay in the vector so N_IN and saved
+# models keep their shape). Measured ~no edge (order-book imbalance/spread are
+# seconds-scale; sentiment was negative; chart patterns ~0 over 162k scored
+# signals) and they don't exist in history, so masking them also keeps the
+# history warm-start and live inputs identical. A constant input standardises
+# to 0 and simply never moves the net.
+MASKED_FEATURES = frozenset({
+    "imbalance", "spread", "asset_sent", "market_sent",
+    "pat_structure", "pat_sr", "pat_reversal", "pat_continuation",
+    "pat_candle", "pat_divergence",
+})
+
+
 def build_x(f, asset_sent, market_sent, deriv=None):
     """Build a pre-scaled feature vector from market features + sentiment
-    + derivatives metrics (funding / OI / positioning from OKX)."""
+    + derivatives metrics (funding / OI / positioning from OKX), with the
+    MASKED_FEATURES held at 0."""
+    x = _build_x_raw(f, asset_sent, market_sent, deriv)
+    return [0.0 if name in MASKED_FEATURES else v for name, v in zip(FEAT_NAMES, x)]
+
+
+def _build_x_raw(f, asset_sent, market_sent, deriv=None):
     atr = f["atr"] or 1e-9
     d = deriv or {}
     return [
         f["rsi"] / 100 - 0.5,
         _clip(f["macd"] / atr),
         _clip(f["macd_delta"] / (0.25 * atr + 1e-9)),
-        _clip(f["mom_1h"] * 100),
-        _clip(f["mom_4h"] * 50),
+        # mom_1h / mom_4h are 12-bar / 48-bar returns (12h / 48h on 1h bars)
+        _clip(f["mom_1h"] * 30),
+        _clip(f["mom_4h"] * 15),
         _clip(f["vol_ratio"] - 1, -2, 2),
         _clip(f["imbalance"], -1, 1),
         min(2.0, f["spread_bps"] / 10),
@@ -77,7 +127,8 @@ def build_x(f, asset_sent, market_sent, deriv=None):
         _clip(market_sent, -1, 1),
         _clip((f["price"] / f["sma20"] - 1) * 100),
         _clip((f["sma20"] / f["sma50"] - 1) * 100),
-        min(3.0, f["volatility"] * 300),
+        # per-bar volatility normalised to the native bar size (1h ≈ 1%)
+        min(3.0, f["volatility"] * 300 * (300 / _GRAN) ** 0.5),
         d.get("funding_norm", 0.0),
         d.get("oi_change_norm", 0.0),
         d.get("ls_crowding", 0.0),
@@ -92,7 +143,24 @@ def build_x(f, asset_sent, market_sent, deriv=None):
         # learns from realized outcomes whether it's worth anything.
         _clip(f.get("llm_lean", 0.0), -1, 1),
         _clip(f.get("model_lean", 0.0), -1, 1),
+        # slow-horizon features (appended LAST; adding them changes N_IN, which
+        # makes persistence start a fresh model instead of loading weights
+        # learned on the old 5m/30-min mapping)
+        _clip(((f.get("ema24") or 0) / (f.get("ema96") or 1) - 1) * 20)
+            if f.get("ema24") and f.get("ema96") else 0.0,
+        _clip((f.get("mom_72") or 0.0) * 10),
+        _breakout_pos(f),
+        _clip(f.get("xs_mom", 0.0), -3, 3),
     ]
+
+
+def _breakout_pos(f):
+    """Position of price inside the prior 48-bar channel, mapped to [-1, 1]
+    (beyond the channel saturates at +/-1). 0 when unavailable."""
+    hi, lo = f.get("hi48"), f.get("lo48")
+    if not hi or not lo or hi <= lo:
+        return 0.0
+    return _clip((f["price"] - lo) / (hi - lo) * 2 - 1, -1.5, 1.5)
 
 
 def stamp_advisor_leans(f, product):
@@ -309,12 +377,15 @@ class TinyMLP:
         """Learn from a labeled sample; also replays PRIORITIZED past samples."""
         if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
             return
-        target = _clip(fwd_return / 0.004, -1, 1)     # ±0.4% move = full signal
+        target = _clip(fwd_return / TARGET_SCALE, -1, 1)     # ±1.2% move = full signal
         # Score directional accuracy ONLY on samples where the realized move was
         # meaningful AND the head actually took a directional stance. Abstentions
         # (|pred| ~ 0, i.e. warmup / just-reset) are excluded — counting them as
         # misses is what pinned accuracy at 0 and drove the reset doom loop.
-        scored = (pred_at_record is not None and abs(target) > 0.15
+        # "meaningful" = at least half the round-trip cost (|target| >= 0.5),
+        # so accuracy reflects moves a trade could actually profit from — not
+        # a coin-flip on noise-sized wiggles.
+        scored = (pred_at_record is not None and abs(target) >= ACC_MIN_MOVE
                   and abs(pred_at_record) > ACC_MIN_CONVICTION)
         if scored:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)
@@ -351,7 +422,7 @@ class TinyMLP:
             return
         if not (0 <= head < len(self.aW)):
             return
-        target = _clip(fwd_return / 0.004, -1, 1)
+        target = _clip(fwd_return / TARGET_SCALE, -1, 1)
         self._observe_features(x)
         xs = self._standardize(x)
         h, _ = self._fwd(xs)
@@ -693,7 +764,7 @@ class Committee:
         have warmed — the calibrator just accumulates until it is `ready`."""
         if not isinstance(x, (list, tuple)) or len(x) != len(self.primary.feat_mean):
             return
-        y = _clip(fwd_return / 0.004, -1, 1)
+        y = _clip(fwd_return / TARGET_SCALE, -1, 1)
         mean, _epi, _ale, total = self._raw_band(x)
         raw_lo, raw_hi = mean - total, mean + total
         self.calibrator.observe(raw_lo, raw_hi, y)

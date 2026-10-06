@@ -34,6 +34,9 @@ def test_precompute_matches_features_at_bitwise():
         assert set(want) == set(got)
         for k in want:
             a, b = want[k], got[k]
+            if a is None or b is None:          # warmup for slow features
+                assert a is None and b is None, f"bar {i} key {k}: {a} != {b}"
+                continue
             # allow only floating-point epsilon differences
             assert abs(a - b) <= 1e-9 + 1e-9 * abs(a), f"bar {i} key {k}: {a} != {b}"
         checked += 1

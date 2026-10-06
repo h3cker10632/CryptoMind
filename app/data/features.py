@@ -80,7 +80,21 @@ def features_from_ohlcv(closes, highs, lows, vols):
     hi20, lo20 = max(highs[-20:]), min(lows[-20:])
     vol_ratio = vols[-1] / (sum(vols[-20:]) / 20) if sum(vols[-20:]) else 1.0
 
+    # ---- slow-horizon features (multi-hour / multi-day holds) ----
+    # On 1h bars these are: EMA 24h vs 96h trend, 72h momentum, and the prior
+    # 48h high/low channel (excluding the current bar, so a close above it is a
+    # genuine breakout). These are the families that showed an after-cost edge
+    # on the hourly backtest; absent (None) on short histories.
+    n = len(closes)
+    ema24 = _ema(closes, 24) if n >= 24 else None
+    ema96 = _ema(closes, 96) if n >= 96 else None
+    mom_72 = price / closes[-73] - 1 if n >= 73 else None
+    hi48 = max(highs[-49:-1]) if n >= 49 else None
+    lo48 = min(lows[-49:-1]) if n >= 49 else None
+
     return {
+        "ema24": ema24, "ema96": ema96, "mom_72": mom_72,
+        "hi48": hi48, "lo48": lo48,
         "price": price, "rsi": rsi, "atr": atr,
         "sma20": _sma(closes, 20), "sma50": _sma(closes, 50),
         "ema12": _ema(closes, 12), "ema26": _ema(closes, 26),

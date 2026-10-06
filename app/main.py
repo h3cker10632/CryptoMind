@@ -82,6 +82,9 @@ async def startup():
     asyncio.create_task(orch.ml_trainer_loop())      # autonomous metric-gated retrain
     asyncio.create_task(orch.researcher_loop())      # autonomous strategy discovery
     asyncio.create_task(orch.crawl_producer_loop())  # in-app crawl4ai producer
+    asyncio.create_task(orch.replay_loop())          # automatic universe replay
+    asyncio.create_task(orch.core_loop())            # optional core holding (off by default)
+    asyncio.create_task(orch.exploration_loop())     # fast strategies sleeve (off by default)
     asyncio.create_task(alerts.worker())
     asyncio.create_task(alerts.command_worker())   # two-way Telegram commands
     from .export import auto_export_loop
@@ -100,7 +103,10 @@ async def shutdown():
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC, "index.html"))
+    # no-cache: browsers must revalidate, so a dashboard update shows up on a
+    # normal reload instead of a stale cached copy (e.g. missing CORE rows)
+    return FileResponse(os.path.join(STATIC, "index.html"),
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/status")
@@ -865,9 +871,28 @@ def reset_account():
     refuses while the crypto sleeve still holds open positions."""
     from .config import START_CASH
     from . import portfolio as portfolio_module
+    from .markets.polymarket.broker import broker as pm_broker
+    from .strategies.core import core
     if broker.positions:
         return {"ok": False,
                 "error": "crypto sleeve has open positions; close them first"}
+    if portfolio_module.portfolio.ready and pm_broker.positions:
+        # the shared cash reset never touches positions (portfolio.reset_account)
+        return {"ok": False,
+                "error": "Polymarket sleeve has open positions; close them first"}
+    # the CORE book is part of the account: a fresh account holds nothing.
+    # (Leaving it would count its coins on top of the fresh $100k.)
+    core.positions, core.realized_pnl, core.picks = {}, 0.0, None
+    core.last_rebalance = 0.0
+    # ...and so are the exploration books: a fresh account re-funds them
+    from .strategies.exploration import manager as explore
+    explore.members, explore.funded, explore.last_review_day = {}, False, None
+    explore.save()
+    # the forward test measures from the fresh start, not the old account
+    try:
+        os.remove(orch._replay_path("forward_test_baseline.json"))
+    except OSError:
+        pass
     if portfolio_module.portfolio.ready:
         event_id = f"account-reset-{uuid.uuid4().hex}"
         if not portfolio_module.portfolio.reset_account(START_CASH, event_id):
@@ -916,6 +941,28 @@ async def backtest(product: str = "BTC-USD", strategy: str = "trend"):
         return rep
     except Exception as e:
         return JSONResponse({"error": str(e)}, 500)
+
+
+@app.get("/api/scorecard")
+def scorecard():
+    """Champion vs challengers (backtest + forward), live vs holding BTC."""
+    return orch.scorecard()
+
+
+@app.get("/api/backtest/replay")
+def backtest_replay():
+    """Latest automatic replay of the LIVE strategy over the whole universe
+    (full window, both halves, per-coin breakdown). See app/backtest/replay.py."""
+    return getattr(orch, "last_replay", None) or {"ok": False,
+                                                  "error": "no replay has run yet"}
+
+
+@app.post("/api/control/replay_now")
+async def control_replay_now():
+    """Start a replay immediately (runs in the background; poll
+    /api/backtest/replay for the result)."""
+    asyncio.create_task(orch.run_replay_now(reason="manual"))
+    return {"ok": True, "started": True}
 
 
 @app.get("/api/backtest/composite")

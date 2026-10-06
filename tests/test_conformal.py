@@ -21,6 +21,9 @@ from app.learn.online_model import (ConformalCalibrator, Committee, N_IN,
                                      _quantile_sorted)
 
 
+from app.learn.online_model import TARGET_SCALE
+
+
 def test_quantile_sorted_matches_interpolation():
     xs = [0.0, 1.0, 2.0, 3.0, 4.0]
     assert _quantile_sorted(xs, 0.0) == 0.0
@@ -141,7 +144,7 @@ def test_end_to_end_committee_coverage():
 
     def gen():
         x = [r.gauss(0, 1) for _ in range(N_IN)]
-        fwd = 0.004 * (0.6 * math.tanh(x[0]) + r.gauss(0, 0.7))
+        fwd = TARGET_SCALE * (0.6 * math.tanh(x[0]) + r.gauss(0, 0.7))
         return x, fwd
 
     c = Committee(n_members=3)
@@ -155,7 +158,7 @@ def test_end_to_end_committee_coverage():
     for _ in range(N):
         x, fwd = gen()
         u = c.predict_with_uncertainty(x)
-        y = max(-1.0, min(1.0, fwd / 0.004))
+        y = max(-1.0, min(1.0, fwd / TARGET_SCALE))
         if u["lo"] <= y <= u["hi"]:
             hits += 1
     coverage = hits / N

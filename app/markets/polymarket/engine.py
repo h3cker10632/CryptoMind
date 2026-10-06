@@ -313,6 +313,19 @@ class PolymarketEngine:
         llm_infl = tv("pm_llm_influence")
         research_infl = tv("pm_research_influence")
         equity = broker.equity(self._mid_lookup)
+        # its OWN budget (app/strategies/allocator.py), not the whole shared
+        # pool — cash the core / exploration strategies hold is not its to bet
+        pm_equity, pm_cash = equity, broker.cash
+        if paper_portfolio.ready:
+            try:
+                from ...orchestrator import orch
+                from ...data.market import market as crypto_market
+                from ...strategies.allocator import polymarket_budget
+                pm_equity, pm_cash = polymarket_budget(
+                    orch._total_equity(crypto_market), broker.exposure(self._mid_lookup),
+                    broker.cash)
+            except Exception:
+                pass
         # refresh a bounded batch of LLM leans (cached; no-op if the LLM sleeve
         # is off) BEFORE evaluating, so the `llm` strategy + ML feature see them.
         try:
@@ -348,7 +361,7 @@ class PolymarketEngine:
                 continue
             if sig["outcome_index"] is None:
                 continue
-            stake, why = size_bet(equity, broker.cash, sig["price"], sig["edge"],
+            stake, why = size_bet(pm_equity, pm_cash, sig["price"], sig["edge"],
                                   sig["confidence"], m)
             cand = {"market": m, "sig": sig, "stake": stake, "why": why}
             candidates.append(cand)

@@ -10,6 +10,7 @@ import os, sys, time, tempfile
 from collections import deque
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.learn.online_model import N_IN as _N_IN
+from app.learn.loop import ML_HORIZON_SEC as _HZ
 
 
 def test_pending_ml_and_price_history_survive_snapshot(tmp_path, monkeypatch):
@@ -46,7 +47,7 @@ def test_matured_sample_trains_model_after_restart(tmp_path, monkeypatch):
     from app.learn.online_model import model
 
     now = time.time()
-    ts0 = now - 1900                      # already past the 30-min horizon
+    ts0 = now - _HZ - 100                 # already past the label horizon
     learner.pending_ml = deque([(ts0, "BTC-USD", [0.1] * _N_IN, 0.0)], maxlen=2000)
     learner.price_history = {"BTC-USD": [(ts0, 100.0), (now, 101.2)]}
 
@@ -60,7 +61,7 @@ def test_matured_sample_trains_model_after_restart(tmp_path, monkeypatch):
 
     class FakeMkt:
         candles = {"BTC-USD": [[ts0, 100, 100, 100, 100.0, 1],
-                               [ts0 + 1800, 101, 101, 101, 101.0, 1]]}
+                               [ts0 + _HZ, 101, 101, 101, 101.0, 1]]}
         def price(self, p):
             return 101.2
 
@@ -76,7 +77,7 @@ def test_stale_feature_dim_pending_ml_is_dropped_not_crash():
     from app.learn.loop import learner
     from app.learn.online_model import model, N_IN
     now = time.time()
-    ts0 = now - 1900
+    ts0 = now - _HZ - 100
     orig_pend = learner.pending_ml
     orig_ph = learner.price_history
     try:

@@ -115,8 +115,9 @@ def test_liquidity_cap_uses_passed_product():
         [0, 0, 0, 0, 100.0, 1.0] for _ in range(300)]     # ~1 base unit/bar
     liq = r._liquidity_notional(100.0, product="THIN-USD")
     assert liq is not None
-    # function sums the last 288 bars (≈24h): 288 * 1 base unit * $100
-    assert abs(liq - 288 * 1.0 * 100.0) < 1e-6
+    # function sums the last 24h of native bars: BARS_PER_DAY * 1 unit * $100
+    from app.config import BARS_PER_DAY
+    assert abs(liq - BARS_PER_DAY * 1.0 * 100.0) < 1e-6
 
 
 # ---------- Fix 4: reset clears daily halt ----------

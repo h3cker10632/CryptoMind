@@ -193,15 +193,52 @@ class PolymarketClient:
         has collapsed to ~1.0 (the winner) / ~0.0 (the loser).
         """
         nm = self.fetch_by_condition(condition_id)
+        if nm:
+            prices = nm["prices"]
+            resolved = nm["closed"] and (max(prices) >= 0.99 or min(prices) <= 0.01)
+            if resolved:
+                win = 0 if prices[0] >= prices[1] else 1
+                return {"resolved": True, "winning_index": win,
+                        "prices": prices, "closed": True}
+        # FALLBACK: Gamma's `condition_ids` lookup returns an EMPTY list for
+        # many closed markets (verified 2026-10-01 on an overdue forecast: [] ,
+        # even with closed=true), so not one forecast was ever labelled and the
+        # learner never learned. The CLOB market endpoint still serves closed
+        # markets with an explicit per-token `winner` flag.
+        clob = self.clob_resolution(condition_id)
+        if clob is not None:
+            return clob
         if not nm:
             return None
-        prices = nm["prices"]
-        resolved = nm["closed"] and (max(prices) >= 0.99 or min(prices) <= 0.01)
-        win = None
-        if resolved:
-            win = 0 if prices[0] >= prices[1] else 1
-        return {"resolved": resolved, "winning_index": win,
-                "prices": prices, "closed": nm["closed"]}
+        return {"resolved": False, "winning_index": None,
+                "prices": nm["prices"], "closed": nm["closed"]}
+
+    def clob_resolution(self, condition_id: str) -> dict | None:
+        """Resolution from the CLOB market record: resolved once the market is
+        closed and exactly one of its two tokens carries `winner: true`. Token
+        order matches the market's outcome order (outcome 0 = first token)."""
+        if not condition_id:
+            return None
+        try:
+            d = self._get(CLOB_BASE, f"/markets/{condition_id}")
+        except Exception as e:                       # noqa: BLE001
+            self.last_error = f"{type(e).__name__}: {e}"
+            return None
+        if not isinstance(d, dict):
+            return None
+        toks = d.get("tokens") or []
+        if len(toks) != 2:
+            return None
+        winners = [bool(t.get("winner")) for t in toks]
+        closed = bool(d.get("closed"))
+        if closed and sum(winners) == 1:
+            w = winners.index(True)
+            prices = [1.0 if i == w else 0.0 for i in range(2)]
+            return {"resolved": True, "winning_index": w, "prices": prices,
+                    "closed": True, "source": "clob"}
+        prices = [_f(t.get("price"), 0.0) for t in toks]
+        return {"resolved": False, "winning_index": None, "prices": prices,
+                "closed": closed, "source": "clob"}
 
     # ---------------------------- CLOB -----------------------------
     def clob_price(self, token_id: str, side: str) -> float | None:

@@ -419,9 +419,9 @@ def write_report(directory=None, history_limit=1000, include_features=True,
     return path
 
 
-def prune_reports(directory=None, keep=288):
-    """Keep only the most recent `keep` report files (default 288 = 24h at the
-    5-minute default cadence) so the folder doesn't grow without bound."""
+def prune_reports(directory=None, keep=84):
+    """Keep only the most recent `keep` report files (default 84 = 2 weeks at the
+    4-hour default cadence) so the folder doesn't grow without bound."""
     directory = directory or REPORTS_DIR
     try:
         files = sorted(

@@ -3,7 +3,7 @@ confidence, edge estimate and invalidation levels. Strategy weights adapt via
 the self-improvement loop."""
 import time
 import threading
-from ..config import PRODUCTS
+from ..config import PRODUCTS, DISABLED_STRATEGIES
 from ..tunables import tv
 from .. import db
 
@@ -59,6 +59,40 @@ def strat_trend(f, sent, regime):
     if base * align < 0:                              # 5m fights the HTF trend
         score *= 0.6
     return score
+
+
+def strat_trend_slow(f, sent, regime):
+    """Slow trend: 24h-vs-96h EMA regime plus 72h momentum (on 1h bars).
+
+    Built for multi-day holds: on the hourly backtest this family was the only
+    trend variant whose forward return at 24-48h cleared the ~1.2% round-trip
+    cost. Silent (0) until there is 96 bars of history."""
+    e24, e96, m72 = f.get("ema24"), f.get("ema96"), f.get("mom_72")
+    if e24 is None or e96 is None or m72 is None:
+        return 0.0
+    score = (0.5 if e24 > e96 else -0.5) + _clip(m72 / 0.05) * 0.5
+    return _clip(score)
+
+
+def strat_breakout_slow(f, sent, regime):
+    """48h channel breakout: close above the prior 48-bar high → long, below
+    the prior 48-bar low → short. Rare but the largest per-trade edge in the
+    hourly backtest."""
+    hi48, lo48 = f.get("hi48"), f.get("lo48")
+    if hi48 is None or lo48 is None:
+        return 0.0
+    px = f["price"]
+    if px > hi48:
+        return 0.8
+    if px < lo48:
+        return -0.8
+    return 0.0
+
+
+def strat_xsmom(f, sent, regime):
+    """Cross-sectional momentum: long relative winners / short relative losers
+    over the last 72 bars (z-score across the tracked universe)."""
+    return _clip(f.get("xs_mom", 0.0) / 1.5)
 
 
 def strat_meanrev(f, sent, regime):
@@ -128,7 +162,8 @@ def strat_ml(f, sent, regime):
     the model has warmed up on enough labeled live samples."""
     from ..learn.online_model import model, committee, build_x
     from ..data.derivatives import derivatives
-    if model.n_updates < 40:
+    from ..learn.gate import active
+    if model.n_updates < 40 or not active("online_ml"):
         return 0.0
     # Gate the vote on MEASURED directional accuracy BEFORE spending a forward
     # pass. A model at or below a coin flip (or one we haven't measured yet)
@@ -268,6 +303,9 @@ def strat_evolved(f, sent, regime):
 # (per-thread context is set on `_ctx` in compute(); see top of file)
 
 STRATEGIES = {
+    "trend_slow": strat_trend_slow,
+    "breakout_slow": strat_breakout_slow,
+    "xsmom": strat_xsmom,
     "trend": strat_trend,
     "meanrev": strat_meanrev,
     "breakout": strat_breakout,
@@ -284,16 +322,52 @@ STRATEGIES = {
 }
 
 
+def combine(active, weights):
+    """Weighted composite + confidence over the sleeves that actually voted
+    (`active`: {name: vote}, |vote| > 0.05). Shared with the learner ablation
+    (app/backtest/ablation.py) so it re-mixes votes exactly like live."""
+    wsum = sum(weights.get(n, 0.0) for n in active) or 1e-9
+    composite = sum(weights.get(n, 0.0) * s for n, s in active.items()) / wsum
+    # agreement: fraction of active voters on the composite's side
+    agree = sum(1 for s in active.values() if s * composite > 0) / len(active)
+    # breadth: more voters = more evidence (full trust at 3+)
+    breadth = min(1.0, len(active) / 3)
+    confidence = min(1.0, abs(composite) * (0.4 + 0.6 * agree) * (0.6 + 0.4 * breadth))
+    return composite, confidence
+
+
 class SignalEngine:
     def __init__(self):
         self.weights = {k: 1.0 / len(STRATEGIES) for k in STRATEGIES}
         self.latest = {}          # product -> composite signal
         self.per_strategy = {}    # product -> {strategy: raw score}
+        # (strategy, product) -> candle ts of the last RECORDED signal. Signals
+        # are logged for learning at most once per native bar: logging every
+        # 20s tick produced ~180 near-identical, overlapping samples per hour
+        # that swamped every real outcome in the learner.
+        self._last_recorded = {}
 
     def set_weights(self, w):
         self.weights = w
 
-    def compute(self, market, nlp, record=True):
+    def compute(self, market, nlp, record=True, offline=None):
+        """Compute the per-product composite signal.
+
+        `offline` (used by the historical replay, app/backtest/replay.py) is a
+        dict that makes the call PURE w.r.t. live state, so a replay over past
+        bars can't peek at present-day information:
+          only        — strategy names to evaluate (others vote 0); the replay
+                        passes the OHLCV-computable sleeves only, since live
+                        sleeves (llm, ml, model, evolved, discovered,
+                        derivatives) would return TODAY's opinion for an old bar
+          gate        — confidence gate (instead of the live stance gate)
+          shorts      — allow shorts (instead of the live setting)
+          veto_align  — HTF veto threshold (instead of the live learner)
+        Offline calls never record signals and never touch learner state."""
+        off = offline or {}
+        only = off.get("only")
+        if offline is not None:
+            record = False
         regime = market.regime()
         _ctx.market_sent = nlp.market_sentiment
         out = {}
@@ -307,17 +381,26 @@ class SignalEngine:
             # stamp advisor leans so strat_ml's build_x scores on the SAME inputs
             # the model was trained on (see loop.collect_features).
             from ..learn.online_model import stamp_advisor_leans
-            stamp_advisor_leans(f, p)
+            if offline is None:
+                stamp_advisor_leans(f, p)
             raw = {}
+            cs = getattr(market, "candles", {}).get(p) or []
+            bar_ts = cs[-1][0] if cs else None
             for name, fn in STRATEGIES.items():
+                if name in DISABLED_STRATEGIES or (only is not None and name not in only):
+                    raw[name] = 0.0
+                    continue
                 try:
                     s = _clip(fn(f, sent, regime))
                 except Exception:
                     s = 0.0
                 raw[name] = s
                 if record and abs(s) > 0.3:
-                    db.record_signal(name, p, 1 if s > 0 else -1, abs(s),
-                                     regime.get("label"))
+                    k = (name, p)
+                    if bar_ts is None or self._last_recorded.get(k) != bar_ts:
+                        self._last_recorded[k] = bar_ts
+                        db.record_signal(name, p, 1 if s > 0 else -1, abs(s),
+                                         regime.get("label"))
             self.per_strategy[p] = raw
 
             # --- active-strategy renormalization ---
@@ -355,14 +438,7 @@ class SignalEngine:
                 # to zero on a losing meme arm.
                 if "meme" in active and _is_meme(p):
                     eff["meme"] = self.weights.get("meme", 0.0) * tv("meme_strategy_influence")
-                wsum = sum(eff[n] for n in active) or 1e-9
-                composite = sum(eff[n] * s for n, s in active.items()) / wsum
-                # agreement: fraction of active voters on the composite's side
-                agree = sum(1 for s in active.values()
-                            if s * composite > 0) / len(active)
-                # breadth: more voters = more evidence (full trust at 3+)
-                breadth = min(1.0, len(active) / 3)
-                confidence = min(1.0, abs(composite) * (0.4 + 0.6 * agree) * (0.6 + 0.4 * breadth))
+                composite, confidence = combine(active, eff)
             else:
                 composite, confidence = 0.0, 0.0
             # DIRECTION LEARNER: nudge the composite toward whichever side has
@@ -371,9 +447,12 @@ class SignalEngine:
             # A bias can flip only a marginal call; strong signal still wins.
             from ..learn.direction import direction_learner
             mtf_align = f.get("mtf_align", 0.0)
-            adj_composite, dir_flipped = direction_learner.adjust(
-                regime.get("label", "unknown"), composite, mtf_align)
-            composite = adj_composite
+            if offline is None:
+                adj_composite, dir_flipped = direction_learner.adjust(
+                    regime.get("label", "unknown"), composite, mtf_align)
+                composite = adj_composite
+            else:
+                dir_flipped = False
             if confidence == 0.0 and composite != 0.0:
                 # bias created a lean from a dead-flat composite; give it a small
                 # floor confidence so it can be evaluated by the gate normally.
@@ -388,15 +467,23 @@ class SignalEngine:
             ml_conf = float(mlu["confidence"]) if mlu else 1.0
             from .. import settings as app_settings
             from ..risk.stance import stance
-            shorts_ok = app_settings.get("allow_shorts")
+            shorts_ok = (app_settings.get("allow_shorts") if offline is None
+                         else bool(off.get("shorts", True)))
             dir_ok = direction > 0 or shorts_ok
             # MULTI-TIMEFRAME VETO: never open AGAINST a strongly-aligned higher-
             # timeframe trend (the "should have been a long" mistake). Vetoed
             # signals are made non-actionable rather than flipped.
-            vetoed, veto_why = direction_learner.veto(direction, mtf_align)
+            if offline is None:
+                vetoed, veto_why = direction_learner.veto(direction, mtf_align)
+            else:                       # the learner's cold-start hard threshold
+                va = off.get("veto_align", tv("mtf_veto_align"))
+                vetoed = (direction < 0 and mtf_align >= va) or \
+                         (direction > 0 and mtf_align <= -va)
+                veto_why = "HTF veto (replay)" if vetoed else ""
             if vetoed:
                 dir_ok = False
-            gate = stance.current()["conf_gate"]     # stance-adjusted MIN_CONFIDENCE
+            gate = (stance.current()["conf_gate"] if offline is None  # stance-adjusted
+                    else off.get("gate", tv("min_confidence")))
             out[p] = Signal(
                 product=p, direction=direction, confidence=round(confidence, 3),
                 composite=round(composite, 3),

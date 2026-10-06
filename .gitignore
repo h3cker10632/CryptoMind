@@ -59,3 +59,11 @@ external_signals.jsonl
 
 # Strategy Researcher promoted-candidate store (runtime state)
 discovered_strategies.json
+
+# versioned market data store (app/data/store.py)
+data/
+
+# local scratch / backups / generated output
+tmp*
+_backup_pre_fix_*/
+artifacts/
