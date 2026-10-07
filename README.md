@@ -13,7 +13,7 @@ on every learner.
 
 | Sleeve | What it does | Code |
 |---|---|---|
-| **Core** | Holds the research loop's **champion** (default: BTC/ETH trend, 125-day average with a 2% buffer) — the same function the backtest ran, on the versioned data store. Stale data → hold. Its own **tracking monitor** alerts when holdings drift from the champion's targets. | `app/strategies/core.py`, `app/engine/` |
+| **Core** (opt-in: set `core_allocation_pct` > 0) | Holds the research loop's **champion** (default: BTC/ETH trend, 125-day average with a 2% buffer) — the same function the backtest ran, on the versioned data store. Stale data → hold. Its own **tracking monitor** alerts when holdings drift from the champion's targets. | `app/strategies/core.py`, `app/engine/` |
 | **Research loop** (daily) | Backtests every candidate (built-in + queued) on the point-in-time universe with real costs, forward-tracks each from the day its config was frozen, and promotes only when it beats the champion in both backtest halves, clears the **deflated Sharpe** over every variant ever tried, and wins a **paired always-valid forward test**. Clear losers are retired early. Prices the champion under other costs and **after tax**. | `app/engine/challengers.py`, `evidence.py`, `costs_tax.py` |
 | **Exploration** (opt-in) | Fast strategies on their own NAV-tracked books; benched at −20%; money follows 30-day results **shrunk by how much evidence they carry**. | `app/strategies/exploration.py` |
 | **Polymarket** | Prediction-market sleeve on its **own $500 paper bankroll** (`pm_start_cash`), separate from the main account. Forecasts every tracked market; **bets only once its resolved forecasts beat the market price** (Brier, per market) — raw or via a learned, walk-forward **calibration**. | `app/markets/polymarket/` |
@@ -49,8 +49,9 @@ verification for every step: **[docs/IMPROVEMENT_PIPELINE.md](docs/IMPROVEMENT_P
 
 Run every stage once, start to finish: `python tools/run_pipeline.py`
 (`--synthetic` for an offline dry run on a synthetic market). Heavy jobs (data
-sync, research loop, screen, ML lab, replay, ablation) also run on their own
-schedules as low-priority background processes. The replay keeps its per-bar signal data on
+sync, research loop, screen, ML lab, ablation) also run on their own
+schedules as separate lower-priority processes (`nice` 10 on Linux, below
+normal on Windows); the replay runs in a worker thread. The replay keeps its per-bar signal data on
 disk and only computes new bars; the ablation trains its seeds in parallel.
 
 ## Module map

@@ -35,7 +35,8 @@ every stage there. `--plant-signal 0.003` adds a cross-coin effect (a
 low-volatility premium momentum doesn't capture) so the whole
 model → candidate → research → live chain can be watched working.
 `tests/test_pipeline_e2e.py` does exactly that on every CI run: the ML lab
-finds the planted signal (IC ≈ 0.14, t ≈ 10 vs a momentum baseline of 0.07),
+finds the planted signal (IC well above the momentum baseline, t far above 2 —
+exact values vary with the run date, since the synthetic market ends today),
 queues `ml_rank_top20_h7`, the research loop scores it (no forward days yet,
 so not promotable), and — made champion — its saved weights drive the core.
 Synthetic numbers prove the plumbing, not an edge.
@@ -139,7 +140,9 @@ cluster-robust standard errors per label window, ≥ 20 windows**
   families; an empty family no longer counts as a phantom trial).
 - **Forward test**: challenger scaled to the champion's volatility, day-by-day
   difference tested with a mixture SPRT — valid however often it is checked
-  (false alarms checked every 5 days for 2 years: 1.3%). `better` → eligible
+  (false alarms with no real difference: about 3% when checked every 5 days
+  from day 30, about 5% when checked daily from day 5 as the loop does; the
+  bound is 2 × alpha = 10%). `better` → eligible
   after `research_min_forward_days` (30); `worse` → **retired**; undecided →
   eligible only after `research_max_forward_days` (180) with a positive paired
   difference. Settings: `research_forward_alpha` (0.05), `research_forward_tau`.
@@ -168,7 +171,7 @@ cluster-robust standard errors per label window, ≥ 20 windows**
 
 | Change | Effect | Check |
 |---|---|---|
-| `math.fsum` stdev instead of `statistics.stdev` (exact rationals) in the shared features and the daily lab | cold replay 7.9 s → 4.3 s per 1,300 bars × 21 coins; 23× per call | within 1 ulp; replay report byte-identical |
+| `math.fsum` stdev instead of `statistics.stdev` (exact rationals) in the shared features and the daily lab | cold replay 7.9 s → 4.3 s per 1,300 bars × 21 coins; 23× per call | within 2 ulp; replay report byte-identical |
 | Replay per-bar data on disk, fingerprinted per bar on exactly the candle rows it reads (`app/backtest/bar_cache.py`) | rolling next-day replay 5.8 s → 0.9 s on 1,900 bars (more on a year) | persisted == fresh after new / revised / dropped bars |
 | Ablation online-model seeds in parallel processes | ~3× on ≥ 4 cores (≈96% of its time) | parallel == serial |
 | Research loop fits the vol forecast on the candidate's coins | ~100× faster; also fixes a backtest/live mismatch | weights == live core's |
