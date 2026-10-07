@@ -1,9 +1,10 @@
 # Evolving/Learning stack
 
-> **Status (current):** all merged and pushed to GitHub `main` — HEAD **`4afb09a`**.
-> Full suite: **197 passing**. Runtime state has been reset (fresh $100k paper
-> account). The standalone `.zip`/`.diff` review artifacts referenced in older
-> revisions of this doc have been removed from the repo; history lives in git.
+> **Status:** historical record of the hourly bot's learning stack. The bot and
+> its learners are gated off by evidence (replay / learner ablation); the
+> system's learning now runs through the research loop, the signal screen and
+> the pooled ML lab — see `docs/IMPROVEMENT_PIPELINE.md`. The online model's
+> vote is trusted only on clustered, baseline-adjusted skill.
 
 The learning stack landed in three original phases (below), then grew three more
 self-learning subsystems (see "Later additions"). Everything learns from realized,

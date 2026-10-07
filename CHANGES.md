@@ -1,5 +1,19 @@
 # CryptoMind — Hardening Changelog
 
+## 2026-10-07 — Improvement pipeline: learn faster, stay honest
+
+Full map: `docs/IMPROVEMENT_PIPELINE.md`.
+
+| Change | Where |
+|---|---|
+| **Repo**: `.gitignore` `data/` also matched `app/data/`, so `store.py` / `sources.py` were never committed (fresh clones fail) — anchored to `/data/`; two tracked runtime snapshots untracked; CI on every branch. | `.gitignore`, `.github/workflows/ci.yml` |
+| **Speed, exact parity**: fsum stdev (cold replay 7.9 s → 4.3 s, identical report); per-bar replay data cached on disk with per-bar input fingerprints (next-day replay 5.8 s → 0.9 s); ablation seeds in parallel; vol forecast fitted on the candidate's own coins (also fixes a backtest/live mismatch). | `app/data/features.py`, `app/backtest/bar_cache.py`, `ablation.py`, `challengers.py` |
+| **Forward test**: paired (vol-matched) always-valid sequential test vs the champion replaces "30-day forward Sharpe > champion's" (SE ~3.5 — a coin flip); early promotion on evidence, early retirement of losers; 1.3% false alarms when checked every 5 days for 2 years. | `app/engine/evidence.py` |
+| **Candidate queue** (CLI + API), **promotion-process backtest**, **signal screen** (cross-coin IC, NW t, halves, Holm), **cost & after-tax scenarios** (taker/maker/low-fee/spot ETF, FIFO tax lots) on the scorecard. | `challengers.py`, `promotion_backtest.py`, `screen.py`, `costs_tax.py`, `tools/` |
+| **Per-sleeve risk**: kill switch / daily halt measure the account without the core's P&L and now stop exploration too; core tracking monitor; Polymarket bets only once its forecasts beat the market price (its 10% allocation was then replaced by its own $500 bankroll — entry below); exploration reallocates on shrunk evidence. | `risk/manager.py`, `strategies/`, `markets/polymarket/skill_gate.py` |
+| **External data with history**: point-in-time series store (revisions, `as_of`, causal daily alignment); Fear & Greed, DVOL, stablecoin supply, Coin Metrics; ingested signals kept uncapped. Fetchers tested on documented response shapes (hosts blocked in the build environment). | `app/data/series.py`, `series_sources.py`, `tools/series_sync.py` |
+| **ML**: online-model trust on clustered, baseline-adjusted skill (a zero-skill "always up" model used to get full trust ~40% of the time); pooled walk-forward cross-coin models (ridge / boosted trees, market-relative vol-scaled overlap-weighted labels) judged vs a momentum baseline; `ml_rank` / `trend_meta` challengers; Polymarket learned calibration used only when it wins out of sample. | `app/learn/online_model.py`, `app/ml/`, `tools/ml_lab.py`, `markets/polymarket/calibration.py` |
+| Core: a universe-wide champion no longer disables the core. | `app/strategies/core.py` |
 ## 2026-10-06 — Polymarket on its own bankroll
 
 Operator choice: Polymarket gets its own $500 paper bankroll and grows (or

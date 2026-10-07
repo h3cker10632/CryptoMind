@@ -1,35 +1,69 @@
-# ⚡ CryptoMind — Self-Learning Autonomous Crypto Trading System
+# ⚡ CryptoMind — Evidence-Gated Crypto Paper-Trading System
 
-A working implementation of the full architecture: research ingestion → NLP →
-signal generation → adaptive risk → paper execution → backtesting → self-improvement
-loop, with an orchestrator, audit log, and live dashboard.
+A paper-trading system that only lets a strategy, a model or an outside data
+source drive trades once tested history shows it helps — and keeps measuring
+after that. Paper trading only (simulated $100k account); real order routing is
+deliberately **not** enabled. No API keys are needed for core operation.
 
-**Safety-first defaults:** paper trading only (simulated $100k account), with
-kill switch, daily loss halt, gross-exposure caps, and a full audit trail.
-Directional shorts and market-neutral pair hedging are supported (runtime
-toggles); real order routing is deliberately **not** enabled. No API keys are
-required for core operation — everything runs on public, key-free data sources
-(an optional Gemini LLM advisor is the only key-gated, off-by-default extra).
+**Safety-first defaults:** kill switch, daily-loss halt, per-sleeve budgets,
+stale-data guards ("never trade blind"), a full audit trail, and evidence gates
+on every learner.
 
-## Architecture → Module map
+## What runs today
 
-| Blueprint component | Implementation |
+| Sleeve | What it does | Code |
+|---|---|---|
+| **Core** | Holds the research loop's **champion** (default: BTC/ETH trend, 125-day average with a 2% buffer) — the same function the backtest ran, on the versioned data store. Stale data → hold. Its own **tracking monitor** alerts when holdings drift from the champion's targets. | `app/strategies/core.py`, `app/engine/` |
+| **Research loop** (daily) | Backtests every candidate (built-in + queued) on the point-in-time universe with real costs, forward-tracks each from the day its config was frozen, and promotes only when it beats the champion in both backtest halves, clears the **deflated Sharpe** over every variant ever tried, and wins a **paired always-valid forward test**. Clear losers are retired early. Prices the champion under other costs and **after tax**. | `app/engine/challengers.py`, `evidence.py`, `costs_tax.py` |
+| **Exploration** (opt-in) | Fast strategies on their own NAV-tracked books; benched at −20%; money follows 30-day results **shrunk by how much evidence they carry**. | `app/strategies/exploration.py` |
+| **Polymarket** | Prediction-market sleeve on its **own $500 paper bankroll** (`pm_start_cash`), separate from the main account. Forecasts every tracked market; **bets only once its resolved forecasts beat the market price** (Brier, per market) — raw or via a learned, walk-forward **calibration**. | `app/markets/polymarket/` |
+| **Hourly bot** (legacy) | The original hourly signal ensemble and learner stack. Its replay is negative, so `hourly_bot_mode` auto keeps new entries off; learners stay gated by the learner ablation. | `app/signals/`, `app/learn/` |
+
+The kill switch and daily-loss halt measure the main account **excluding the
+core's P&L** (the core is built to ride through drawdowns) and stop new entries
+in the bot and exploration sleeves. Polymarket runs its own bankroll.
+
+## How it learns (and how fast)
+
+The bottleneck is statistical power, not compute, so the pipeline is built to
+get more evidence per day and to reject bad ideas cheaply. Details, settings and
+verification for every step: **[docs/IMPROVEMENT_PIPELINE.md](docs/IMPROVEMENT_PIPELINE.md)**.
+
+1. **Data** — versioned candle/funding store with `as_of` loads
+   (`app/data/store.py`), plus a point-in-time store for external series with
+   history: Fear & Greed, DVOL, stablecoin supply, on-chain activity, and every
+   ingested signal uncapped (`app/data/series.py`, `tools/series_sync.py`).
+2. **Screen** — does a feature predict anything at all? Cross-coin rank IC /
+   time-series correlation, Newey-West t, both halves, Holm-adjusted
+   (`app/engine/screen.py`, `tools/signal_screen.py`).
+3. **Model** — pooled walk-forward ML over every liquid coin's history
+   (market-relative, vol-scaled, overlap-weighted labels; ridge / boosted trees),
+   judged against a momentum baseline before it may become a candidate
+   (`app/ml/`, `tools/ml_lab.py`).
+4. **Candidate** — frozen configs queued without code changes
+   (`tools/candidates.py`, `/api/research/candidates`); each one is a counted trial.
+5. **Promote** — research loop gates (above); the promotion rule itself is
+   backtested over history (`tools/promotion_backtest.py`).
+6. **Trade & watch** — core tracking monitor, per-sleeve limits, scorecard
+   (`GET /api/scorecard`) with forward tests, retirements and cost/tax scenarios.
+
+Heavy jobs (data sync, research loop, screen, ML lab, replay, ablation) run as
+low-priority background processes. The replay keeps its per-bar signal data on
+disk and only computes new bars; the ablation trains its seeds in parallel.
+
+## Module map
+
+| Component | Implementation |
 |---|---|
-| Orchestrator / Control Plane | `app/orchestrator.py` — decision loop, health, human-in-the-loop pause/kill |
-| Research & Data Ingestion | `app/data/research.py` — self-expanding source pool (news RSS + combined Reddit multireddit + auto-spawned Google News feeds per coin), adaptive 429 backoff, source promotion/demotion, Fear & Greed index, self-directed research queue |
-| Dynamic Universe Discovery | `app/data/universe.py` — extracts coin mentions from research + CoinGecko trending, validates against Coinbase listing & liquidity floor, expands/prunes the tradeable universe (core 6 protected, cap 12, held positions never pruned) |
-| Market Data & Order Book Feed | `app/data/market.py` — live Coinbase Exchange candles, tickers, L2 order-book depth/imbalance |
-| Derivatives Feed | `app/data/derivatives.py` — OKX public API: perp funding rates, open-interest history, long/short account ratio, taker buy/sell aggression (per asset, key-free) |
-| NLP / Signal Generation | `app/nlp/sentiment.py` — crypto sentiment lexicon, per-asset scores, narrative detection (drop-in interface for FinBERT/CryptoBERT) |
-| Signal Engine | `app/signals/engine.py` — 5-strategy ensemble: trend, mean-reversion, breakout, sentiment, microstructure; outputs direction, confidence, edge, invalidation |
-| Adaptive Risk Manager | `app/risk/manager.py` — vol-adjusted sizing, exposure/position caps, drawdown kill switch, daily loss halt, loss-streak risk scaling, regime scaling, cooldowns |
-| Execution Engine (Paper) | `app/execution/paper.py` — OMS with fees, slippage, stops, take-profits, ATR trailing stops |
-| Backtesting & Validation | `app/backtest/engine.py` — event-driven sim on ~950 real hourly bars, in-sample vs out-of-sample walk-forward split, overfitting flag |
-| Self-Improvement Loop | `app/learn/loop.py` — bandit-style meta-learner: scores every signal against realized 1h forward returns, softmax-reweights the strategy ensemble (with exploration floor) |
-| Storage / Audit | `app/db.py` — SQLite: events, trades, equity curve, scored signals |
-| State Persistence | `app/persistence.py` — full system snapshot to `state.json` (~1/min, atomic): paper account & open positions, neural-net weights + replay buffer, Q-table, bandit posteriors, GA champion, discovered universe, research corpus + source-discovery memory (promotions/demotions/track records). Auto-restored on startup |
-| Macro Context | Macro feeds (Fed/rates, inflation, crypto regulation via Google News) scored with a risk-on/risk-off lexicon; macro sentiment is 20% of market sentiment and feeds the ML model via sentiment features |
-| Dashboard | `static/index.html` — live equity curve, signals, positions, weights, research feed, audit log, backtest runner |
+| Orchestrator | `app/orchestrator.py` — decision loop, core / exploration / replay loops, background jobs, scorecard |
+| Data | `app/data/store.py` (candles, funding, revisions, point-in-time universe), `app/data/series.py` + `series_sources.py` (external series), `app/data/market.py` (live Coinbase feed), `app/data/ingest.py` (external-signal seam) |
+| Portfolio engine | `app/engine/` — panel, causal features, strategies as pure functions, drift simulation, registry, challengers, evidence, screen, costs/taxes, promotion backtest |
+| ML | `app/ml/` — pooled dataset, walk-forward models, evaluation, ML candidate strategies; `app/learn/online_model.py` (hourly bot's online net, trusted only on clustered skill) |
+| Risk | `app/risk/manager.py` — sizing, kill switch / daily halt (ex-core basis), protections |
+| Execution | `app/execution/` — paper broker, OMS + shadow venue, shared costs |
+| Polymarket | `app/markets/polymarket/` — engine, forecast ledger, skill gate, calibration |
+| Storage | `app/db.py` (SQLite audit), `app/persistence.py` (`state.json` snapshots) |
+| Dashboard | `static/index.html` — portfolio-first layout, scorecard |
 
 ## Run
 
@@ -55,9 +89,16 @@ Keep this directory when restarting if you want to retain historical data.
 - `GET /api/trades` · `/api/equity` · `/api/events`
 - `GET /api/backtest?product=BTC-USD&strategy=trend|meanrev|breakout`
 - `POST /api/control/pause` · `/resume` · `/kill` · `/reset-kill` · `/save` · `/reset-account` · `/evolve`
+- `GET /api/scorecard` — champion vs candidates (backtest, deflated Sharpe, forward test, retirements), costs / after-tax, live vs holding BTC
+- `GET /api/research/candidates` · `POST /api/control/research/candidates` (`{name, config}`) · `POST /api/control/research/candidates/remove`
 - `POST /api/settings` — toggle `allow_shorts`, `hedge_enabled`, `llm_advisor_enabled`, `exit_advisor_enabled`, `meme_trading_enabled`, trade stance…
 
-## The learning intelligence stack
+## Legacy: the hourly bot's learning stack
+
+> These learners serve the hourly bot, which is gated off by its replay; each
+> learner is also gated by the learner ablation (`app/learn/gate.py`) and on
+> 2026-10-02 none passed. The online net's vote is trusted only on clustered,
+> baseline-adjusted skill (`online_model.trust`). Kept for reference.
 
 Multiple learning algorithms run concurrently (`app/learn/`), all learning from
 realized, after-cost PnL:
