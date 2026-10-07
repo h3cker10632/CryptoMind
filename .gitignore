@@ -60,8 +60,10 @@ external_signals.jsonl
 # Strategy Researcher promoted-candidate store (runtime state)
 discovered_strategies.json
 
-# versioned market data store (app/data/store.py)
-data/
+# versioned market data store (app/data/store.py) — anchored to the repo
+# root: a bare `data/` also matched app/data/ and kept store.py / sources.py
+# out of git
+/data/
 
 # local scratch / backups / generated output
 tmp*
