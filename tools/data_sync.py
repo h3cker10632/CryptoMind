@@ -68,6 +68,7 @@ async def sync(only=None, daily_years=10, hourly_years=3, hourly_top=30, say=pri
     from app.data import sources, store
     now = time.time()
     totals = {"new": 0, "revised": 0, "rejected": 0}
+    fetched = False
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "cryptomind-data"}) as c:
         sem = asyncio.Semaphore(4)
         if only in (None, "daily"):
@@ -77,6 +78,7 @@ async def sync(only=None, daily_years=10, hourly_years=3, hourly_top=30, say=pri
                 f"({sum(1 for p in prods if p['status'] == 'delisted')} delisted)")
             res = await asyncio.gather(*[_sync_candles(c, sem, p["id"], 86400, daily_years,
                                                        now, say) for p in prods])
+            fetched = any(st is not None for st in res)
             for st in res:
                 for k in totals:
                     totals[k] += (st or {}).get(k, 0)
@@ -91,12 +93,15 @@ async def sync(only=None, daily_years=10, hourly_years=3, hourly_top=30, say=pri
         if only in (None, "funding"):
             await sync_funding(c, hourly, now, say)
     say(f"sync done: {totals}")
-    # when the FULL sync last finished: the scheduler and the scorecard read
-    # this, not ingest_log.jsonl, which the core / exploration loops append to
-    # every hour (that kept the daily sync from ever coming due)
-    os.makedirs(store.STORE, exist_ok=True)
-    with open(os.path.join(store.STORE, "last_sync"), "w") as f:
-        f.write(str(now))
+    if only is None:
+        if not fetched:      # exit non-zero: the scheduler retries in 6 h, not every pass
+            raise SystemExit("no daily candles fetched")
+        # when the FULL sync last finished: the scheduler and the scorecard read
+        # this, not ingest_log.jsonl, which the core / exploration loops append
+        # to every hour (that kept the daily sync from ever coming due)
+        os.makedirs(store.STORE, exist_ok=True)
+        with open(os.path.join(store.STORE, "last_sync"), "w") as f:
+            f.write(str(now))
     return totals
 
 

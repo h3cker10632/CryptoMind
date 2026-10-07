@@ -41,8 +41,8 @@ def test_calibration_flip_signs_votes_and_confidence_for_the_side_bought():
     assert strong["confidence"] >= tv("pm_confidence_gate")  # a clear flip can be bet
 
     same = Cal.adjust(m, sig, _Model(0.30))                # calibration agrees: still No
-    assert same["outcome_index"] == 1
-    assert same["votes"] == sig["votes"] and same["confidence"] == sig["confidence"]
+    assert same["outcome_index"] == 1 and same["votes"] == sig["votes"]
+    assert same["confidence"] == round(min(1.0, 0.10 / tv("pm_edge_scale")), 3)  # same rule
 
 
 def test_online_model_stats_carry_the_trust_that_gates_the_vote():

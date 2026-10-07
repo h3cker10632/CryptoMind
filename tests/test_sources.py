@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 D, H = 86400, 3600
 
@@ -145,8 +146,12 @@ def test_data_sync_runs_end_to_end_on_mocked_apis(tmp_path, monkeypatch):
     monkeypatch.setattr(ds.time, "time", lambda: now)
     monkeypatch.setattr(ds, "hourly_universe", lambda top=30: ["BTC-USD"])
 
+    down = []
+
     def handler(req):
         url = str(req.url)
+        if down and "/candles" in url:
+            return httpx.Response(404)
         if url.endswith("/products"):
             return httpx.Response(200, json=[
                 {"id": "BTC-USD", "base_currency": "BTC", "quote_currency": "USD",
@@ -192,3 +197,10 @@ def test_data_sync_runs_end_to_end_on_mocked_apis(tmp_path, monkeypatch):
     assert hl["BTC"] == [[now - 5 * H, 0.00001]]
     assert db["BTC"] == [[now - 2 * H, 2e-5]] and db["ETH"] == [[now - 2 * H, 2e-5]]
     assert (tmp_path / "last_sync").read_text() == str(now)   # the scheduler's stamp
+    os.remove(tmp_path / "last_sync")
+    ds.asyncio.run(ds.sync(only="funding", say=lambda m: None))
+    assert not (tmp_path / "last_sync").exists()                # partial: not the full sync
+    down.append(1)                                              # Coinbase candles unreachable:
+    with pytest.raises(SystemExit):                             # exit non-zero (6 h retry)
+        ds.asyncio.run(ds.sync(daily_years=1, hourly_years=1, say=lambda m: None))
+    assert not (tmp_path / "last_sync").exists()

@@ -116,14 +116,14 @@ realized, after-cost PnL:
    vs exploitation is handled by Bayesian uncertainty, not a fixed schedule.
    Weights are EMA-smoothed with a 4% exploration floor.
 3. **Online neural-net committee** (`online_model.py`) — an ensemble of three
-   independently-seeded 18→16→1 tanh MLPs trained continually (SGD + AdaGrad) on
-   live feature snapshots vs 30-min forward returns, with **quantile heads
+   independently-seeded 30→16→1 tanh MLPs trained continually (SGD + AdaGrad) on
+   live feature snapshots vs 24-hour forward returns, with **quantile heads
    (P10/P90)** for an aleatoric band and inter-member disagreement for epistemic
    uncertainty. Continual-learning safeguards: prioritized experience replay
    (4000 samples, error-weighted), online feature standardization (Welford), and
    honest held-out directional-accuracy tracking (predictions recorded *before*
    labels arrive). It votes as the `ml` strategy only once its skill over the
-   always-majority baseline is > 2 clustered SE over ≥ 20 label windows
+   always-majority baseline is > 2 clustered SE over ≥ 20 daily label windows
    (weight 0 until then), and its combined uncertainty scales position size
    (0.4×–1.0×) so the book bets small when unsure. Weights + replay persist across
    restart.
