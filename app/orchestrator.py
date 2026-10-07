@@ -482,6 +482,7 @@ class Orchestrator:
                                     else "scheduled"), new=new)
                     await self._maybe_sync_data()
                     await self._maybe_run_research_loop()
+                    await self._maybe_run_research_extras()
                     if self.hourly_bot_active():
                         # these only inform the hourly bot / legacy core modes
                         await self._maybe_run_learner_ablation()
@@ -563,6 +564,21 @@ class Orchestrator:
             alert("info", "New champion strategy", msg)
             db.log_event("learn", f"Champion promoted: {msg}")
         return ok
+
+    async def _maybe_run_research_extras(self, now=None):
+        """Weekly: the signal screen (does a feature predict anything before a
+        strategy is built on it — app/engine/screen.py) and the replay of the
+        promotion process itself (app/engine/promotion_backtest.py)."""
+        import os
+        for script, report, label in (
+                ("signal_screen.py", "signal_screen_latest.json", "Signal screen"),
+                ("promotion_backtest.py", "promotion_backtest_latest.json",
+                 "Promotion-process backtest")):
+            try:
+                last = os.path.getmtime(self._replay_path(report))
+            except OSError:
+                last = 0
+            await self._run_tool_weekly(script, label, last, "research_extras_interval_sec", now)
 
     async def _maybe_run_daily_lab(self, now=None):
         """Weekly daily lab (multi-year daily history): re-tests core selection
@@ -904,8 +920,12 @@ class Orchestrator:
                                "deflated_sharpe": (c.get("backtest") or {}).get("deflated_sharpe"),
                                "forward_days": c.get("forward_days"),
                                "forward_sharpe_vs_champion": c.get("forward_sharpe_vs_champion"),
+                               "forward_test": {k: (c.get("forward_test") or {}).get(k)
+                                                for k in ("decision", "n", "z", "mean_diff_bps")},
+                               "retired": c.get("retired"),
                                "eligible": c.get("eligible_for_promotion")}
                            for n, c in cands.items()},
+            "costs_taxes": rep.get("costs_taxes"),
             "trials_counted": rep.get("trials"),
             "research_ran_at": rep.get("ran_at"),
             "live": {"since_ts": fwd.get("since_ts"), "days": fwd.get("days"),

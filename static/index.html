@@ -1723,7 +1723,14 @@ async function refreshScorecard(){
       <td>${n===ch.name?'🏆 ':''}${scEsc(n)}</td><td>${scEsc(c.sharpe)}</td>
       <td>${scEsc((c.halves||[]).join(' / '))}</td><td>${scEsc(c.cagr_pct)}%</td>
       <td>${scEsc(c.max_dd_pct)}%</td><td>${scEsc(c.deflated_sharpe)}</td>
-      <td>${scEsc(c.forward_days)}</td><td>${c.eligible?'✅':'—'}</td></tr>`).join('');
+      <td>${scEsc(c.forward_days)}</td>
+      <td title="paired always-valid test vs the champion (z = ${scEsc((c.forward_test||{}).z)})">${
+        c.retired?'<span style="color:#ff7675">retired</span>':scEsc((c.forward_test||{}).decision)}</td>
+      <td>${c.eligible?'✅':'—'}</td></tr>`).join('');
+    const ct=(s.costs_taxes||{}).scenarios||{};
+    const ctRows=Object.entries(ct).map(([n,v])=>`<tr><td>${scEsc(n)}</td><td>${scEsc(v.cagr_pct)}%</td>
+      <td>${scEsc(v.sharpe)}</td><td>${scEsc(v.max_drawdown_pct)}%</td>
+      <td>${v.liquidation_cagr_pct==null?'—':scEsc(v.liquidation_cagr_pct)+'%'}</td></tr>`).join('');
     const learners=Object.entries(G.learners||{}).map(([n,a])=>`${scEsc(n)} ${a?'on':'off'}`).join(' · ');
     $('#scorecard').innerHTML=`
       <div class="kv"><span>Live since forward baseline (${scEsc(L.days)} days)</span>
@@ -1740,8 +1747,13 @@ async function refreshScorecard(){
         <td class="${cls(e.r30_pct)}">${pct(e.r30_pct)}</td><td>${scEsc(e.trades)}</td></tr>`).join('')}</tbody></table>`:''}
       <table style="width:100%;margin-top:8px;font-size:12px"><thead><tr>
         <th>Candidate</th><th>Sharpe</th><th>Halves</th><th>CAGR</th><th>Max DD</th>
-        <th>Deflated Sharpe</th><th>Forward days</th><th>Promotable</th></tr></thead>
-        <tbody>${rows||'<tr><td colspan="8">research loop has not run yet</td></tr>'}</tbody></table>
+        <th>Deflated Sharpe</th><th>Forward days</th><th>Forward test</th><th>Promotable</th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="9">research loop has not run yet</td></tr>'}</tbody></table>
+      ${ctRows?`<table style="width:100%;margin-top:8px;font-size:12px"><thead><tr>
+        <th>Champion under costs / taxes</th><th>CAGR</th><th>Sharpe</th><th>Max DD</th>
+        <th>After selling all</th></tr></thead><tbody>${ctRows}</tbody></table>
+        <div style="color:var(--dim);font-size:11px">Tax rates are illustrative settings
+        (tax_short_term_rate / tax_long_term_rate), not tax advice.</div>`:''}
       <div style="color:var(--dim);font-size:11px;margin-top:6px">
         Trials counted for deflated Sharpe: ${scEsc(s.trials_counted)} ·
         hourly bot: ${scEsc(G.hourly_bot_mode)} → ${G.hourly_bot_active?'ON':'OFF'} (replay: ${scEsc(G.hourly_replay_verdict)}) ·

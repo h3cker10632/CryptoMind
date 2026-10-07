@@ -7,13 +7,21 @@ Every candidate is a frozen config. Each run:
      data after registration was never seen when the config was chosen, so
      this is genuine out-of-sample evidence (changing a config re-registers
      it and restarts its clock);
-  3. PROMOTE a challenger only when ALL hold:
-       * >= `min_forward_days` of forward tracking, with a higher forward
-         Sharpe than the champion over the same days;
+  3. PROMOTE a challenger only when ALL hold (app/engine/evidence.py):
        * its backtest beats the champion's on Sharpe in both halves;
-       * deflated Sharpe >= `min_dsr` counting every variant ever tried.
+       * deflated Sharpe >= `min_dsr` counting every variant ever tried;
+       * >= `min_forward_days` of forward tracking AND a paired, always-valid
+         sequential test vs the champion on the same days says 'better' (or,
+         undecided after `max_forward_days`, the paired difference is positive).
+     A 'worse' verdict RETIRES a challenger early (it stays reported, never
+     promoted, until its config changes).
 The champion is persisted in reports/champion.json; the core follows it when
 `core_strategy` is "champion" (app/strategies/core.py).
+
+Besides the built-in CANDIDATES, frozen configs can be QUEUED without a code
+change (`register`, reports/candidate_queue.json) — e.g. by the ML lab when a
+model passes its own out-of-sample gate — so their forward clocks start the
+day they exist. Every queued config is one more trial for the deflated Sharpe.
 
 Candidates that need many coins (alt sleeves) are scored like the rest.
 """
@@ -28,10 +36,13 @@ import numpy as np
 
 from . import panel as P, strategies as S, backtest as B, registry as Rg, universe as U
 from . import risk_models as M
+from . import evidence as E
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STATE = os.path.join(ROOT, "reports", "challengers.json")
 CHAMPION = os.path.join(ROOT, "reports", "champion.json")
+QUEUE = os.path.join(ROOT, "reports", "candidate_queue.json")
+MAX_QUEUED = 20          # active queued candidates (each one is a counted trial)
 FAMILY = "challengers"
 RESEARCH_FAMILIES = ("core_v2", "core_v2_long", "core_v3", FAMILY)
 MAJORS = ("BTC-USD", "ETH-USD")
@@ -59,8 +70,88 @@ def config_hash(cfg):
     return hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
 
 
+SELECTIONS = ("hold", "trend", "momentum", "ml_rank", "trend_meta")
+SIZINGS = ("equal", "inverse_vol", "vol_target", "vol_forecast")
+_BOUNDS = {"sma": (10, 400), "hysteresis": (0.0, 0.2), "top_k": (1, 20),
+           "vol_target": (0.05, 2.0), "tranches": (1, 7), "universe_top": (2, 60),
+           "horizon": (1, 60), "refit_days": (7, 365)}
+
+
+def validate_config(cfg):
+    """A candidate config is data — check it before it can run. Returns an
+    error string, or None if valid."""
+    if not isinstance(cfg, dict):
+        return "config must be an object"
+    if cfg.get("selection") not in SELECTIONS:
+        return f"selection must be one of {SELECTIONS}"
+    if cfg.get("sizing", "equal") not in SIZINGS:
+        return f"sizing must be one of {SIZINGS}"
+    if ("assets" in cfg) == ("universe_top" in cfg):
+        return "exactly one of assets / universe_top"
+    if "assets" in cfg:
+        a = cfg["assets"]
+        if (not isinstance(a, list) or not a or len(a) > 20
+                or not all(isinstance(x, str) and x.endswith("-USD") for x in a)):
+            return "assets must be 1-20 '<COIN>-USD' strings"
+    for k, (lo, hi) in _BOUNDS.items():
+        if k in cfg:
+            v = cfg[k]
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not lo <= v <= hi:
+                return f"{k} must be in [{lo}, {hi}]"
+    allowed = {"assets", "selection", "sizing", "model", "features"} | set(_BOUNDS)
+    extra = set(cfg) - allowed
+    if extra:
+        return f"unknown keys {sorted(extra)}"
+    return None
+
+
+def candidates():
+    """Built-in candidates plus the active queued ones (built-ins win a
+    name clash)."""
+    q = _load(QUEUE, {}).get("candidates", {})
+    out = dict(CANDIDATES)
+    for name, e in q.items():
+        if name not in out and not e.get("removed") and validate_config(e.get("config")) is None:
+            out[name] = e["config"]
+    return out
+
+
+def register(name, cfg, source="manual", now=None):
+    """Queue a frozen config as a challenger. Its forward clock starts at the
+    next research-loop run. Returns (ok, message)."""
+    err = validate_config(cfg)
+    if err:
+        return False, err
+    if not isinstance(name, str) or not name.replace("_", "").isalnum() or len(name) > 48:
+        return False, "name must be letters, digits and _ (<= 48 chars)"
+    if name in CANDIDATES:
+        return False, f"{name} is a built-in candidate"
+    q = _load(QUEUE, {"candidates": {}})
+    active = [n for n, e in q["candidates"].items() if not e.get("removed")]
+    old = q["candidates"].get(name)
+    if old and not old.get("removed") and config_hash(old["config"]) == config_hash(cfg):
+        return True, "already queued"
+    if name not in active and len(active) >= MAX_QUEUED:
+        return False, f"queue full ({MAX_QUEUED} active); remove one first"
+    q["candidates"][name] = {"config": cfg, "source": source, "added_at": now or time.time()}
+    _save(QUEUE, q)
+    return True, "queued"
+
+
+def unregister(name):
+    q = _load(QUEUE, {"candidates": {}})
+    if name not in q["candidates"]:
+        return False
+    q["candidates"][name]["removed"] = True
+    _save(QUEUE, q)
+    return True
+
+
 def weights(cfg, panel, start=0, vol=None):
     """(T, N) target weights of a candidate on a panel of any coins."""
+    if cfg["selection"] in ("ml_rank", "trend_meta"):
+        from ..ml import strategies as MLS
+        return MLS.weights(cfg, panel, start=start)
     if cfg["selection"] == "hold":
         W = np.zeros((panel.T, panel.N))
         idx = [panel.coins.index(a) for a in cfg["assets"] if a in panel.coins]
@@ -125,14 +216,21 @@ def _save(path, obj):
 
 
 def champion():
-    """(name, config) of the current champion."""
+    """(name, config) of the current champion. A promoted QUEUED candidate
+    stays champion from its stored config even if it leaves the queue."""
     c = _load(CHAMPION, {})
-    name = c.get("name") if c.get("name") in CANDIDATES else DEFAULT_CHAMPION
-    return name, CANDIDATES[name]
+    name = c.get("name")
+    cands = candidates()
+    if name in cands:
+        return name, cands[name]
+    if name and validate_config(c.get("config")) is None:
+        return name, c["config"]
+    return DEFAULT_CHAMPION, CANDIDATES[DEFAULT_CHAMPION]
 
 
 def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
-        min_forward_days=90, min_dsr=0.95, today=None, progress=None):
+        min_forward_days=90, min_dsr=0.95, today=None, progress=None,
+        max_forward_days=180, alpha=0.05, tau=0.1):
     """One loop iteration. Returns the report (also saved to STATE)."""
     say = progress or (lambda m: None)
     panel = panel or P.from_store()
@@ -141,9 +239,11 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
     d0 = (dt.date.fromisoformat(backtest_from) - dt.date(1970, 1, 1)).days
     start = int((panel.days < d0).sum())
     state = _load(STATE, {"candidates": {}})
-    champ_name, _ = champion()
+    champ_name, champ_cfg = champion()
+    cands = candidates()
+    cands.setdefault(champ_name, champ_cfg)
     out = {}
-    for name, cfg in CANDIDATES.items():
+    for name, cfg in cands.items():
         h = config_hash(cfg)
         reg = state["candidates"].get(name)
         if not reg or reg.get("config_hash") != h:          # new / changed: (re)start clock
@@ -154,47 +254,42 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
         fs = int((panel.days < reg["registered_day"]).sum())
         fwd, _, _ = B.simulate_drift(W, R, cost, start=max(fs, start), band_rel=band_rel)
         out[name] = {"config": cfg, "registered_day": reg["registered_day"],
-                     "backtest_rets": r, "forward_rets": fwd,
+                     "backtest_rets": r, "forward_rets": fwd, "W": W,
                      "turnover_per_year": round(float(turn.sum()) / max(1, len(turn)) * 365, 1)}
         state["candidates"][name] = reg
         say(f"{name}: backtest {len(r)} days, forward {len(fwd)} days")
     n = sum(Rg.n_trials(f) for f in RESEARCH_FAMILIES)
     sd = Rg.trial_sharpe_std(FAMILY)
-    c_bt = out[champ_name]["backtest_rets"]
-    h = len(c_bt) // 2
+    retired = {nm for nm, reg in state["candidates"].items()
+               if reg.get("retired") and nm in out}
+    verdicts, best = E.promotion_decision(
+        {nm: o["backtest_rets"] for nm, o in out.items()},
+        {nm: o["forward_rets"] for nm, o in out.items()},
+        champ_name, n, sd, min_dsr=min_dsr, min_forward_days=min_forward_days,
+        max_forward_days=max_forward_days, alpha=alpha, tau=tau, retired=retired)
     report = {"ran_at": time.time(), "data_version": panel.data_version, "trials": n,
               "champion": champ_name, "candidates": {}}
     for name, o in out.items():
-        rep = B.report(o["backtest_rets"], n_trials=n, trial_sr_std=sd)
-        bt = o["backtest_rets"]
-        beats_bt = name != champ_name and all(
-            B.stats(bt[sl])["sharpe"] > B.stats(c_bt[sl])["sharpe"]
-            for sl in (slice(0, h), slice(h, None)))
-        fwd = o["forward_rets"]
-        cf = out[champ_name]["forward_rets"]
-        k = min(len(fwd), len(cf))
-        f_sh = B.stats(fwd[-k:])["sharpe"] if k > 1 else None
-        c_sh = B.stats(cf[-k:])["sharpe"] if k > 1 else None
-        eligible = (name != champ_name and beats_bt and rep["deflated_sharpe"] >= min_dsr
-                    and k >= min_forward_days and f_sh is not None and f_sh > c_sh)
-        report["candidates"][name] = {
-            "config": o["config"], "registered_day": o["registered_day"],
-            "backtest": {k2: rep[k2] for k2 in ("full", "first_half", "second_half",
-                                                "cagr_pct", "deflated_sharpe")},
-            "turnover_per_year": o["turnover_per_year"],
-            "beats_champion_backtest_both_halves": bool(beats_bt),
-            "forward_days": int(len(fwd)), "forward": B.stats(fwd),
-            "forward_sharpe_vs_champion": [f_sh, c_sh] if k > 1 else None,
-            "eligible_for_promotion": bool(eligible)}
-    winners = [n_ for n_, c in report["candidates"].items() if c["eligible_for_promotion"]]
-    if winners:
-        best = max(winners, key=lambda n_: report["candidates"][n_]["forward"]["sharpe"])
-        _save(CHAMPION, {"name": best, "config": CANDIDATES[best], "promoted_at": time.time(),
+        v = verdicts[name]
+        if v["retired"] and not state["candidates"][name].get("retired"):
+            state["candidates"][name]["retired"] = {
+                "day": today, "why": f"forward test vs {champ_name}: {v['forward_test']}"}
+        report["candidates"][name] = dict(
+            config=o["config"], registered_day=o["registered_day"],
+            turnover_per_year=o["turnover_per_year"], **v)
+    try:
+        from . import costs_tax as CT
+        report["costs_taxes"] = CT.scenarios(out[champ_name]["W"], panel, start=start,
+                                             band_rel=band_rel, base_cost=cost)
+    except Exception as e:                   # a report extra never blocks the loop
+        report["costs_taxes"] = {"error": str(e)}
+    if best:
+        _save(CHAMPION, {"name": best, "config": cands[best], "promoted_at": time.time(),
                          "replaced": champ_name})
         report["promoted"] = best
         report["champion"] = best
     elif not os.path.exists(CHAMPION):
-        _save(CHAMPION, {"name": champ_name, "config": CANDIDATES[champ_name],
+        _save(CHAMPION, {"name": champ_name, "config": champ_cfg,
                          "promoted_at": time.time(), "replaced": None})
     state["last_report"] = report
     _save(STATE, state)

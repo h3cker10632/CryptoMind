@@ -949,6 +949,37 @@ def scorecard():
     return orch.scorecard()
 
 
+@app.get("/api/research/candidates")
+def research_candidates():
+    """Every candidate the research loop scores (built-in + queued), the
+    champion, and which ones the forward test retired."""
+    from .engine import challengers as C
+    st = C._load(C.STATE, {}).get("candidates", {})
+    queued = C._load(C.QUEUE, {}).get("candidates", {})
+    return {"champion": C.champion()[0],
+            "candidates": {n: {"config": cfg, "queued": n in queued,
+                               "registered_day": (st.get(n) or {}).get("registered_day"),
+                               "retired": (st.get(n) or {}).get("retired")}
+                           for n, cfg in C.candidates().items()}}
+
+
+@app.post("/api/control/research/candidates")
+async def research_register(request: Request):
+    """Queue a frozen candidate config: {"name": ..., "config": {...}}. Its
+    forward clock starts at the next research-loop run (token required)."""
+    from .engine import challengers as C
+    body = await request.json()
+    ok, msg = C.register(body.get("name"), body.get("config"), source="api")
+    return JSONResponse({"ok": ok, "message": msg}, 200 if ok else 400)
+
+
+@app.post("/api/control/research/candidates/remove")
+async def research_unregister(request: Request):
+    from .engine import challengers as C
+    body = await request.json()
+    return {"ok": C.unregister(body.get("name"))}
+
+
 @app.get("/api/backtest/replay")
 def backtest_replay():
     """Latest automatic replay of the LIVE strategy over the whole universe

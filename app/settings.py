@@ -92,6 +92,9 @@ DEFAULTS = {
     "learner_ablation_interval_sec": 604800,   # re-run the ablation weekly
     "data_sync_interval_sec": 86400,    # refresh the market data store daily
     "research_loop_interval_sec": 86400,    # champion / challenger loop daily
+    # signal screen + promotion-process backtest (tools/signal_screen.py,
+    # tools/promotion_backtest.py)
+    "research_extras_interval_sec": 604800,
     "learner_gate_max_age_days": 10,    # older evidence counts as none
     # Learns whether the DISCRETIONARY early exits (pattern_exit, signal-flip)
     # are actually earning their keep per regime, and dials their trigger bar
@@ -206,6 +209,18 @@ DEFAULTS = {
     # champion / challenger promotion bar (app/engine/challengers.py)
     "research_min_forward_days": 30,
     "research_min_dsr": 0.97,
+    # paired, always-valid forward test vs the champion (app/engine/evidence.py):
+    # promote early on 'better', retire on 'worse'; undecided candidates are
+    # eligible only after `research_max_forward_days` with a positive paired
+    # difference. alpha = error rate however often it is checked; tau = the
+    # mixture prior's scale for the standardized daily difference.
+    "research_max_forward_days": 180,
+    "research_forward_alpha": 0.05,
+    "research_forward_tau": 0.1,
+    # cost / after-tax scenarios in the research report (app/engine/costs_tax.py).
+    # Illustrative US-style rates, NOT tax advice: set your own, ask your CPA.
+    "tax_short_term_rate": 0.28,
+    "tax_long_term_rate": 0.19,
     # BTC/ETH: the only coins with no survivorship question (top two the whole
     # time). On the survivorship-free universe no altcoin rule beat holding BTC.
     "core_assets": "BTC-USD,ETH-USD",
@@ -341,6 +356,10 @@ FLOAT_KEYS = {
     "core_hysteresis": (0.0, 0.2),
     "exploration_bench_drawdown": (0.05, 0.9),
     "research_min_dsr": (0.5, 0.999),
+    "research_forward_alpha": (0.001, 0.2),
+    "research_forward_tau": (0.01, 1.0),
+    "tax_short_term_rate": (0.0, 0.6),
+    "tax_long_term_rate": (0.0, 0.6),
 }
 
 # Integer settings: (min, max) inclusive clamp. Everything else is treated as
@@ -364,12 +383,14 @@ INT_KEYS = {
     "learner_ablation_interval_sec": (86400, 2592000),   # 1d .. 30d
     "data_sync_interval_sec": (3600, 604800),
     "research_loop_interval_sec": (86400, 2592000),
+    "research_extras_interval_sec": (86400, 2592000),
     "learner_gate_max_age_days": (1, 60),
     "core_top_k": (2, 15),
     "core_tranches": (1, 7),
     "exploration_allocation_pct": (0, 100),
     "exploration_reinstate_days": (1, 365),
     "research_min_forward_days": (7, 365),
+    "research_max_forward_days": (30, 1095),
     "daily_lab_interval_sec": (86400, 2592000),
     "daily_lab_max_age_days": (1, 60),
 }
