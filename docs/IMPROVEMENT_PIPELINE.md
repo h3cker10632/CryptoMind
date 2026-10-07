@@ -14,25 +14,50 @@ bad ideas cheaply, and never mistaking noise for skill.
                      baseline  trial         test
 ```
 
-## 0. Before anything else: commit `app/data/sources.py`
-
-The old `.gitignore` rule `data/` also matched `app/data/`, so files there
-were never committed. It is now anchored (`/data/`) and `app/data/store.py` is
-in the repo. `app/data/sources.py` (the download functions `tools/data_sync.py`
-imports) still exists only on the operator's machine:
+## 0. Run it start to finish
 
 ```bash
-git add app/data/sources.py && git commit -m "add data sources" && git push
+python tools/run_pipeline.py                 # sync real data, then every stage
+python tools/run_pipeline.py --skip-sync     # every stage on the data already stored
+python tools/run_pipeline.py --synthetic     # offline dry run on a synthetic market
 ```
 
-Until then a fresh clone (CI, a Raspberry Pi) can't run the daily market-data
-sync. CI now runs on every branch push.
+`tools/run_pipeline.py` runs **sync → screen → ml → research → promotion**,
+each as its own process (one failing doesn't stop the rest), and writes a
+one-page summary to `reports/pipeline_latest.json`. The orchestrator also runs
+every stage on its own schedule (table at the end).
+
+`--synthetic` never touches this checkout: it copies `app/` and `tools/` into
+a throwaway workspace, fills its store with a synthetic market
+(`tools/make_synthetic_store.py`: regime-switching trends, listings and
+delistings, hourly bars, funding, Fear & Greed / DVOL-like series) and runs
+every stage there. `--plant-signal 0.003` adds a cross-coin effect (a
+low-volatility premium momentum doesn't capture) so the whole
+model → candidate → research → live chain can be watched working.
+`tests/test_pipeline_e2e.py` does exactly that on every CI run: the ML lab
+finds the planted signal (IC ≈ 0.14, t ≈ 10 vs a momentum baseline of 0.07),
+queues `ml_rank_top20_h7`, the research loop scores it (no forward days yet,
+so not promotable), and — made champion — its saved weights drive the core.
+Synthetic numbers prove the plumbing, not an edge.
+
+**Network.** The build environment used for this work blocks the market-data
+hosts (Coinbase, Hyperliquid, Deribit, alternative.me, DefiLlama, Coin
+Metrics), so the real-data run has to happen on your machine — or in a cloud
+environment whose network access allows those domains.
+
+**`app/data/sources.py`** (the downloads `tools/data_sync.py` uses: Coinbase
+USD products incl. delisted, candles, Hyperliquid and Deribit hourly funding)
+was never committed — an old `.gitignore` rule `data/` also matched
+`app/data/` (now anchored to `/data/`). It has been rebuilt from the interface
+`tools/data_sync.py` calls and tested against mocked APIs, including a full
+`data_sync` run into the store (`tests/test_sources.py`). If you still have
+the original on your machine, diff the two before replacing either.
 
 ## 1. Data — history first, point-in-time
 
 | What | Where |
 |---|---|
-| Candles / funding with revisions and `as_of` loads | `app/data/store.py` (operator's machine), `tools/data_sync.py` |
+| Candles / funding with revisions and `as_of` loads | `app/data/store.py`, `app/data/sources.py`, `tools/data_sync.py` |
 | External series with history: Fear & Greed (2018+), Deribit DVOL BTC/ETH (2021+), DefiLlama stablecoin supply, Coin Metrics community active addresses / tx count | `app/data/series_sources.py` |
 | Point-in-time series store: `known_at` per value, revisions kept, `load(as_of=T)`, causal `daily_array()` for panels | `app/data/series.py` (`.cache/store/series.sqlite3`) |
 | Every ingested external signal (crawl4ai etc.), uncapped, as `ext:<kind>:<asset>`, known from arrival | `app/data/ingest.py` → series store |
@@ -110,7 +135,8 @@ cluster-robust standard errors per label window, ≥ 20 windows**
 `app/engine/evidence.py`, `challengers.run` (daily):
 
 - Backtest beats the champion in both halves; deflated Sharpe ≥
-  `research_min_dsr` (0.97) over all trials.
+  `research_min_dsr` (0.97) over all trials (every variant in the research
+  families; an empty family no longer counts as a phantom trial).
 - **Forward test**: challenger scaled to the champion's volatility, day-by-day
   difference tested with a mixture SPRT — valid however often it is checked
   (false alarms checked every 5 days for 2 years: 1.3%). `better` → eligible

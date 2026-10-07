@@ -269,7 +269,7 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
                      "turnover_per_year": round(float(turn.sum()) / max(1, len(turn)) * 365, 1)}
         state["candidates"][name] = reg
         say(f"{name}: backtest {len(r)} days, forward {len(fwd)} days")
-    n = sum(Rg.n_trials(f) for f in RESEARCH_FAMILIES)
+    n = max(1, sum(Rg.n_trials(f, floor=0) for f in RESEARCH_FAMILIES))
     sd = Rg.trial_sharpe_std(FAMILY)
     retired = {nm for nm, reg in state["candidates"].items()
                if reg.get("retired") and nm in out}

@@ -49,10 +49,12 @@ def entries(family=None):
     return list(latest.values())
 
 
-def n_trials(family):
-    """Distinct (name, params) variants ever tried in `family` (any data)."""
-    return len({json.dumps([e["name"], e["params"]], sort_keys=True, default=str)
-                for e in entries(family)}) or 1
+def n_trials(family, floor=1):
+    """Distinct (name, params) variants ever tried in `family` (any data), at
+    least `floor`. Sum families with floor=0 — an empty family is no trial
+    (with the default floor each empty one added a phantom trial)."""
+    return max(floor, len({json.dumps([e["name"], e["params"]], sort_keys=True, default=str)
+                           for e in entries(family)}))
 
 
 def trial_sharpe_std(family):

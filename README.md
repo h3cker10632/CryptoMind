@@ -47,8 +47,10 @@ verification for every step: **[docs/IMPROVEMENT_PIPELINE.md](docs/IMPROVEMENT_P
 6. **Trade & watch** — core tracking monitor, per-sleeve limits, scorecard
    (`GET /api/scorecard`) with forward tests, retirements and cost/tax scenarios.
 
-Heavy jobs (data sync, research loop, screen, ML lab, replay, ablation) run as
-low-priority background processes. The replay keeps its per-bar signal data on
+Run every stage once, start to finish: `python tools/run_pipeline.py`
+(`--synthetic` for an offline dry run on a synthetic market). Heavy jobs (data
+sync, research loop, screen, ML lab, replay, ablation) also run on their own
+schedules as low-priority background processes. The replay keeps its per-bar signal data on
 disk and only computes new bars; the ablation trains its seeds in parallel.
 
 ## Module map
