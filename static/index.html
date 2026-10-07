@@ -805,6 +805,52 @@ details.legacy>.grid{padding:4px 0 16px}
 </div>
 
 <script>
+// ---- Remote control auth ------------------------------------------------
+// The API only accepts state-changing requests (pause/kill/settings/tunables…)
+// from localhost or with the token in api_token.txt. This sends that token
+// with every same-origin POST/PUT/PATCH/DELETE so the dashboard's buttons also
+// work from another computer (e.g. the bot running on a Raspberry Pi).
+//  * first 401 -> asks for the token once, remembers it in this browser
+//  * or open  http://<host>:8000/?token=<token>  once; it's stored and
+//    stripped from the address bar
+//  * cmForgetToken() in the console clears it
+(()=>{
+  const KEY='cm_api_token';
+  const get=()=>{try{return localStorage.getItem(KEY)||'';}catch(e){return '';}};
+  const set=v=>{try{v?localStorage.setItem(KEY,v):localStorage.removeItem(KEY);}catch(e){}};
+  try{
+    const u=new URL(location.href), t=u.searchParams.get('token');
+    if(t){set(t.trim()); u.searchParams.delete('token');
+      history.replaceState(null,'',u.pathname+u.search+u.hash);}
+  }catch(e){}
+  const raw=window.fetch.bind(window);
+  const withTok=(init,t)=>{const h=new Headers((init&&init.headers)||{});
+    h.set('Authorization','Bearer '+t); return Object.assign({},init||{},{headers:h});};
+  let asking=null;
+  window.fetch=async(input,init)=>{
+    const method=((init&&init.method)||(input instanceof Request?input.method:'GET')).toUpperCase();
+    let same=true;
+    try{same=new URL(typeof input==='string'?input:input.url,location.href).origin===location.origin;}catch(e){}
+    if(method==='GET'||method==='HEAD'||!same) return raw(input,init);
+    const t=get();
+    let r=await raw(input,t?withTok(init,t):init);
+    if(r.status===401){
+      // one prompt even if several buttons fire at once
+      asking=asking||Promise.resolve(window.prompt(
+        'This action needs the CryptoMind API token (the text in api_token.txt '+
+        'on the machine running the bot):','')).finally(()=>{setTimeout(()=>{asking=null;},0);});
+      const entered=((await asking)||'').trim();
+      if(entered){
+        r=await raw(input,withTok(init,entered));
+        set(r.status===401?'':entered);
+      }
+    }
+    return r;
+  };
+  window.cmForgetToken=()=>set('');
+})();
+</script>
+<script>
 const $=s=>document.querySelector(s);
 const fmt=(x,d=2)=>x==null?'—':Number(x).toLocaleString('en-US',{maximumFractionDigits:d,minimumFractionDigits:d});
 const cls=x=>x>=0?'pos':'neg';

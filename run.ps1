@@ -1,4 +1,4 @@
-# CryptoMind supervisor (Windows) — keeps the server alive across restarts & crashes.
+﻿# CryptoMind supervisor (Windows) — keeps the server alive across restarts & crashes.
 # - "Restart server" button: process exits, this loop relaunches it (picking up code).
 # - "Kill server" button: writes .shutdown marker, loop exits for real.
 # - Crashes: relaunched after 2s (state.json restores everything).
@@ -17,3 +17,4 @@ while ($true) {
     Write-Host "[supervisor] server exited (code $code) — restarting in 2s"
     Start-Sleep -Seconds 2
 }
+

@@ -42,6 +42,12 @@ The dashboard **Restart** button saves state and relaunches with current code (s
 
 Open http://localhost:8000
 
+The exploration and replay engines use `app/data/store.py` for closed-bar
+history. It stores candle and funding revisions in `.cache/store/history.sqlite3`,
+with ingestion summaries in `.cache/store/ingest_log.jsonl`. Replay can select
+the revisions known at an `as_of` timestamp and returns a content fingerprint.
+Keep this directory when restarting if you want to retain historical data.
+
 ## API
 
 - `GET /api/status` — full system snapshot (equity, risk, regime, weights, exit-advisor, memes…)

@@ -105,3 +105,53 @@ def test_replay_loader_falls_back_to_legacy_cache(store, tmp_path):
     (d / "BTC-USD_3600_3.json").write_text(json.dumps(_bars(0, 5)))
     data, ver = rp.load_history(H, root=str(tmp_path))
     assert len(data["BTC-USD"]) == 5 and ver
+
+
+def test_candle_range_and_product_filters(store):
+    store.ingest_candles("BTC-USD", H, _bars(0, 6), now=10 * H)
+    store.ingest_candles("ETH-USD", H, _bars(0, 6), now=10 * H)
+    data, version = store.load_candles(H, ["BTC-USD"], start=H, end=3 * H)
+    assert list(data) == ["BTC-USD"]
+    assert [r[0] for r in data["BTC-USD"]] == [H, 2 * H]
+    assert version == store.fingerprint(data)
+    assert store.products("candles", H) == ["BTC-USD", "ETH-USD"]
+    assert store.last_ts("candles", H, "BTC-USD") == 5 * H
+    assert store.last_ts("candles", H, "MISSING-USD") is None
+
+
+def test_funding_revisions_and_venue_isolation(store):
+    rows = [[0, 0.001], [H, -0.002]]
+    assert store.ingest_funding("hyperliquid", "BTC", rows, now=2 * H)["new"] == 2
+    assert store.ingest_funding("hyperliquid", "BTC", rows, now=3 * H)["revised"] == 0
+    store.ingest_funding("hyperliquid", "BTC", [[H, 0.003]], now=4 * H)
+    store.ingest_funding("deribit", "BTC", [[H, 0.004]], now=4 * H)
+    old, _ = store.load_funding("hyperliquid", as_of=3 * H)
+    current, _ = store.load_funding("hyperliquid")
+    other, _ = store.load_funding("deribit")
+    assert old["BTC"] == rows
+    assert current["BTC"][-1] == [H, 0.003]
+    assert other["BTC"] == [[H, 0.004]]
+
+
+def test_invalid_and_future_funding(store):
+    stats = store.ingest_funding(
+        "deribit", "BTC", [[0, 0.001], [H, float("nan")], [3 * H, 0.002]],
+        now=2 * H)
+    assert stats["new"] == 1 and stats["rejected"] == 1
+
+
+def test_exploration_loop_reaches_initial_wait(monkeypatch):
+    import asyncio
+    from app.orchestrator import Orchestrator
+
+    class ReachedWait(Exception):
+        pass
+
+    async def initial_wait(seconds):
+        assert seconds == 200
+        raise ReachedWait
+
+    monkeypatch.setattr(asyncio, "sleep", initial_wait)
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    with pytest.raises(ReachedWait):
+        asyncio.run(orchestrator.exploration_loop())
