@@ -32,9 +32,11 @@ verification for every step: **[docs/IMPROVEMENT_PIPELINE.md](docs/IMPROVEMENT_P
 1. **Data** — versioned candle/funding store with `as_of` loads
    (`app/data/store.py`), plus a point-in-time store for external series with
    history: Fear & Greed, DVOL, stablecoin supply, on-chain activity, and every
-   ingested signal uncapped (`app/data/series.py`, `tools/series_sync.py`).
+   ingested signal (same-second rows in one push stored as their mean)
+   (`app/data/series.py`, `tools/series_sync.py`).
 2. **Screen** — does a feature predict anything at all? Cross-coin rank IC /
-   time-series correlation, Newey-West t, both halves, Holm-adjusted
+   time-series correlation, t from non-overlapping every-h-th-day sub-series
+   (no verdict below 20 independent observations), both halves, Holm-adjusted
    (`app/engine/screen.py`, `tools/signal_screen.py`).
 3. **Model** — pooled walk-forward ML over every liquid coin's history
    (market-relative, vol-scaled, overlap-weighted labels; ridge / boosted trees),
@@ -120,8 +122,9 @@ realized, after-cost PnL:
    uncertainty. Continual-learning safeguards: prioritized experience replay
    (4000 samples, error-weighted), online feature standardization (Welford), and
    honest held-out directional-accuracy tracking (predictions recorded *before*
-   labels arrive). Once warmed up it joins the ensemble as the `ml` strategy,
-   trust-weighted by accuracy, and its combined uncertainty scales position size
+   labels arrive). It votes as the `ml` strategy only once its skill over the
+   always-majority baseline is > 2 clustered SE over ≥ 20 label windows
+   (weight 0 until then), and its combined uncertainty scales position size
    (0.4×–1.0×) so the book bets small when unsure. Weights + replay persist across
    restart.
 4. **Drift detection** (`drift.py`) — Population Stability Index over the

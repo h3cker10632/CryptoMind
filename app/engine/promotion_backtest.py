@@ -26,10 +26,12 @@ from . import backtest as B, evidence as E
 def run(panel, candidates, default_champion, backtest_from="2019-06-01",
         replay_from=None, eval_every=30, cost=0.006, band_rel=0.2, min_dsr=0.95,
         min_forward_days=30, max_forward_days=180, alpha=0.05, tau=0.1,
-        weights_fn=None, progress=None):
+        weights_fn=None, progress=None, n_trials=None, trial_sr_std=None):
     """Returns a JSON-able report. `replay_from` (ISO date) is when the
     replayed process starts tracking forward evidence (default: two years of
-    backtest after `backtest_from`)."""
+    backtest after `backtest_from`; never less than one year of it).
+    `n_trials` / `trial_sr_std` deflate the Sharpe as the live loop does
+    (registry counts); default: the candidates given here."""
     say = progress or (lambda m: None)
     if weights_fn is None:
         from .challengers import weights as cw, vol_forecast_for
@@ -49,10 +51,11 @@ def run(panel, candidates, default_champion, backtest_from="2019-06-01",
     rets = {k: v[:n] for k, v in rets.items()}
     day_of = panel.days[start:start + n]                 # day each return is DECIDED on
     if replay_from:
-        s0 = int((day_of < (dt.date.fromisoformat(replay_from) - epoch).days).sum())
+        s0 = max(min(n - 1, 365),           # the backtest gates need history to judge
+                 int((day_of < (dt.date.fromisoformat(replay_from) - epoch).days).sum()))
     else:
         s0 = min(n - 1, 730)
-    n_trials = len(candidates)
+    n_trials = n_trials or len(candidates)
     champ = default_champion
     path = np.zeros(0)
     promotions, retired = [], set()
@@ -60,7 +63,8 @@ def run(panel, candidates, default_champion, backtest_from="2019-06-01",
         bt = {k: v[:e] for k, v in rets.items()}
         fwd = {k: v[s0:e] for k, v in rets.items()}
         srs = [v.mean() / v.std() for v in bt.values() if len(v) > 1 and v.std() > 0]
-        sd = float(np.std(srs)) if len(srs) >= 2 else None
+        sd = trial_sr_std if trial_sr_std is not None else (
+            float(np.std(srs)) if len(srs) >= 2 else None)
         verdicts, best = E.promotion_decision(
             bt, fwd, champ, n_trials, sd, min_dsr=min_dsr,
             min_forward_days=min_forward_days, max_forward_days=max_forward_days,
@@ -81,6 +85,7 @@ def run(panel, candidates, default_champion, backtest_from="2019-06-01",
     hindsight = max(rets, key=lambda k: B.stats(rets[k][window])["sharpe"] or -9)
     out = {"from": str(epoch + dt.timedelta(days=int(day_of[s0]))) if n else None,
            "days": int(n - s0), "eval_every_days": eval_every, "candidates": len(candidates),
+           "n_trials": int(n_trials),
            "process": summ(path), "promotions": promotions,
            "never_switch": summ(rets[default_champion][window]),
            "best_in_hindsight": {"name": hindsight, **summ(rets[hindsight][window])}}

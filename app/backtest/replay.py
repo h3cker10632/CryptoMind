@@ -25,6 +25,9 @@ import statistics
 import time
 from collections import Counter
 
+from . import bar_cache as BC
+from .. import tunables
+
 # sleeves whose vote is a pure function of OHLCV history (safe to replay)
 HISTORY_SLEEVES = ("trend_slow", "breakout_slow", "xsmom",
                    "trend", "breakout", "meanrev")
@@ -250,9 +253,9 @@ def run_replay(candles_by_product, start=0.0, end=1.0, overrides=None,
     i0 = max(MIN_BARS, int(len(ts_all) * start))
     i1 = max(i0 + 1, int(len(ts_all) * end))
     bar_cache, disk = {}, None
-    if persist:
-        from . import bar_cache as BC
+    if persist and BC.code_version() == BC._LOADED_CODE:     # else: source edited since load
         try:
+            snap = tunables.values()
             dkey = BC.cache_key(offline, chop_n, hist_n, extras)
             fps = BC.fingerprints(C, pos_of, ts_all[i0:i1], hist_n)
             bar_cache.update(BC.load(dkey, fps))
@@ -267,7 +270,8 @@ def run_replay(candles_by_product, start=0.0, end=1.0, overrides=None,
     if disk is not None:
         dkey, fps, reused = disk
         try:
-            BC.save(dkey, bar_cache, fps)
+            if tunables.values() == snap:   # a mid-run tunables change would mix bars
+                BC.save(dkey, bar_cache, fps)
         except Exception:
             pass
         if cache is not None:

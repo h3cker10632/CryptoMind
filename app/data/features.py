@@ -27,7 +27,7 @@ MIN_BARS = 60          # warmup: features need at least this much history
 
 def stdev(xs, ddof=1):
     """Standard deviation (sample by default; ddof=0 for population) with
-    two-pass `math.fsum` sums. Within 1 ulp of `statistics.stdev`, which does
+    two-pass `math.fsum` sums. Within 2 ulp of `statistics.stdev`, which does
     exact rational arithmetic and was ~40% of a cold replay's run time (23x
     slower per call). tests/test_speed_parity.py checks both agree."""
     n = len(xs)

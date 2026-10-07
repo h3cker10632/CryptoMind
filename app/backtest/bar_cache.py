@@ -51,9 +51,15 @@ def code_version():
     return h.hexdigest()[:16]
 
 
+# the code this process runs: hashed once, when it is loaded (app/main.py imports
+# this module so a server takes it at startup). run_replay persists only while
+# code_version() — the source on disk — still equals it.
+_LOADED_CODE = code_version()
+
+
 def cache_key(offline, chop_n, hist_n, extras):
     from ..tunables import values
-    blob = json.dumps({"code": code_version(), "tunables": values(),
+    blob = json.dumps({"code": _LOADED_CODE, "tunables": values(),
                        "offline": {k: (list(v) if isinstance(v, tuple) else v)
                                    for k, v in offline.items()},
                        "chop_n": chop_n, "hist_n": hist_n, "extras": bool(extras)},

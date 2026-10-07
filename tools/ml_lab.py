@@ -6,7 +6,7 @@ liquid coin's history, judged against simple baselines.
     python tools/ml_lab.py --with-series         # + external series features (report only)
 
 Rank model: out-of-sample daily rank IC vs the 30-day-momentum baseline,
-Newey-West t, both halves; calibration by prediction decile.
+t over non-overlapping sub-series, both halves; calibration by prediction decile.
 Trend meta-model: Brier of P(a coin in its trend gains over h days) vs the
 base rate, both halves.
 

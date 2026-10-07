@@ -502,13 +502,19 @@ class Orchestrator:
     async def _run_tool_weekly(self, script, label, last_ran_at, interval_key, now=None):
         """Run tools/<script> when `interval_key` seconds have passed since
         `last_ran_at`. A separate low-priority PROCESS: these are minutes of
-        CPU, and a thread would hold the GIL against stop management."""
+        CPU, and a thread would hold the GIL against stop management. A failed
+        run writes no report (`last_ran_at` stays old), so it is retried only
+        after min(interval, 6 h), not on every replay-loop pass."""
         import os, sys
         try:
             interval = int(settings.get(interval_key))
         except Exception:
             interval = 604800
-        if (now or time.time()) - (last_ran_at or 0) < interval:
+        now = now or time.time()
+        if now - (last_ran_at or 0) < interval:
+            return False
+        failed = self.__dict__.setdefault("_tool_failed", {})
+        if now - failed.get(script, 0) < min(interval, 6 * 3600):
             return False
         procs = self.__dict__.setdefault("_tool_procs", {})
         if procs.get(script) is not None:
@@ -523,10 +529,16 @@ class Orchestrator:
             sys.executable, os.path.join(root, "tools", script),
             cwd=root, stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL, **kw)
+        if os.name != "nt":          # nice 10 (preexec_fn is unsafe with threads)
+            try:
+                os.setpriority(os.PRIO_PROCESS, procs[script].pid, 10)
+            except OSError:
+                pass
         try:
             code = await procs[script].wait()
         finally:
             procs[script] = None
+        failed[script] = now if code else 0
         db.log_event("learn" if code == 0 else "warn", f"{label} finished (exit {code})")
         return code == 0
 
@@ -535,8 +547,8 @@ class Orchestrator:
         candles for every USD coin incl. delisted, hourly universe, funding."""
         import os
         from .data import store
-        try:
-            last = os.path.getmtime(os.path.join(store.STORE, "ingest_log.jsonl"))
+        try:      # the full sync's own stamp: ingest_log.jsonl moves every hour
+            last = os.path.getmtime(os.path.join(store.STORE, "last_sync"))
         except OSError:
             last = 0
         return await self._run_tool_weekly("data_sync.py", "Market data sync", last,
@@ -551,12 +563,19 @@ class Orchestrator:
             (gate._report() or {}).get("ran_at"), "learner_ablation_interval_sec", now)
 
     async def _maybe_run_research_loop(self, now=None):
-        """Weekly champion / challenger loop (app/engine/challengers.py):
-        backtest + forward-track every candidate; promote only on evidence.
-        Alerts when the champion changes."""
+        """Champion / challenger loop (app/engine/challengers.py) every
+        `research_loop_interval_sec` (default daily): backtest + forward-track
+        every candidate; promote only on evidence. Alerts when the champion
+        changes. While the core trades an ML champion it runs at least daily
+        whatever the interval: it is the only writer of the saved weights the
+        core holds, which go stale after core.STALE_DAYS (3)."""
         from .engine import challengers as C
-        before = C.champion()[0]
+        from .strategies.core import core
+        before, cfg = C.champion()
         last = (C._load(C.STATE, {}).get("last_report") or {}).get("ran_at")
+        if (cfg.get("selection") in C.ML_SELECTIONS and core.follows_champion()
+                and core.enabled() and (now or time.time()) - (last or 0) >= 86400):
+            last = 0
         ok = await self._run_tool_weekly("research_loop.py",
                                          "Research loop (champion / challengers)",
                                          last, "research_loop_interval_sec", now)
@@ -923,7 +942,7 @@ class Orchestrator:
             return round(100 * sum(rs) / len(rs), 2) if rs else None
         fwd = self.forward_test() or {}
         try:
-            last_sync = os.path.getmtime(os.path.join(store.STORE, "ingest_log.jsonl"))
+            last_sync = os.path.getmtime(os.path.join(store.STORE, "last_sync"))
         except OSError:
             last_sync = None
         return {

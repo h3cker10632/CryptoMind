@@ -49,7 +49,7 @@ RESET_MIN_SCORED = 200
 #   * skill = accuracy minus the hindsight "always predict the majority
 #     direction" baseline on the same samples (drift alone earns nothing);
 #   * trust needs >= SKILL_MIN_CLUSTERS clusters and skill above 2 clustered
-#     standard errors (tests/test_ml_pipeline.py replays the zero-skill case).
+#     standard errors (tests/test_ml_skill.py replays the zero-skill cases).
 SKILL_MAX_CLUSTERS = 180       # label windows kept (~6 months of daily windows)
 SKILL_MIN_CLUSTERS = 20
 TRUST_FULL_MARGIN = 0.05       # skill this far above 2 SE -> full trust
@@ -559,6 +559,7 @@ class TinyMLP:
         sk = skill_stats(self.skill_clusters)
         return {
             **sk,
+            "trust": round(trust(sk), 3),        # the ml vote's weight (0 = silent)
             "n_updates": self.n_updates,
             "replay_buffer": len(self.replay),
             "directional_accuracy": round(acc, 3) if acc is not None else None,

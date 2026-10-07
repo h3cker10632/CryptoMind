@@ -144,6 +144,8 @@ def daily_array(name, days, stale_days=7):
     out = np.full(len(days), np.nan)
     events = []
     for t, v, k, s in _versions(name):
+        if k >= s:
+            continue                      # superseded before it was known: load() never sees it
         events.append((k, 1, t, v))
         if s != math.inf:
             events.append((s, 0, t, v))

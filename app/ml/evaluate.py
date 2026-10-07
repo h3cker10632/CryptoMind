@@ -2,9 +2,10 @@
 feature — and against what the model has to beat.
 
   ranking   daily rank correlation (IC) of the prediction with the realized
-            label across the universe, Newey-West t with h lags, both halves;
-            the SAME statistic for the baseline (30-day momentum rank) on the
-            same days; the model must beat it in both halves.
+            label across the universe, t from non-overlapping sub-series
+            (evidence.overlap_tstat), both halves; the SAME statistic for
+            the baseline (30-day momentum rank) on the same days; the model
+            must beat it in both halves.
   calibration  mean realized label per prediction decile (should rise).
   meta      Brier score of the probability vs the base rate, both halves.
 """
@@ -12,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..engine import screen as S
-from ..engine.evidence import nw_tstat
+from ..engine.evidence import overlap_tstat
 
 
 def _halves_mean(s):
@@ -29,8 +30,8 @@ def ranking(pred, label, mask, baseline, h=7):
     both = np.isfinite(ic) & np.isfinite(ic_b)
     ic, ic_b = np.where(both, ic, np.nan), np.where(both, ic_b, np.nan)
     m, mb = _halves_mean(ic), _halves_mean(ic_b)
-    t = nw_tstat(ic, lags=h)
-    t_diff = nw_tstat(ic - ic_b, lags=h)
+    t = overlap_tstat(ic, h)
+    t_diff = overlap_tstat(ic - ic_b, h)
     out = {"days": int(both.sum()),
            "ic": round(float(np.nanmean(ic)), 4) if both.any() else None,
            "ic_t": None if t != t else round(t, 2),

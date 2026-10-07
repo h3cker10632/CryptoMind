@@ -1197,8 +1197,11 @@ async function refresh(){
     $('#ml-stats').innerHTML=kv({
       'updates':om.n_updates,'replay buffer':om.replay_buffer,
       'directional acc':om.directional_accuracy!=null?(om.directional_accuracy*100).toFixed(1)+'%':'warming up',
+      'skill vs majority (±2 SE)':om.skill!=null?(om.skill*100).toFixed(1)+'%'+(om.skill_se!=null?' ± '+(om.skill_se*200).toFixed(1)+'%':''):null,
+      'skill windows':om.skill_clusters!=null?om.skill_clusters+' / 20 needed':null,'trust':om.trust,
       'avg MSE':om.avg_mse,'LR boost':om.lr_boost,
-      'status':om.warmed_up?'<span class="ok">ACTIVE in ensemble</span>':'<span class="warn">warming up</span>'});
+      'status':om.trust>0&&((ln.learner_gate||{}).online_ml||{}).active?'<span class="ok">ACTIVE in ensemble</span>'
+        :'<span class="warn">'+(om.trust>0?'gated off':om.warmed_up?'measuring skill':'warming up')+'</span>'});
 
     const rl=ln.rl_risk||{}, cur=rl.current||{};
     $('#rl-stats').innerHTML=kv({

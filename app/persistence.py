@@ -376,7 +376,12 @@ def load():
                 pass
 
             r = s.get("risk", {})
-            risk.reconcile_account_peak(r.get("peak_equity", 0.0), START_CASH)
+            if r.get("dd_basis") == "active_ex_core":
+                # the ex-core peak may sit below START_CASH: restore it as saved
+                # (0 -> the first tick's equity, via risk.update)
+                risk.peak_equity = float(r.get("peak_equity") or r.get("kill_arm_peak") or 0.0)
+            else:
+                risk.reconcile_account_peak(r.get("peak_equity", 0.0), START_CASH)
             # fall back to the true peak for snapshots written before the
             # kill_arm_peak split existed.
             risk.kill_arm_peak = r.get("kill_arm_peak", risk.peak_equity)

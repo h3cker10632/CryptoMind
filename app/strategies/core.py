@@ -60,6 +60,7 @@ class CoreBook:
         self.tracking = []
         self.off_target_days = 0
         self.tracking_alerted = False
+        self._unpriced = {}        # asset -> day its 'no live price' warning was logged
 
     # ---------- settings ----------
     @staticmethod
@@ -147,8 +148,8 @@ class CoreBook:
         from .exploration import manager as explore
         if explore.enabled():
             return explore.bot_equity(market)       # its exploration slice
-        pct, assets, _ = self._settings()
-        if pct > 0 and assets:
+        pct = self._settings()[0]
+        if self.enabled():           # a universe-wide champion has no `assets`
             return account_equity * (1 - pct)
         return account_equity - self.value(market)
 
@@ -169,7 +170,8 @@ class CoreBook:
     def targets(self, account_equity, daily_by_asset, now=None):
         """{asset: target notional}."""
         pct, assets, use_filter = self._settings()
-        if pct <= 0 or not assets:
+        # a universe-wide champion (alt momentum, ML ranker) has no `assets`
+        if pct <= 0 or (not assets and not self.follows_champion()):
             return {a: 0.0 for a in self.positions}
         if self.follows_champion():
             w = self._champion_weights(now)
@@ -241,6 +243,8 @@ class CoreBook:
         today = int((now or time.time()) // DAILY)
         if cfg.get("selection") in C.ML_SELECTIONS:
             return self._ml_champion_weights(name, cfg, today)
+        # ponytail: a universe-wide champion loads the whole store here, ~2-5 s
+        # on the event loop once an hour; cache per (day, data stamp) if it grows
         p = P.from_store(cfg.get("assets"))
         if not p.T or today - int(p.days[-1]) > STALE_DAYS:
             self.mode_used = ("champion", f"{name} (no fresh data: holding)")
@@ -363,6 +367,15 @@ class CoreBook:
         for a, target in tgt.items():
             px = market.price(a)
             if not _valid_price(px):
+                # e.g. an ML pick outside the live ticker feed, or a held coin
+                # whose feed went away: not traded; logged once a day, and the
+                # tracking monitor counts it off target
+                day = int(now // DAILY)
+                if (target > 0 or a in self.positions) and self._unpriced.get(a) != day:
+                    self._unpriced[a] = day
+                    db.log_event("warn", f"CORE: no live price for {a} (target "
+                                         f"${target:,.0f}, {'held' if a in self.positions else 'not held'})"
+                                         f" — not traded")
                 continue
             pos = self.positions.get(a)
             cur = pos["qty"] * px if pos else 0.0
@@ -404,12 +417,12 @@ class CoreBook:
         actual, target, px = {}, {}, {}
         for a in set(tgt) | set(self.positions):
             p = market.price(a)
-            if not p:
-                continue
             pos = self.positions.get(a)
-            actual[a] = round((pos["qty"] * p if pos else 0.0) / alloc, 5)
+            ref = p or (pos["entry"] if pos else 0.0)     # unpriced: entry, as value() does
+            actual[a] = round((pos["qty"] * ref if pos else 0.0) / alloc, 5)
             target[a] = round(tgt.get(a, 0.0) / alloc, 5)
-            px[a] = p
+            if p:
+                px[a] = p
         off = [a for a in target
                if (target[a] == 0 and actual[a] > 0.01) or (target[a] > 0 and actual[a] == 0)
                or (target[a] > 0 and abs(actual[a] - target[a]) > DRIFT_BAND * target[a] + 0.02)]

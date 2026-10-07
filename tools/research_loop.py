@@ -3,14 +3,17 @@
     python tools/research_loop.py            # backtest + forward-track + promote
     python tools/research_loop.py --status   # print the last report only
 
-The bot runs this weekly in a background process. A challenger replaces the
-champion only after >= 90 days of better FORWARD performance (data that did
-not exist when its config was frozen) plus a backtest that beats the champion
-in both halves with a deflated Sharpe >= 0.95.
+The bot runs this daily (research_loop_interval_sec) in a background process.
+A challenger replaces the champion only when its backtest beats the
+champion's Sharpe in both halves, its deflated Sharpe (every variant ever
+tried counted) is >= research_min_dsr (0.97), and its FORWARD record (data
+that did not exist when its config was frozen) passes: after >=
+research_min_forward_days (30) the paired always-valid test vs the champion
+says 'better', or it is still undecided after research_max_forward_days
+(180) with a positive paired difference. A 'worse' verdict retires it.
+See docs/IMPROVEMENT_PIPELINE.md section 5.
 """
 import argparse
-import datetime as dt
-import json
 import os
 import sys
 import time
@@ -25,6 +28,9 @@ def show(rep):
     print(f"{'candidate':22s} {'Sharpe':>6} {'1st/2nd half':>13} {'CAGR%':>7} {'maxDD%':>7} "
           f"{'DSR':>5} {'turn/yr':>7} {'fwd days':>8} {'beats champ':>11} {'fwd test':>10}")
     for name, c in rep["candidates"].items():
+        if "error" in c:
+            print(f"{name:22s} FAILED: {c['error']}")
+            continue
         b = c["backtest"]
         ft = (c.get("forward_test") or {}).get("decision", "-")
         print(f"{name:22s} {b['full']['sharpe']:>6} "

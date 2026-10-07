@@ -13,10 +13,11 @@ building, backtesting and forward-tracking a strategy for each.
   time_series      one asset (e.g. BTC) against a market-wide series such as
                    Fear & Greed: correlation with the next-h-day return.
 
-Both use Newey-West standard errors with `h` lags (overlapping h-day labels
-are not independent), report each half separately, and a feature PASSES only
-with |t| >= `min_t` and the same sign in both halves. Across a batch, p-values
-are Holm-adjusted for the number of features tried.
+Both compute t from the h non-overlapping every-h-th-day sub-series
+(overlapping h-day labels are not independent; evidence.overlap_tstat),
+report each half separately, and a feature PASSES only with |t| >= `min_t`
+and the same sign in both halves. Across a batch, p-values are Holm-adjusted
+for the number of features tried.
 """
 from __future__ import annotations
 import math
@@ -24,7 +25,7 @@ import math
 import numpy as np
 
 from . import features as F
-from .evidence import nw_tstat
+from .evidence import overlap_tstat
 
 
 def forward_return(close, h):
@@ -64,8 +65,8 @@ def _verdict(series, h, min_t):
     s = series[np.isfinite(series)]
     n = len(s)
     half = n // 2
-    t_all = nw_tstat(s, lags=h)
-    t1, t2 = nw_tstat(s[:half], lags=h), nw_tstat(s[half:], lags=h)
+    t_all = overlap_tstat(s, h)
+    t1, t2 = overlap_tstat(s[:half], h), overlap_tstat(s[half:], h)
     m1 = float(s[:half].mean()) if half else float("nan")
     m2 = float(s[half:].mean()) if n - half else float("nan")
     passes = (t_all == t_all and abs(t_all) >= min_t and m1 == m1 and m2 == m2

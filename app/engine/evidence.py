@@ -2,6 +2,9 @@
 actually tells us, so decisions wait for evidence and no longer.
 
   newey_west_var       long-run variance of a series (overlap / autocorrelation)
+  overlap_tstat        t of a mean over overlapping h-day labels (the screen's
+                       and the ML evaluation's IC t), from non-overlapping
+                       sub-series
   paired_sequential    challenger vs champion on the SAME days: is the
                        difference real? An always-valid (mixture SPRT) test,
                        so it can be checked every day without inflating the
@@ -52,6 +55,23 @@ def nw_tstat(x, lags=None):
         return float("nan")
     v = newey_west_var(x, lags)
     return float(x.mean() / math.sqrt(v / n)) if v > 0 else float("nan")
+
+
+def overlap_tstat(x, h, lags=0, min_obs=20):
+    """t-statistic of the mean of a daily series built on overlapping h-day
+    labels (e.g. daily ICs of next-h-day returns): the mean of the t-stats of
+    the h non-overlapping offset sub-series x[o::h] (their labels don't
+    overlap, so no lag is needed). (Bartlett NW with h lags on the daily
+    series missed ~30% of the overlap's long-run variance: a null feature
+    passed |t| >= 2 about twice as often as it should.) NaN — no verdict —
+    with fewer than `min_obs` non-overlapping observations, where a normal
+    critical value would still over-reject. NaNs are dropped per sub-series."""
+    x = np.asarray(x, dtype=float)
+    h = max(1, int(h))
+    if np.isfinite(x).sum() / h < min_obs:
+        return float("nan")
+    ts = [t for t in (nw_tstat(x[o::h], lags) for o in range(h)) if t == t]
+    return float(np.mean(ts)) if ts else float("nan")
 
 
 def msprt_lr(z, n, c):

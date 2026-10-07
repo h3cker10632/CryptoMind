@@ -20,9 +20,9 @@ def main():
     from app.engine import challengers as C
     args = sys.argv[1:]
     if not args or args[0] == "list":
-        champ = C.champion()[0]
+        champ, champ_cfg = C.champion()
         st = C._load(C.STATE, {}).get("candidates", {})
-        for name, cfg in C.candidates().items():
+        for name, cfg in dict(C.candidates(), **{champ: champ_cfg}).items():
             reg = st.get(name, {})
             tag = " (champion)" if name == champ else ""
             ret = " RETIRED" if reg.get("retired") else ""

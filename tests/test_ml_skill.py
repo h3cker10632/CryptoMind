@@ -14,26 +14,19 @@ def _market(days=400, seed=0, N=21):
 
 
 def _replay(fwd, predict, keep_every=24, start_day=30):
-    """Feed scored predictions the way TinyMLP.update does (|move| >= 0.6%,
-    cluster = label window), return the trust over time."""
-    from app.learn.online_model import TinyMLP, trust, TARGET_SCALE
+    """Score every coin's prediction through TinyMLP.update with cluster = label
+    window, as live trading does; return the trust over time. Training is
+    stubbed out: only the scoring path matters here."""
+    from app.learn.online_model import N_IN, TinyMLP, trust
     m = TinyMLP()
+    m._sgd = lambda x, target: 0.0
+    m._observe_features = lambda x: None
+    m._sample_replay_idx = lambda: 0
+    x = [0.0] * N_IN
     out = []
     for t in range(len(fwd)):
         for j, y in enumerate(fwd[t]):
-            target = y / TARGET_SCALE
-            if abs(target) < 0.5:
-                continue
-            pred = predict(t, j, y)
-            key = t // 24
-            agg = m.skill_clusters.get(key)
-            if agg is None:
-                agg = m.skill_clusters[key] = [0, 0, 0]
-                while len(m.skill_clusters) > 180:
-                    m.skill_clusters.popitem(last=False)
-            agg[0] += 1
-            agg[1] += 1 if pred * target > 0 else 0
-            agg[2] += 1 if target > 0 else 0
+            m.update(x, y, pred_at_record=predict(t, j, y), cluster=t // 24)
         if t % keep_every == 0 and t >= 24 * start_day:
             out.append(trust(m.stats()))
     return np.array(out)
@@ -46,6 +39,18 @@ def test_zero_skill_models_are_not_trusted():
     rng = np.random.default_rng(1)
     coin = _replay(fwd, lambda t, j, y: rng.choice([-1.0, 1.0]))
     assert (coin > 0).mean() <= 0.05
+
+
+def test_a_daily_market_call_with_no_skill_is_not_trusted():
+    """One coin-flip call per day shared by every coin: a day's ~400 scored
+    predictions ride one market move, so they are one observation. Only the
+    clustered SE keeps this from reading as skill: with an iid or zero SE,
+    3-4 of these 6 seeds are trusted on 7-56% of days."""
+    for seed in range(6):
+        fwd = _market(seed=seed)
+        calls = np.random.default_rng(seed).choice([-1.0, 1.0], size=len(fwd) // 24 + 1)
+        tr = _replay(fwd, lambda t, j, y, c=calls: c[t // 24])
+        assert (tr > 0).mean() <= 0.05, seed
 
 
 def test_a_model_that_calls_the_market_gets_trusted_with_enough_evidence():

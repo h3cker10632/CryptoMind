@@ -2,18 +2,27 @@
 comes from a model trained only on samples whose labels had fully happened
 before the model's refit day (label window t..t+h ends <= refit day - 1).
 
-  ridge     weighted ridge regression (numpy, closed form) — on noisy
-            financial data a heavily regularized linear model is hard to beat
+  ridge     weighted ridge regression (numpy, closed form) — a linear model
+            is hard to beat on noisy financial data. The penalty is LIGHT:
+            alpha is scaled by the mean weight, i.e. ~alpha / n_samples
+            relative to the data term, so on a panel of thousands of rows
+            the fit is close to weighted OLS on standardized features
   gbt       gradient-boosted trees (scikit-learn HistGradientBoosting), shallow
             and strongly regularized
   ensemble  average of the two models' per-day cross-sectional RANKS
-  logistic  (meta-labeling) weighted L2 logistic regression (numpy IRLS)
+  logistic  (meta-labeling) weighted L2 logistic regression (numpy IRLS);
+            likewise lightly penalized (alpha against weights normalized to
+            mean 1, so again ~alpha / n_samples)
 """
 from __future__ import annotations
 import numpy as np
 
 
 class Ridge:
+    """Weighted ridge. The penalty alpha * mean(w) * I is set against
+    Z'WZ ~ sum(w), so it shrinks by only ~alpha / n_samples: lightly
+    regularized, close to OLS once n is in the thousands."""
+
     def __init__(self, alpha=10.0):
         self.alpha = alpha
 

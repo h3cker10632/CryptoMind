@@ -57,20 +57,23 @@ def test_features_are_causal(store_stub):
 def test_walk_forward_has_no_lookahead(store_stub, model):
     from app.ml import dataset as D, models as Mo
     from app.engine import universe as U
-    p = _panel(T=700)
-    k = 520
-    preds = []
+    h, refit, min_train = 7, 30, 200
+    preds, k = [], None
     for scramble in (False, True):
         q = _panel(T=700)
         if scramble:
             rng = np.random.default_rng(9)
             q.close[k:] *= np.exp(rng.normal(0, 0.2, q.close[k:].shape))
         mask = U.liquid_mask(q, 20)
-        X, y, w, _, _ = D.build(q, mask, h=7)
-        preds.append(Mo.walk_forward(X, y, w, model=model, h=7, refit_days=30,
-                                     min_train_days=200))
+        X, y, w, _, _ = D.build(q, mask, h=h)
+        if k is None:       # the day after a refit r (walk_forward's schedule): a model
+            # refit at r that trained on any label ending after r sees the scramble
+            first = int(np.flatnonzero((w > 0).any(axis=1))[0]) + min_train + h + 1
+            k = first + 3 * refit + 1
+        preds.append(Mo.walk_forward(X, y, w, model=model, h=h, refit_days=refit,
+                                     min_train_days=min_train))
     a, b = preds
-    assert np.isfinite(a[:k]).any()
+    assert np.isfinite(a[k - 1]).any()              # the refit at k - 1 is in the compared prefix
     np.testing.assert_array_equal(np.nan_to_num(a[:k], nan=-9), np.nan_to_num(b[:k], nan=-9))
 
 

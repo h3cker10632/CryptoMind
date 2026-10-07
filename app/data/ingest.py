@@ -115,19 +115,21 @@ def push(rows) -> dict:
 
 
 def _to_history(rows):
-    """Also keep every accepted row, uncapped, in the point-in-time series
-    store (app/data/series.py) as `ext:<kind>:<asset>`, known from the moment
-    it arrived. The jsonl above is a bounded live view; this is the history a
+    """Also keep every accepted row in the point-in-time series store
+    (app/data/series.py) as `ext:<kind>:<asset>`, known from the moment it
+    arrived; same-second rows of one push for one series are stored as their
+    mean. The jsonl above is a bounded live view; this is the history a
     signal must build up before it can be tested (tools/signal_screen.py)."""
     try:
         from . import series
         now = time.time()
         by = {}
-        for r in rows:
-            by.setdefault(f"ext:{r['kind']}:{r['asset']}", []).append(
-                (int(min(r["ts"], now)), r["value"], now))
+        for r in rows:                # one point per (series, second): the mean, like feature()
+            by.setdefault(f"ext:{r['kind']}:{r['asset']}", {}).setdefault(
+                int(min(r["ts"], now)), []).append(r["value"])
         for name, pts in by.items():
-            series.ingest(name, pts, source="ingest", now=now)
+            series.ingest(name, [(t, math.fsum(vs) / len(vs), now) for t, vs in pts.items()],
+                          source="ingest", now=now)
     except Exception:
         pass                      # history is best-effort; the live path never fails on it
 

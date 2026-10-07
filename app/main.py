@@ -19,6 +19,9 @@ from .risk.manager import risk
 from .learn.loop import learner
 from .orchestrator import orch
 from .guardian import guardian
+# hash the replay's source as loaded at startup: the on-disk replay cache is
+# only used while the files on disk still match it (app/backtest/bar_cache.py)
+from .backtest import bar_cache as _bar_cache  # noqa: F401
 from .backtest.engine import full_report
 from .backtest.composite import composite_report
 from . import persistence
@@ -958,11 +961,13 @@ def research_candidates():
     from .engine import challengers as C
     st = C._load(C.STATE, {}).get("candidates", {})
     queued = C._load(C.QUEUE, {}).get("candidates", {})
-    return {"champion": C.champion()[0],
+    champ, champ_cfg = C.champion()
+    cands = dict(C.candidates(), **{champ: champ_cfg})     # what the champion really trades
+    return {"champion": champ,
             "candidates": {n: {"config": cfg, "queued": n in queued,
                                "registered_day": (st.get(n) or {}).get("registered_day"),
                                "retired": (st.get(n) or {}).get("retired")}
-                           for n, cfg in C.candidates().items()}}
+                           for n, cfg in cands.items()}}
 
 
 @app.post("/api/control/research/candidates")

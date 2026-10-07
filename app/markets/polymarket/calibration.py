@@ -133,8 +133,19 @@ def adjust(market, sig, model, strategies=None):
         out.update(outcome_index=0, price=p0, fair=round(q0, 4))
     else:
         out.update(outcome_index=1, price=market["prices"][1], fair=round(1 - q0, 4))
-    if out.get("outcome_index") is not None:
-        out["outcome"] = (market.get("outcomes") or ["A", "B"])[out["outcome_index"]]
+    idx = out.get("outcome_index")
+    if idx is not None:
+        out["outcome"] = (market.get("outcomes") or ["A", "B"])[idx]
+        if idx != sig.get("outcome_index"):
+            # calibration bought the side the strategies did not lean to: sign the
+            # votes toward it (the bandit credits by them). Its confidence is the
+            # calibrated model's own conviction — its edge over the market price
+            # on the engine's edge scale — not the agreement of strategies that
+            # leaned the other way (the model already weighed their leans).
+            from ...tunables import tv
+            sign = 1.0 if idx == 0 else -1.0
+            out["votes"] = {s: round(v * sign, 3) for s, v in (sig.get("leans") or {}).items()}
+            out["confidence"] = round(min(1.0, abs(q0 - p0) / max(tv("pm_edge_scale"), 1e-6)), 3)
     out["edge"] = round(out["fair"] - out["price"], 4) if out.get("outcome_index") is not None \
         else 0.0
     out["fair_p0"] = round(q0, 4)

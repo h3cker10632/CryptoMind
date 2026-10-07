@@ -75,6 +75,7 @@ SIZINGS = ("equal", "inverse_vol", "vol_target", "vol_forecast")
 _BOUNDS = {"sma": (10, 400), "hysteresis": (0.0, 0.2), "top_k": (1, 20),
            "vol_target": (0.05, 2.0), "tranches": (1, 7), "universe_top": (2, 60),
            "horizon": (1, 60), "refit_days": (7, 365), "train_top": (5, 100)}
+_FLOAT_KEYS = ("hysteresis", "vol_target")      # the rest are counts / windows: int only
 ML_SELECTIONS = ("ml_rank", "trend_meta")
 ML_MODELS = ("ridge", "gbt", "ensemble")
 
@@ -98,16 +99,19 @@ def validate_config(cfg):
     for k, (lo, hi) in _BOUNDS.items():
         if k in cfg:
             v = cfg[k]
-            if not isinstance(v, (int, float)) or isinstance(v, bool) or not lo <= v <= hi:
-                return f"{k} must be in [{lo}, {hi}]"
+            kind = (int, float) if k in _FLOAT_KEYS else int
+            if not isinstance(v, kind) or isinstance(v, bool) or not lo <= v <= hi:
+                return f"{k} must be {'an integer' if kind is int else 'a number'} in [{lo}, {hi}]"
     allowed = {"assets", "selection", "sizing", "model"} | set(_BOUNDS)
     extra = set(cfg) - allowed
     if extra:
         return f"unknown keys {sorted(extra)}"
     if "model" in cfg and cfg["model"] not in ML_MODELS:
         return f"model must be one of {ML_MODELS}"
-    if cfg["selection"] == "trend_meta" and "assets" not in cfg:
-        return "trend_meta needs assets"
+    if cfg["selection"] in ("trend_meta", "hold") and "assets" not in cfg:
+        return f"{cfg['selection']} needs assets"
+    if cfg["selection"] in ML_SELECTIONS and cfg.get("sizing") == "vol_forecast":
+        return "vol_forecast sizing is not supported for ML selections"
     if cfg["selection"] == "ml_rank" and "universe_top" not in cfg:
         return "ml_rank needs universe_top"
     return None
@@ -134,6 +138,9 @@ def register(name, cfg, source="manual", now=None):
         return False, "name must be letters, digits and _ (<= 48 chars)"
     if name in CANDIDATES:
         return False, f"{name} is a built-in candidate"
+    champ = champion()
+    if name == champ[0] and config_hash(champ[1]) != config_hash(cfg):
+        return False, f"{name} is the current champion; register under a new name"
     q = _load(QUEUE, {"candidates": {}})
     active = [n for n, e in q["candidates"].items() if not e.get("removed")]
     old = q["candidates"].get(name)
@@ -225,15 +232,30 @@ def _save(path, obj):
 
 def champion():
     """(name, config) of the current champion. A promoted QUEUED candidate
-    stays champion from its stored config even if it leaves the queue."""
+    stays champion from its stored config even if it leaves the queue. The
+    stored config is authoritative: re-queuing the name cannot change what
+    the champion trades without a promotion."""
     c = _load(CHAMPION, {})
     name = c.get("name")
-    cands = candidates()
+    if name and "config" in c:
+        if validate_config(c["config"]) is None:
+            return name, c["config"]
+        # the stored config fails today's validation: fall back to the default
+        # (never to a queued config under the same name) and say so once
+        if name not in _REJECTED:
+            _REJECTED.add(name)
+            from .. import db
+            db.log_event("warn", f"champion {name}'s stored config is no longer valid "
+                                 f"({validate_config(c['config'])}); following "
+                                 f"{DEFAULT_CHAMPION} until a new promotion")
+        return DEFAULT_CHAMPION, CANDIDATES[DEFAULT_CHAMPION]
+    cands = candidates()                     # legacy champion.json without a config
     if name in cands:
         return name, cands[name]
-    if name and validate_config(c.get("config")) is None:
-        return name, c["config"]
     return DEFAULT_CHAMPION, CANDIDATES[DEFAULT_CHAMPION]
+
+
+_REJECTED = set()
 
 
 def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
@@ -249,21 +271,28 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
     state = _load(STATE, {"candidates": {}})
     champ_name, champ_cfg = champion()
     cands = candidates()
-    cands.setdefault(champ_name, champ_cfg)
-    out = {}
+    cands[champ_name] = champ_cfg            # the champion slot holds the promoted config
+    out, failed = {}, {}
     for name, cfg in cands.items():
         h = config_hash(cfg)
         reg = state["candidates"].get(name)
         if not reg or reg.get("config_hash") != h:          # new / changed: (re)start clock
             reg = {"config_hash": h, "registered_day": today}
-        W = weights(cfg, panel, start=start, vol=vol_forecast_for(cfg, panel))
-        if cfg["selection"] in ML_SELECTIONS:      # live trading reads these rows
-            from ..ml import strategies as MLS
-            MLS.save_latest(name, cfg, panel, W)
-        r, inv, turn = B.simulate_drift(W, R, cost, start=start, band_rel=band_rel)
-        Rg.log(FAMILY, name, cfg, panel.data_version, r, {}, start_day=d0)
-        fs = int((panel.days < reg["registered_day"]).sum())
-        fwd, _, _ = B.simulate_drift(W, R, cost, start=max(fs, start), band_rel=band_rel)
+        try:
+            W = weights(cfg, panel, start=start, vol=vol_forecast_for(cfg, panel))
+            if cfg["selection"] in ML_SELECTIONS:      # live trading reads these rows
+                from ..ml import strategies as MLS
+                MLS.save_latest(name, cfg, panel, W)
+            r, inv, turn = B.simulate_drift(W, R, cost, start=start, band_rel=band_rel)
+            Rg.log(FAMILY, name, cfg, panel.data_version, r, {}, start_day=d0)
+            fs = int((panel.days < reg["registered_day"]).sum())
+            fwd, _, _ = B.simulate_drift(W, R, cost, start=max(fs, start), band_rel=band_rel)
+        except Exception as e:               # one bad challenger never stops the loop
+            if name == champ_name:
+                raise
+            failed[name] = {"config": cfg, "error": f"{type(e).__name__}: {e}"}
+            say(f"{name}: FAILED {failed[name]['error']}")
+            continue
         out[name] = {"config": cfg, "registered_day": reg["registered_day"],
                      "backtest_rets": r, "forward_rets": fwd, "W": W,
                      "turnover_per_year": round(float(turn.sum()) / max(1, len(turn)) * 365, 1)}
@@ -288,12 +317,7 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
         report["candidates"][name] = dict(
             config=o["config"], registered_day=o["registered_day"],
             turnover_per_year=o["turnover_per_year"], **v)
-    try:
-        from . import costs_tax as CT
-        report["costs_taxes"] = CT.scenarios(out[champ_name]["W"], panel, start=start,
-                                             band_rel=band_rel, base_cost=cost)
-    except Exception as e:                   # a report extra never blocks the loop
-        report["costs_taxes"] = {"error": str(e)}
+    report["candidates"].update(failed)
     if best:
         _save(CHAMPION, {"name": best, "config": cands[best], "promoted_at": time.time(),
                          "replaced": champ_name})
@@ -302,6 +326,13 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
     elif not os.path.exists(CHAMPION):
         _save(CHAMPION, {"name": champ_name, "config": champ_cfg,
                          "promoted_at": time.time(), "replaced": None})
+    try:                                     # for the champion AFTER this run's decision
+        from . import costs_tax as CT
+        report["costs_taxes"] = dict(CT.scenarios(out[report["champion"]]["W"], panel,
+                                                  start=start, band_rel=band_rel, base_cost=cost),
+                                     strategy=report["champion"])
+    except Exception as e:                   # a report extra never blocks the loop
+        report["costs_taxes"] = {"error": str(e), "strategy": report["champion"]}
     state["last_report"] = report
     _save(STATE, state)
     return report

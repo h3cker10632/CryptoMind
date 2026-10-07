@@ -33,16 +33,14 @@ def _report(r):
 
 
 # ------------------------------------------------------------------ stdev
-def test_fsum_stdev_matches_statistics_to_one_ulp():
+def test_fsum_stdev_matches_statistics_to_two_ulp():
     from app.data.features import stdev
     rng = random.Random(0)
-    worst = 0.0
     for _ in range(3000):
         xs = [rng.gauss(0, 10 ** rng.uniform(-5, 0)) for _ in range(rng.randint(3, 80))]
         for ddof, ref in ((1, statistics.stdev), (0, statistics.pstdev)):
             a, b = ref(xs), stdev(xs, ddof=ddof)
-            worst = max(worst, abs(a - b) / a)
-    assert worst < 1e-15
+            assert abs(a - b) <= 2 * math.ulp(a)
 
 
 # ------------------------------------------------------------------ disk bar cache

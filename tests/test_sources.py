@@ -4,7 +4,6 @@ import asyncio
 import json
 
 import httpx
-import pytest
 
 D, H = 86400, 3600
 
@@ -135,7 +134,6 @@ def test_data_sync_runs_end_to_end_on_mocked_apis(tmp_path, monkeypatch):
     hourly candles, Hyperliquid + Deribit funding."""
     import importlib.util
     import os
-    import sys
     from app.data import store
     monkeypatch.setattr(store, "STORE", str(tmp_path))
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -193,3 +191,4 @@ def test_data_sync_runs_end_to_end_on_mocked_apis(tmp_path, monkeypatch):
     db, _ = store.load_funding("deribit")
     assert hl["BTC"] == [[now - 5 * H, 0.00001]]
     assert db["BTC"] == [[now - 2 * H, 2e-5]] and db["ETH"] == [[now - 2 * H, 2e-5]]
+    assert (tmp_path / "last_sync").read_text() == str(now)   # the scheduler's stamp

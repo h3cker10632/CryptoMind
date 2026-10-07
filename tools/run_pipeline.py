@@ -144,8 +144,8 @@ def main():
             continue
         say(f"[{st}]")
         res = [_run(ws, s, args, say, a.timeout) for s, args in plan[st]]
-        run["stages"][st] = res[0] if len(res) == 1 else {"steps": res,
-                                                          "exit": max(r["exit"] for r in res)}
+        run["stages"][st] = res[0] if len(res) == 1 else {   # any non-zero step fails it
+            "steps": res, "exit": next((r["exit"] for r in res if r["exit"]), 0)}
     run["summary"] = summarize(ws)
     run["seconds"] = round(time.time() - t0, 1)
     run["ok"] = all(v.get("skipped") or v.get("exit") == 0 for v in run["stages"].values())

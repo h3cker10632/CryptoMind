@@ -61,7 +61,7 @@ the original on your machine, diff the two before replacing either.
 | Candles / funding with revisions and `as_of` loads | `app/data/store.py`, `app/data/sources.py`, `tools/data_sync.py` |
 | External series with history: Fear & Greed (2018+), Deribit DVOL BTC/ETH (2021+), DefiLlama stablecoin supply, Coin Metrics community active addresses / tx count | `app/data/series_sources.py` |
 | Point-in-time series store: `known_at` per value, revisions kept, `load(as_of=T)`, causal `daily_array()` for panels | `app/data/series.py` (`.cache/store/series.sqlite3`) |
-| Every ingested external signal (crawl4ai etc.), uncapped, as `ext:<kind>:<asset>`, known from arrival | `app/data/ingest.py` → series store |
+| Every ingested external signal (crawl4ai etc.) as `ext:<kind>:<asset>`, known from arrival (same-second rows in one push: their mean) | `app/data/ingest.py` → series store |
 
 - `python tools/series_sync.py [--dry-run] [--only fear_greed dvol_btc]` —
   daily from the replay loop (`series_sync_interval_sec`).
@@ -83,8 +83,9 @@ the original on your machine, diff the two before replacing either.
   market's direction drops out.
 - **Time series**: a market-wide series (e.g. Fear & Greed) vs BTC's next-h-day
   return.
-- Newey-West t with `h` lags (overlapping labels), both halves must agree in
-  sign, Holm-adjusted across everything screened. Report:
+- t averaged over the `h` non-overlapping every-h-th-day sub-series (overlapping
+  labels inflate a plain t; no verdict below 20 independent observations),
+  both halves must agree in sign, Holm-adjusted across everything screened. Report:
   `reports/signal_screen_latest.json`.
 
 ## 3. Model — pooled, walk-forward, vs a baseline
@@ -101,7 +102,7 @@ the original on your machine, diff the two before replacing either.
   ensemble; logistic for the meta-model. Refit every 30 days on labels that
   ended before the refit day. Changing future prices leaves earlier
   predictions bit-identical (`tests/test_ml_pipeline.py`).
-- **Gate**: out-of-sample IC with NW t ≥ 2, positive in both halves and above
+- **Gate**: out-of-sample IC with t ≥ 2 (non-overlapping sub-series, as above), positive in both halves and above
   the 30-day-momentum baseline in both halves; calibration by decile. The
   trend meta-model must beat the base rate's Brier in both halves.
 - **Candidates it can queue**: `ml_rank` (pooled ranker inside the trend
@@ -149,7 +150,9 @@ cluster-robust standard errors per label window, ≥ 20 windows**
 - **Process backtest**: `python tools/promotion_backtest.py` replays the
   promotion rule over history with only data known at each date — following
   it vs never switching, holding BTC+ETH and the best candidate in hindsight
-  (`reports/promotion_backtest_latest.json`, weekly).
+  (`reports/promotion_backtest_latest.json`, weekly). It replays the built-in
+  candidates only — a set chosen with hindsight, so treat it as optimistic —
+  and deflates with the registry's trial count.
 - **Costs and taxes** in every research report and on the scorecard
   (`app/engine/costs_tax.py`): taker / maker / low-fee venue / spot ETF
   (next-weekday fills + fund fee), FIFO tax lots with short/long-term rates and

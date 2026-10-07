@@ -91,6 +91,12 @@ async def sync(only=None, daily_years=10, hourly_years=3, hourly_top=30, say=pri
         if only in (None, "funding"):
             await sync_funding(c, hourly, now, say)
     say(f"sync done: {totals}")
+    # when the FULL sync last finished: the scheduler and the scorecard read
+    # this, not ingest_log.jsonl, which the core / exploration loops append to
+    # every hour (that kept the daily sync from ever coming due)
+    os.makedirs(store.STORE, exist_ok=True)
+    with open(os.path.join(store.STORE, "last_sync"), "w") as f:
+        f.write(str(now))
     return totals
 
 
