@@ -79,7 +79,7 @@ class WSMarket:
             return
         p = msg.get("product_id")
         price = msg.get("price")
-        if not p or price is None:
+        if not p or price is None or p not in PRODUCTS:   # left the universe: no ticks
             return
         try:
             px = float(price)

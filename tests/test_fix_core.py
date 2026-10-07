@@ -196,3 +196,85 @@ def test_held_coin_on_target_but_unpriced_counts_off_target(monkeypatch):
     b.cash = 75_000.0
     c.rebalance(b, _Mkt({}), 100_000.0, {}, now=time.time())
     assert c.tracking[-1]["off_target"] == ["XRP-USD"]                       # can't trade or price it
+
+
+def test_feed_prices_the_cores_picks_for_the_core_only(monkeypatch):
+    """A universe-wide champion's picks are priced through the feed's watch
+    list for the core alone (price() is what the other sleeves trade on): the
+    bid/ask mid, none from a thin book, the last mid kept through a failed
+    poll until it ages out, dropped once no longer watched."""
+    from app.data import market as M
+    from app.strategies.core import live_price
+    quotes = {"XRP-USD": (2.4, 2.6)}
+
+    class Resp:
+        def __init__(self, q):
+            self.q = q
+
+        def raise_for_status(self):
+            if self.q is None:
+                raise RuntimeError("404")
+
+        def json(self):
+            return {"price": "9.9", "bid": str(self.q[0]), "ask": str(self.q[1])}
+
+    class Client:
+        async def get(self, url, params=None, timeout=None):
+            return Resp(quotes.get(url.split("/")[-2]))
+
+    m = M.MarketData()
+    m.watch = {"XRP-USD", "GONE-USD"}
+    asyncio.run(m.refresh_watch(Client()))
+    assert m.watch_price("XRP-USD") == 2.5 and m.watch_price("GONE-USD") is None
+    assert live_price(m, "XRP-USD") == 2.5
+    assert m.price("XRP-USD") is None and "XRP-USD" not in m.tickers   # not the bot's
+    quotes["XRP-USD"] = (1.0, 2.6)                                      # walked book: ignored
+    asyncio.run(m.refresh_watch(Client()))
+    quotes.pop("XRP-USD")                                               # failed poll: keep mid
+    asyncio.run(m.refresh_watch(Client()))
+    assert m.watch_price("XRP-USD") == 2.5
+    now = M.time.time()
+    monkeypatch.setattr(M.time, "time", lambda: now + m.WATCH_MAX_AGE)  # ...until it ages out
+    assert m.watch_price("XRP-USD") is None
+    m.watch = set()
+    asyncio.run(m.refresh_watch(Client()))
+    assert "XRP-USD" not in m.watch_px
+
+
+def test_core_loop_values_holdings_and_trades_picks_at_market_after_restart(monkeypatch):
+    """After a restart the core's out-of-universe holdings go on the watch
+    list at once and are priced before equity is measured; a new pick is
+    priced before it is traded; targets are computed once."""
+    import pytest
+    from app import orchestrator as O
+    from app.strategies.core import core
+    mkt = type("M", (), {"healthy": True, "watch": set(), "px": {}})()
+    mkt.price = lambda a: mkt.px.get(a)
+    monkeypatch.setattr(O, "market", mkt)
+    monkeypatch.setattr(core, "positions", {"DOGE-USD": {"qty": 1e5, "entry": 0.1, "opened": 0}})
+    monkeypatch.setattr(core, "enabled", lambda: True)
+    monkeypatch.setattr(core, "_settings", lambda: (0.5, [], False))
+    monkeypatch.setattr(core, "tracking_alert", lambda: None)
+    calls = []
+    monkeypatch.setattr(core, "targets", lambda eq, daily, now=None: calls.append(("t", eq)) or
+                        {"XRP-USD": 25_000.0, "DOGE-USD": 0.0})
+    monkeypatch.setattr(core, "rebalance", lambda b, m, eq, daily, now=None, tgt=None:
+                        calls.append(("r", tgt, m.price("XRP-USD"))) or [])
+    waits, feed = [], [("DOGE-USD", 0.3), ("XRP-USD", 2.5)]
+
+    async def sleep(s):
+        waits.append(s)
+        if s == 180:
+            assert mkt.watch == {"DOGE-USD"}            # seeded before the first pass
+        if s == 10:
+            mkt.px.update([feed.pop(0)])                 # the feed's next poll prices one
+        if s == 3600:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(O.asyncio, "sleep", sleep)
+    o = O.Orchestrator.__new__(O.Orchestrator)
+    o._total_equity = lambda m: 50_000.0 + 1e5 * (m.price("DOGE-USD") or 0.1)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(o.core_loop())
+    assert waits == [180, 10, 10, 3600] and mkt.watch == {"XRP-USD", "DOGE-USD"}
+    assert calls == [("t", 80_000.0),                    # DOGE at market, not entry ($60k)
+                     ("r", {"XRP-USD": 25_000.0, "DOGE-USD": 0.0}, 2.5)]

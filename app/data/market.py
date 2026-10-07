@@ -38,6 +38,11 @@ class MarketData:
         self.candles = {p: [] for p in PRODUCTS}   # [ts, low, high, open, close, volume]
         self.tickers = {}                          # product -> {price, bid, ask, ts}
         self.books = {}                            # product -> {bid_depth, ask_depth, imbalance, spread_bps}
+        # the core's picks / holdings outside PRODUCTS (a universe-wide
+        # champion): priced for the core only (watch_price) — not in `tickers`,
+        # the universe the learner, alerts and other sleeves read via price()
+        self.watch = set()
+        self.watch_px = {}                         # product -> (bid/ask mid, ts)
         self.last_update = 0.0
         self.healthy = False
 
@@ -73,6 +78,31 @@ class MarketData:
             "spread_bps": spread_bps,
         }
 
+    async def refresh_watch(self, client):
+        """Bid/ask mid of each watched product outside PRODUCTS — quotes, not
+        the last print, and none from a thin or crossed book (spread > 10%).
+        A failed poll keeps the last mid until watch_price ages it out; an
+        unwatched product is dropped."""
+        want = self.watch - set(PRODUCTS)
+        for p in sorted(want):
+            try:
+                t = await self._get(client, f"/products/{p}/ticker")
+                bid, ask = float(t["bid"]), float(t["ask"])
+                if 0 < bid <= ask <= bid * 1.1:
+                    self.watch_px[p] = ((bid + ask) / 2, time.time())
+            except Exception:
+                pass
+            await asyncio.sleep(0.25)
+        for p in set(self.watch_px) - want:
+            self.watch_px.pop(p)
+
+    WATCH_MAX_AGE = 300
+
+    def watch_price(self, p):
+        """The core's price for a watched product (fresh mid), else None."""
+        q = self.watch_px.get(p)
+        return q[0] if q and time.time() - q[1] < self.WATCH_MAX_AGE else None
+
     async def run(self):
         async with httpx.AsyncClient(headers={"User-Agent": "CryptoMind/1.0"}) as client:
             while True:
@@ -83,8 +113,9 @@ class MarketData:
                             db.log_event("data", f"Market feed tracking new asset: {p}")
                         await self.refresh_product(client, p)
                         await asyncio.sleep(0.25)  # be polite / rate limits
+                    await self.refresh_watch(client)
                     # drop assets pruned from the universe (keep no stale state)
-                    for p in list(self.candles):
+                    for p in set(self.candles) | set(self.tickers) | set(self.books):
                         if p not in PRODUCTS:
                             self.candles.pop(p, None)
                             self.tickers.pop(p, None)

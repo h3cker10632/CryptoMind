@@ -45,6 +45,13 @@ DRIFT_BAND = 0.20                  # ...and only when >20% off target
 MIN_TRADE = 25.0                   # $ — skip dust rebalances
 
 
+def live_price(market, a):
+    """The core's price for `a`: the feed's watch list for a coin only the
+    core holds or picks (app/data/market.py), else the bot's own feed."""
+    w = getattr(market, "watch_price", None)
+    return (w(a) if w else None) or market.price(a)
+
+
 class CoreBook:
     def __init__(self):
         self.positions = {}        # asset -> {"qty", "entry", "opened"}
@@ -129,14 +136,14 @@ class CoreBook:
         monitor below)."""
         unreal = 0.0
         for a, pos in self.positions.items():
-            px = market.price(a) or pos["entry"]
+            px = live_price(market, a) or pos["entry"]
             unreal += pos["qty"] * (px - pos["entry"])
         return self.realized_pnl + unreal - self.fees_paid
 
     def value(self, market):
         v = 0.0
         for a, pos in self.positions.items():
-            px = market.price(a) or pos["entry"]
+            px = live_price(market, a) or pos["entry"]
             v += pos["qty"] * px
         return v
 
@@ -348,13 +355,15 @@ class CoreBook:
         db.log_trade(a, "sell", qty, fill, fee, f"CORE {reason}", pnl)
         return True
 
-    def rebalance(self, broker, market, account_equity, daily_by_asset, now=None):
-        """Bring holdings to target. Trend switches (target 0 <-> share) act
-        immediately; otherwise drift is only corrected weekly and when >20%
-        off. Returns a list of action strings."""
+    def rebalance(self, broker, market, account_equity, daily_by_asset, now=None, tgt=None):
+        """Bring holdings to target (`tgt`: targets() already computed this
+        pass). Trend switches (target 0 <-> share) act immediately; otherwise
+        drift is only corrected weekly and when >20% off. Returns a list of
+        action strings."""
         from ..execution.paper import _valid_price
         now = now or time.time()
-        tgt = self.targets(account_equity, daily_by_asset, now)
+        if tgt is None:
+            tgt = self.targets(account_equity, daily_by_asset, now)
         if tgt is None:
             return []
         weekly = now - self.last_rebalance >= REBALANCE_SEC
@@ -365,7 +374,7 @@ class CoreBook:
         realloc = self.applied_pct is not None and abs(pct - self.applied_pct) > 1e-9
         actions = []
         for a, target in tgt.items():
-            px = market.price(a)
+            px = live_price(market, a)
             if not _valid_price(px):
                 # e.g. an ML pick outside the live ticker feed, or a held coin
                 # whose feed went away: not traded; logged once a day, and the
@@ -416,7 +425,7 @@ class CoreBook:
             return
         actual, target, px = {}, {}, {}
         for a in set(tgt) | set(self.positions):
-            p = market.price(a)
+            p = live_price(market, a)
             pos = self.positions.get(a)
             ref = p or (pos["entry"] if pos else 0.0)     # unpriced: entry, as value() does
             actual[a] = round((pos["qty"] * ref if pos else 0.0) / alloc, 5)
@@ -514,7 +523,7 @@ class CoreBook:
                 "selection": sel, "sizing": siz, "mode_why": why,
                 "value": round(self.value(market), 2),
                 "positions": {a: {"qty": p["qty"], "entry": p["entry"],
-                                  "price": market.price(a)} for a, p in self.positions.items()},
+                                  "price": live_price(market, a)} for a, p in self.positions.items()},
                 "trend": self.last_decision, "realized_pnl": round(self.realized_pnl, 2),
                 "tracking": self.tracking_report()}
 

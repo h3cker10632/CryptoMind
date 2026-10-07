@@ -197,8 +197,15 @@ class Orchestrator:
     async def core_loop(self):
         """Hourly: keep the optional core holding on target (no-op while
         `core_allocation_pct` is 0 and nothing is held)."""
-        from .strategies.core import core
+        from .strategies.core import core, live_price
         from .backtest.engine import fetch_history
+
+        async def priced(coins):         # coins new to the feed's watch list: <= 2 min
+            for _ in range(12):
+                if all(live_price(market, a) for a in coins):
+                    return
+                await asyncio.sleep(10)
+        market.watch = set(core.positions)     # price what it holds from the start
         await asyncio.sleep(180)
         while True:
             try:
@@ -220,8 +227,15 @@ class Orchestrator:
                                 store.ingest_candles(a, 86400, cs, source="core-loop")
                             except Exception as e:
                                 db.log_event("warn", f"store ingest {a} failed: {e}")
-                    actions = core.rebalance(broker, market,
-                                             self._total_equity(market), daily)
+                    market.watch = market.watch | set(core.positions)
+                    await priced(core.positions)       # value holdings at market, not entry
+                    eq = self._total_equity(market)
+                    tgt = core.targets(eq, daily)        # None: no fresh data, hold
+                    actions = []
+                    if tgt is not None:
+                        market.watch = {a for a, t in tgt.items() if t > 0} | set(core.positions)
+                        await priced(market.watch)
+                        actions = core.rebalance(broker, market, eq, daily, tgt=tgt)
                     if actions:
                         from .alerts import alert
                         msg = "; ".join(actions)
