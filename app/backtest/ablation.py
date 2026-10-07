@@ -121,6 +121,59 @@ def ml_track(cache, horizon_bars=None, seed=7, progress=None):
                  "median_dir_accuracy": round(statistics.median(scored), 3) if scored else None}
 
 
+def _workers(n_jobs):
+    """Processes for independent jobs: CRYPTOMIND_ABLATION_WORKERS, else one
+    per job up to (CPUs - 1). 1 = run serially."""
+    import os
+    try:
+        w = int(os.environ.get("CRYPTOMIND_ABLATION_WORKERS", "0"))
+    except ValueError:
+        w = 0
+    if w <= 0:
+        w = max(1, (os.cpu_count() or 1) - 1)
+    return max(1, min(w, n_jobs))
+
+
+_WORKER_CACHE = None
+
+
+def _init_ml_worker(payload):
+    global _WORKER_CACHE
+    _WORKER_CACHE = payload
+
+
+def _ml_track_job(seed):
+    return ml_track(_WORKER_CACHE, seed=seed)
+
+
+def ml_tracks(cache, seeds, progress=None, workers=None):
+    """`ml_track` for seeds 7, 8, ... — the dominant cost of an ablation
+    (a pure-Python MLP, ~96% of the run). Seeds are independent and each
+    seeds its own random state, so they run in parallel processes with results
+    identical to the serial loop (tests/test_speed_parity.py). Falls back to
+    serial on any multiprocessing failure."""
+    say = progress or (lambda m: None)
+    seed_list = [7 + s for s in range(seeds)]
+    n = _workers(len(seed_list)) if workers is None else max(1, min(workers, len(seed_list)))
+    if n > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            payload = {k: cache[k] for k in ("C", "pos_of", "bars")}
+            say(f"training the online model through history: {len(seed_list)} seeds "
+                f"on {n} processes (pure-Python MLP)")
+            with ProcessPoolExecutor(max_workers=n, initializer=_init_ml_worker,
+                                     initargs=(payload,)) as ex:
+                return list(ex.map(_ml_track_job, seed_list))
+        except Exception as e:
+            say(f"parallel online-model training failed ({e}); running serially")
+    out = []
+    for k, s in enumerate(seed_list):
+        say(f"training the online model through history, seed {k + 1}/{len(seed_list)} "
+            "(slow: pure-Python MLP)")
+        out.append(ml_track(cache, seed=s, progress=say))
+    return out
+
+
 # --------------------------------------------------------------- hooks
 class LearnerHooks:
     """Replay hooks (see replay.run_replay `hooks`) that switch on a chosen
@@ -384,7 +437,7 @@ def run_ablation(candles, seeds=3, learners=LEARNERS, include_all=True,
     t0 = time.time()
     cache = {}
     say("computing per-bar signals (one pass, ~1 min per year)")
-    warm = run_replay(candles, 0.0, 1.0, cache=cache, extras=True)
+    warm = run_replay(candles, 0.0, 1.0, cache=cache, extras=True, persist=True)
     if not warm.get("ok"):
         return {"ok": False, "error": warm.get("error")}
     base, _ = _run(candles, cache)
@@ -397,14 +450,9 @@ def run_ablation(candles, seeds=3, learners=LEARNERS, include_all=True,
 
     mls, ml_summary = [None] * seeds, None
     if "online_ml" in learners:
-        mls, sums = [], []
-        for s in range(seeds):
-            say(f"training the online model through history, seed {s + 1}/{seeds} "
-                "(slow: pure-Python MLP)")
-            m, sm = ml_track(cache, seed=7 + s, progress=say)
-            mls.append(m)
-            sums.append(sm)
-        ml_summary = {"per_seed": sums}
+        tracks = ml_tracks(cache, seeds, progress=say)
+        mls = [m for m, _ in tracks]
+        ml_summary = {"per_seed": [sm for _, sm in tracks]}
 
     def score(name, enabled, extra_kw=None, stochastic=False):
         say(f"variant: {name}")

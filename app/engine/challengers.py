@@ -81,6 +81,34 @@ def weights(cfg, panel, start=0, vol=None):
                              hysteresis=cfg.get("hysteresis", 0.0), vol=vol)
 
 
+def vol_forecast_for(cfg, panel):
+    """The HAR vol forecast a `vol_forecast` candidate sizes with — fitted on
+    the SAME coins the live core loads for it (`P.from_store(cfg["assets"])`:
+    those coins only, from the first day any of them has a bar), placed back
+    into `panel`'s columns. HAR is pooled over the coins it is fitted on and
+    refits on row indices, so fitting it on all ~400 store coins (as this loop
+    used to) gave the backtest a different forecast from the one live trading
+    would use — and took ~100x longer. None for other sizings."""
+    if cfg.get("sizing") != "vol_forecast":
+        return None
+    if "assets" not in cfg:
+        return M.har_vol_forecast(panel)
+    sub = panel.subset(cfg["assets"])
+    rows = np.flatnonzero((~np.isnan(sub.close)).any(axis=1))
+    out = np.full((panel.T, panel.N), np.nan)
+    if not len(rows):
+        return out
+    lo = int(rows[0])
+    trimmed = P.Panel(sub.days[lo:], sub.coins, sub.close[lo:], sub.volume[lo:],
+                      sub.data_version,
+                      None if sub.high is None else sub.high[lo:],
+                      None if sub.low is None else sub.low[lo:], sub.bar_sec)
+    v = M.har_vol_forecast(trimmed)
+    for j, c in enumerate(sub.coins):
+        out[lo:, panel.coins.index(c)] = v[:, j]
+    return out
+
+
 def _load(path, default):
     try:
         with open(path) as f:
@@ -114,15 +142,13 @@ def run(panel=None, backtest_from="2019-06-01", cost=0.006, band_rel=0.2,
     start = int((panel.days < d0).sum())
     state = _load(STATE, {"candidates": {}})
     champ_name, _ = champion()
-    vol = (M.har_vol_forecast(panel) if any(c.get("sizing") == "vol_forecast"
-                                            for c in CANDIDATES.values()) else None)
     out = {}
     for name, cfg in CANDIDATES.items():
         h = config_hash(cfg)
         reg = state["candidates"].get(name)
         if not reg or reg.get("config_hash") != h:          # new / changed: (re)start clock
             reg = {"config_hash": h, "registered_day": today}
-        W = weights(cfg, panel, start=start, vol=vol)
+        W = weights(cfg, panel, start=start, vol=vol_forecast_for(cfg, panel))
         r, inv, turn = B.simulate_drift(W, R, cost, start=start, band_rel=band_rel)
         Rg.log(FAMILY, name, cfg, panel.data_version, r, {}, start_day=d0)
         fs = int((panel.days < reg["registered_day"]).sum())

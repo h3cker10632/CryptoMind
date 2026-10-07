@@ -21,9 +21,18 @@ imbalance/spread) are layered on TOP by the caller, not here.
 """
 from __future__ import annotations
 import math
-import statistics
 
 MIN_BARS = 60          # warmup: features need at least this much history
+
+
+def stdev(xs, ddof=1):
+    """Standard deviation (sample by default; ddof=0 for population) with
+    two-pass `math.fsum` sums. Within 1 ulp of `statistics.stdev`, which does
+    exact rational arithmetic and was ~40% of a cold replay's run time (23x
+    slower per call). tests/test_speed_parity.py checks both agree."""
+    n = len(xs)
+    m = math.fsum(xs) / n
+    return math.sqrt(math.fsum((x - m) ** 2 for x in xs) / (n - ddof))
 
 
 def _sma(xs, n):
@@ -75,7 +84,7 @@ def features_from_ohlcv(closes, highs, lows, vols):
 
     # 60-bar log-return volatility (sample stdev)
     rets = [math.log(b / a) for a, b in zip(closes[-61:-1], closes[-60:])]
-    vol = statistics.stdev(rets) if len(rets) > 2 else 0.0
+    vol = stdev(rets) if len(rets) > 2 else 0.0
 
     hi20, lo20 = max(highs[-20:]), min(lows[-20:])
     vol_ratio = vols[-1] / (sum(vols[-20:]) / 20) if sum(vols[-20:]) else 1.0

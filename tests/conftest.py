@@ -24,3 +24,8 @@ _tunables._overrides = None
 import app.settings as _settings
 _settings.SETTINGS_PATH = os.path.join(_tmp, "settings.json")
 _settings._settings = None
+
+# the replay's on-disk per-bar cache (app/backtest/bar_cache.py) goes to a
+# temp dir too, so tests never read or write the operator's .cache/
+import app.backtest.bar_cache as _bar_cache
+_bar_cache.DIR = os.path.join(_tmp, "replay_bars")

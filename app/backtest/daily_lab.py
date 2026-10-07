@@ -34,6 +34,8 @@ import pickle
 import statistics
 import time
 
+from ..data.features import stdev
+
 H = 7                      # label horizon (days) = selection holding period
 REBAL_DAYS = 7             # momentum / rank re-pick cadence
 FEATURES = ("r7", "r14", "r30", "r60", "r90", "vol30", "d50", "d100", "d200",
@@ -60,7 +62,7 @@ def coin_features(closes, volumes=None, sma_days=100):
 
     lr = [math.log(closes[i] / closes[i - 1]) for i in range(max(1, n - 60), n)
           if closes[i] > 0 and closes[i - 1] > 0]
-    vol30 = statistics.pstdev(lr[-30:]) if len(lr) >= 20 else float("nan")
+    vol30 = stdev(lr[-30:], ddof=0) if len(lr) >= 20 else float("nan")
     vr = float("nan")
     if volumes is not None and len(volumes) >= 30:
         m30 = sum(volumes[-30:]) / 30

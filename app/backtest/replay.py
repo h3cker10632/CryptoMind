@@ -178,7 +178,7 @@ class _NoNLP:
 def run_replay(candles_by_product, start=0.0, end=1.0, overrides=None,
                shorts=None, min_coverage=0.7, history_bars=None,
                maker=None, chop=False, cache=None, filt=None, hooks=None,
-               extras=False):
+               extras=False, persist=False):
     """Replay the live engine over [start, end) of the common history window
     (fractions of it). Returns a JSON-able result dict; never raises on bad
     data (returns {"ok": False, "error": ...}).
@@ -203,7 +203,12 @@ def run_replay(candles_by_product, start=0.0, end=1.0, overrides=None,
             closed trades as the replay walks forward. None = unchanged replay.
             With hooks the result also carries `_equity` / `_ts` (per bar).
     extras — also cache each bar's raw per-sleeve votes, regime, HTF alignment
-            and online-model input vectors (needed by the learner hooks)."""
+            and online-model input vectors (needed by the learner hooks).
+    persist — reuse per-bar data computed by earlier runs from the on-disk
+            cache (app/backtest/bar_cache.py) wherever the candle rows a bar
+            reads are unchanged, and save this run's bars for the next one.
+            The result is identical to a fresh run (tests/test_speed_parity.py);
+            only the bars that are new or whose inputs changed are computed."""
     from ..config import DISABLED_STRATEGIES, CANDLE_HISTORY
     from ..signals import engine as eng
     from .. import settings as app_settings
@@ -244,12 +249,30 @@ def run_replay(candles_by_product, start=0.0, end=1.0, overrides=None,
     pos_of = {p: {int(r[0]): i for i, r in enumerate(rows)} for p, rows in C.items()}
     i0 = max(MIN_BARS, int(len(ts_all) * start))
     i1 = max(i0 + 1, int(len(ts_all) * end))
-    bar_cache = {}
+    bar_cache, disk = {}, None
+    if persist:
+        from . import bar_cache as BC
+        try:
+            dkey = BC.cache_key(offline, chop_n, hist_n, extras)
+            fps = BC.fingerprints(C, pos_of, ts_all[i0:i1], hist_n)
+            bar_cache.update(BC.load(dkey, fps))
+            disk = (dkey, fps, len(bar_cache))
+        except Exception:
+            bar_cache, disk = {}, None          # a cache problem never blocks a replay
     if cache is not None:
         cache.clear()
         cache.update(_key=key, C=C, ts_all=ts_all, pos_of=pos_of, bars=bar_cache)
-    return _simulate(C, ts_all, pos_of, bar_cache, filt, i0, i1, P, maker, chop, offline,
-                     chop_n, hist_n, only, hooks, extras)
+    res = _simulate(C, ts_all, pos_of, bar_cache, filt, i0, i1, P, maker, chop, offline,
+                    chop_n, hist_n, only, hooks, extras)
+    if disk is not None:
+        dkey, fps, reused = disk
+        try:
+            BC.save(dkey, bar_cache, fps)
+        except Exception:
+            pass
+        if cache is not None:
+            cache["disk"] = {"reused_bars": reused, "computed_bars": len(bar_cache) - reused}
+    return res
 
 
 def _bar_data(t, C, pos_of, mkt, E, nlp, offline, chop_n, extras=False):
@@ -519,7 +542,7 @@ def run_report(candles_by_product, overrides=None, shorts=None, chop=False,
     cache = {}
     # populate the per-bar cache once (signals don't depend on the portfolio)
     warm = run_replay(candles_by_product, 0.0, 1.0, overrides=overrides,
-                      shorts=shorts, cache=cache)
+                      shorts=shorts, cache=cache, persist=True)
     probs = None
     if warm.get("ok") and (filt_on or filter_ab):
         samples = filter_samples(cache, overrides)
