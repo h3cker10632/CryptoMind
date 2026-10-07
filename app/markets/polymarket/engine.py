@@ -308,6 +308,14 @@ class PolymarketEngine:
 
         # (4) evaluate + (optionally) open --------------------------------
         auto = bool(app_settings.get("pm_auto_trade")) and paper_portfolio.ready
+        # evidence gate (skill_gate.py): bets only once the forecast ledger
+        # shows the bot beating the market price; and never while the
+        # account's kill switch / daily halt is on
+        from .skill_gate import status as _skill
+        from ...risk.manager import risk as _risk
+        gate = _skill()
+        self.trade_gate = dict(gate, killed=bool(_risk.killed or _risk.halted_today))
+        auto = auto and gate["open"] and not (_risk.killed or _risk.halted_today)
         edge_scale = tv("pm_edge_scale")
         max_pos = int(tv("pm_max_positions"))
         llm_infl = tv("pm_llm_influence")
@@ -525,6 +533,7 @@ class PolymarketEngine:
             "running": self.running,
             "enabled": bool(app_settings.get("polymarket_enabled")),
             "auto_trade": bool(app_settings.get("pm_auto_trade")),
+            "trade_gate": getattr(self, "trade_gate", None),
             "execution": exec_status(),
             "last_tick_ts": self.last_tick_ts,
             "last_error": self.last_error or client.last_error,

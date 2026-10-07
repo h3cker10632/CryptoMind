@@ -109,6 +109,16 @@ DEFAULTS = {
     # clear the edge/cost gate. When False it only evaluates + records
     # would-open decisions, so the operator can watch it think before it trades.
     "pm_auto_trade": True,
+    # Evidence gate for Polymarket bets (app/markets/polymarket/skill_gate.py):
+    # "auto" = bet only once the forecast ledger shows the bot's probabilities
+    # beating the market price (Brier, per resolved market, t <= -2) over at
+    # least `pm_gate_min_markets` markets; forecasts keep being recorded either
+    # way. "on" / "off" override.
+    "pm_trade_mode": "auto",
+    "pm_gate_min_markets": 100,
+    # Polymarket's share of the account (app/strategies/allocator.py), capped by
+    # what the core and exploration leave.
+    "polymarket_allocation_pct": 10,
     # ---- External-signal ingest (crawl4ai / Maxun / any standalone producer) ----
     # Master switch for accepting ingested external rows via /api/ingest/push.
     # When False the endpoint rejects pushes; the store is still readable.
@@ -206,6 +216,15 @@ DEFAULTS = {
     "exploration_allocation_pct": 50,
     "exploration_bench_drawdown": 0.20,
     "exploration_reinstate_days": 30,
+    # reallocation shrinks each member's 30-day result toward zero by how much
+    # evidence it carries: prior sd of the true daily return (0.001 = 0.1%/day).
+    # Smaller = money moves only on stronger evidence.
+    "exploration_shrink_tau": 0.001,
+    # core tracking monitor (app/strategies/core.py): alert when the core has
+    # been off its champion's target for this many daily checks, or its
+    # holdings tracking error vs target (annualized, 30 days) exceeds this.
+    "core_tracking_alert_days": 2,
+    "core_tracking_alert_te": 0.05,
     # champion / challenger promotion bar (app/engine/challengers.py)
     "research_min_forward_days": 30,
     "research_min_dsr": 0.97,
@@ -318,6 +337,7 @@ STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"},
             "core_selection": {"trend", "momentum", "rank", "auto"},
             "core_strategy": {"champion", "settings"},
             "hourly_bot_mode": {"off", "on", "auto"},
+            "pm_trade_mode": {"off", "on", "auto"},
             "core_sizing": {"equal", "inverse_vol", "vol_target", "auto"},
             "invo_method": {"GET", "POST"},
             "invo_positions_method": {"GET", "POST"}}
@@ -355,6 +375,8 @@ FLOAT_KEYS = {
     "core_vol_target": (0.1, 1.5),
     "core_hysteresis": (0.0, 0.2),
     "exploration_bench_drawdown": (0.05, 0.9),
+    "exploration_shrink_tau": (0.0, 0.05),
+    "core_tracking_alert_te": (0.0, 1.0),
     "research_min_dsr": (0.5, 0.999),
     "research_forward_alpha": (0.001, 0.2),
     "research_forward_tau": (0.01, 1.0),
@@ -389,6 +411,9 @@ INT_KEYS = {
     "core_tranches": (1, 7),
     "exploration_allocation_pct": (0, 100),
     "exploration_reinstate_days": (1, 365),
+    "pm_gate_min_markets": (10, 100000),
+    "polymarket_allocation_pct": (0, 100),
+    "core_tracking_alert_days": (1, 30),
     "research_min_forward_days": (7, 365),
     "research_max_forward_days": (30, 1095),
     "daily_lab_interval_sec": (86400, 2592000),

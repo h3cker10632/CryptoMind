@@ -2,7 +2,10 @@
 
   core         `core_allocation_pct`        proven strategy (app/strategies/core.py)
   exploration  `exploration_allocation_pct` fast strategies (exploration.py)
-  polymarket   the remainder                prediction-market sleeve
+  polymarket   `polymarket_allocation_pct`, at most what the other two leave
+               (it used to get the whole remainder — with the defaults, core
+               0% and exploration off, that was the ENTIRE account for an
+               untested sleeve)
 
 Without this, Polymarket sized bets off the WHOLE account and could spend any
 cash in the shared pool — including cash an exploration strategy holds while
@@ -34,7 +37,8 @@ def core_pct():
 
 
 def polymarket_pct():
-    return max(0.0, 1.0 - core_pct() - exploration_pct())
+    left = max(0.0, 1.0 - core_pct() - exploration_pct())
+    return min(left, _pct("polymarket_allocation_pct", 0.10))
 
 
 def polymarket_budget(account_equity, pm_exposure, cash):

@@ -883,7 +883,8 @@ def reset_account():
     # the CORE book is part of the account: a fresh account holds nothing.
     # (Leaving it would count its coins on top of the fresh $100k.)
     core.positions, core.realized_pnl, core.picks = {}, 0.0, None
-    core.last_rebalance = 0.0
+    core.last_rebalance, core.fees_paid = 0.0, 0.0
+    core.tracking, core.off_target_days, core.tracking_alerted = [], 0, False
     # ...and so are the exploration books: a fresh account re-funds them
     from .strategies.exploration import manager as explore
     explore.members, explore.funded, explore.last_review_day = {}, False, None

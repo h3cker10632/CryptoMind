@@ -27,6 +27,12 @@ class RiskManager:
         # baseline (set to equity at reset time) while `peak_equity` stays the
         # genuine all-time peak that `drawdown` is reported from.
         self.kill_arm_peak = 0.0
+        # What the drawdown / daily-loss limits measure. "active_ex_core" =
+        # account equity WITHOUT the core holding's P&L: the core is built to
+        # ride through BTC/ETH drawdowns (-50%+ in backtests) and has its own
+        # guard (core tracking monitor), so its swings must not trip a kill
+        # switch that only stops the other sleeves. None = not yet rebased.
+        self.dd_basis = None
         self.day_start_equity = None
         self.day_start_ts = time.time()
         self.day_index = _utc_day()
@@ -64,6 +70,16 @@ class RiskManager:
         self.day_start_equity = equity
         self.day_start_ts = time.time()
         self.day_index = _utc_day()
+
+    def rebase(self, equity, basis):
+        """Switch what the limits measure: re-baseline the peaks and the day
+        start at `equity` so the change itself can't look like a drawdown."""
+        self.peak_equity = equity
+        self.kill_arm_peak = equity
+        self.day_start_equity = equity
+        self.dd_basis = basis
+        db.log_event("risk", f"Drawdown limits now measure {basis} equity "
+                             f"(re-baselined at ${equity:,.0f})")
 
     def reconcile_account_peak(self, saved_peak, opening_equity):
         self.peak_equity = max(float(saved_peak or 0.0), float(opening_equity))
@@ -133,8 +149,12 @@ class RiskManager:
                 f"(equity ${equity:,.0f}, peak ${self.kill_arm_peak:,.0f})")
             from ..alerts import alert
             alert("critical", "KILL SWITCH TRIPPED",
-                  f"Max drawdown {dd:.1%} breached (limit {tv('max_drawdown_kill'):.0%}). "
-                  f"Equity ${equity:,.0f}. Trading stopped until manual reset.")
+                  f"Max drawdown {dd:.1%} breached (limit {tv('max_drawdown_kill'):.0%}) "
+                  f"on account equity excluding the core holding (${equity:,.0f}). "
+                  f"New entries stopped in the hourly bot, exploration and Polymarket "
+                  f"sleeves until manual reset; open positions are still managed to "
+                  f"their exits. The core keeps following its champion (own tracking "
+                  f"monitor).")
         if day_loss >= tv("daily_loss_limit") and not self.halted_today:
             self.halted_today = True
             self.halt_reason = (f"Auto: daily loss {day_loss:.1%} hit the "
@@ -143,8 +163,10 @@ class RiskManager:
             db.log_event("risk", f"Daily loss limit hit ({day_loss:.1%}) — trading halted for the day")
             from ..alerts import alert
             alert("critical", "DAILY LOSS HALT",
-                  f"Daily loss {day_loss:.1%} hit the {tv('daily_loss_limit'):.0%} limit. "
-                  f"Equity ${equity:,.0f}. No new entries until tomorrow.")
+                  f"Daily loss {day_loss:.1%} hit the {tv('daily_loss_limit'):.0%} limit "
+                  f"on account equity excluding the core holding (${equity:,.0f}). "
+                  f"No new entries in the hourly bot, exploration and Polymarket sleeves "
+                  f"until tomorrow (UTC); the core is unaffected.")
 
         # regime-adaptive scaling
         regime_scale = 0.5 if regime.get("vol_state") == "high-vol" else 1.0

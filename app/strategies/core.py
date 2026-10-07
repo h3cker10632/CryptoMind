@@ -54,6 +54,12 @@ class CoreBook:
         self.picks = None          # weekly momentum/rank pick {"day", "picks"}
         self.applied_pct = None    # allocation the book was last rebalanced to
         self.mode_used = ("trend", "equal")
+        self.fees_paid = 0.0       # buy fees (sell fees are inside realized_pnl)
+        # tracking monitor: one record per UTC day after rebalancing —
+        # {"day", "actual": {asset: w}, "target": {asset: w}, "px": {asset: price}}
+        self.tracking = []
+        self.off_target_days = 0
+        self.tracking_alerted = False
 
     # ---------- settings ----------
     @staticmethod
@@ -111,6 +117,17 @@ class CoreBook:
         return pct > 0 and bool(assets)
 
     # ---------- accounting ----------
+    def pnl(self, market):
+        """Everything the core has made or lost: realized + unrealized - buy
+        fees. The account kill switch measures the account WITHOUT this (the
+        core is built to ride through drawdowns; its own guard is the tracking
+        monitor below)."""
+        unreal = 0.0
+        for a, pos in self.positions.items():
+            px = market.price(a) or pos["entry"]
+            unreal += pos["qty"] * (px - pos["entry"])
+        return self.realized_pnl + unreal - self.fees_paid
+
     def value(self, market):
         v = 0.0
         for a, pos in self.positions.items():
@@ -273,6 +290,7 @@ class CoreBook:
             return False
         if not broker._reserve(f"core-buy-{uuid.uuid4().hex}", notional + fee, f"core buy {a}"):
             return False
+        self.fees_paid += fee
         qty = notional / fill
         pos = self.positions.get(a)
         if pos:
@@ -344,13 +362,94 @@ class CoreBook:
         if weekly:
             self.last_rebalance = now
         self.applied_pct = pct
+        self._record_tracking(market, account_equity, tgt, now)
         return actions
+
+    # ---------- tracking monitor ----------
+    def _record_tracking(self, market, account_equity, tgt, now):
+        """Once per UTC day, after rebalancing: the weights the core actually
+        holds vs the champion's targets (both as fractions of its allocation)."""
+        day = int(now // DAILY)
+        if self.tracking and self.tracking[-1]["day"] == day:
+            return
+        pct = self._settings()[0]
+        alloc = account_equity * pct
+        if alloc <= 0:
+            return
+        actual, target, px = {}, {}, {}
+        for a in set(tgt) | set(self.positions):
+            p = market.price(a)
+            if not p:
+                continue
+            pos = self.positions.get(a)
+            actual[a] = round((pos["qty"] * p if pos else 0.0) / alloc, 5)
+            target[a] = round(tgt.get(a, 0.0) / alloc, 5)
+            px[a] = p
+        off = [a for a in target
+               if (target[a] == 0 and actual[a] > 0.01) or (target[a] > 0 and actual[a] == 0)
+               or (target[a] > 0 and abs(actual[a] - target[a]) > DRIFT_BAND * target[a] + 0.02)]
+        self.off_target_days = self.off_target_days + 1 if off else 0
+        self.tracking.append({"day": day, "actual": actual, "target": target, "px": px,
+                              "off_target": off})
+        del self.tracking[:-400]
+
+    def tracking_report(self, window=30):
+        """Holdings tracking error vs the champion's targets over the last
+        `window` recorded days: the return the core's actual weights earned
+        minus what the target weights would have earned, day by day."""
+        rec = self.tracking[-(window + 1):]
+        diffs = []
+        for a, b in zip(rec, rec[1:]):
+            if b["day"] - a["day"] != 1:
+                continue
+            d = 0.0
+            for c, p0 in a["px"].items():
+                p1 = b["px"].get(c)
+                if p1 and p0:
+                    d += (a["actual"].get(c, 0.0) - a["target"].get(c, 0.0)) * (p1 / p0 - 1)
+            diffs.append(d)
+        te = None
+        if len(diffs) >= 5:
+            m = sum(diffs) / len(diffs)
+            te = (sum((x - m) ** 2 for x in diffs) / (len(diffs) - 1)) ** 0.5 * 365 ** 0.5
+        return {"days": len(diffs), "tracking_error_annual": None if te is None else round(te, 4),
+                "cumulative_gap_pct": round(sum(diffs) * 100, 3) if diffs else None,
+                "off_target_days": self.off_target_days,
+                "off_target_assets": (self.tracking[-1]["off_target"] if self.tracking else [])}
+
+    def tracking_alert(self):
+        """An alert message when the core has drifted from its champion (off
+        target for `core_tracking_alert_days` daily checks, or tracking error
+        above `core_tracking_alert_te`) — once per episode. None otherwise."""
+        from .. import settings
+        try:
+            days = int(settings.get("core_tracking_alert_days"))
+            te_max = float(settings.get("core_tracking_alert_te"))
+        except Exception:
+            days, te_max = 2, 0.05
+        rep = self.tracking_report()
+        bad = (rep["off_target_days"] >= days
+               or (rep["tracking_error_annual"] or 0) > te_max)
+        if not bad:
+            self.tracking_alerted = False
+            return None
+        if self.tracking_alerted:
+            return None
+        self.tracking_alerted = True
+        last = self.tracking[-1] if self.tracking else {}
+        return (f"Core is not holding what its champion says: off target "
+                f"{rep['off_target_days']} day(s) on {rep['off_target_assets']} "
+                f"(holds {last.get('actual')}, target {last.get('target')}); tracking "
+                f"error {rep['tracking_error_annual']} / yr. Check cash, price feeds and "
+                f"the data store.")
 
     # ---------- persistence / reporting ----------
     def to_dict(self):
         return {"positions": self.positions, "last_rebalance": self.last_rebalance,
                 "realized_pnl": self.realized_pnl, "picks": self.picks,
-                "applied_pct": self.applied_pct}
+                "applied_pct": self.applied_pct, "fees_paid": self.fees_paid,
+                "tracking": self.tracking, "off_target_days": self.off_target_days,
+                "tracking_alerted": self.tracking_alerted}
 
     def load_dict(self, d):
         if not d:
@@ -360,6 +459,10 @@ class CoreBook:
         self.realized_pnl = d.get("realized_pnl", 0.0)
         self.picks = d.get("picks")
         self.applied_pct = d.get("applied_pct")
+        self.fees_paid = d.get("fees_paid", 0.0)
+        self.tracking = list(d.get("tracking") or [])
+        self.off_target_days = d.get("off_target_days", 0)
+        self.tracking_alerted = d.get("tracking_alerted", False)
 
     def snapshot(self, market):
         pct, assets, use_filter = self._settings()
@@ -373,7 +476,8 @@ class CoreBook:
                 "value": round(self.value(market), 2),
                 "positions": {a: {"qty": p["qty"], "entry": p["entry"],
                                   "price": market.price(a)} for a, p in self.positions.items()},
-                "trend": self.last_decision, "realized_pnl": round(self.realized_pnl, 2)}
+                "trend": self.last_decision, "realized_pnl": round(self.realized_pnl, 2),
+                "tracking": self.tracking_report()}
 
 
 _LAB = {"mtime": None, "report": None}

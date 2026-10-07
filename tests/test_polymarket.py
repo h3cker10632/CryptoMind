@@ -667,8 +667,10 @@ def test_pm_auto_trade_paused_until_portfolio_migration_confirmed(monkeypatch):
     monkeypatch.setattr(engine_module.signals, "evaluate",
                         lambda *a, **kw: dict(fixed_signal))
     monkeypatch.setattr(engine_module, "size_bet", lambda *a, **kw: (50.0, "ok"))
+    # this test is about the migration pause, not the skill gate: force it on
     monkeypatch.setattr(engine_module.app_settings, "get",
-                        lambda key, default=None: True if key == "pm_auto_trade" else default)
+                        lambda key, default=None: {"pm_auto_trade": True,
+                                                   "pm_trade_mode": "on"}.get(key, default))
 
     assert engine_module.paper_portfolio.ready is False
     engine = engine_module.PolymarketEngine()

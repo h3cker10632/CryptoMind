@@ -13,8 +13,11 @@ Every day:
     back if its tracked return since benching is positive (the hourly bot: if
     its daily replay is positive in both halves);
   * REALLOCATE: the sleeve's money is split across active members by their
-    last-30-day NAV return — weight exp(5 x r30), kept within 0.5x..2x of an
-    equal share — so winners get more and losers less, on LIVE results.
+    last-30-day NAV return SHRUNK toward zero by how much evidence it carries
+    (`r30_shrunk`) — weight exp(5 x r30_shrunk), kept within 0.5x..2x of an
+    equal share — so money follows consistent LIVE results, not 30 days of
+    noise. While the account kill switch / daily halt is on, members only
+    sell (no new buys).
 
 Engine members trade the SAME strategy functions the backtests run
 (app/engine/strategies.py) on bars from the data store; the hourly bot is the
@@ -162,6 +165,32 @@ class Exploration:
         past = [nav for ts, nav in h if ts <= now - 30 * DAY] or [h[0][1]]
         return h[-1][1] / past[-1] - 1 if past[-1] > 0 else 0.0
 
+    def r30_shrunk(self, name, now):
+        """The 30-day result shrunk toward zero by how much evidence it
+        carries: daily NAV log returns -> posterior mean of the true daily
+        return under a N(0, tau^2) prior (`exploration_shrink_tau`). 30 days of
+        a strategy with 3% daily noise carry almost no information about its
+        true return, so money barely moves until results are consistent.
+        Returns (shrunk 30-day return, shrink factor in [0, 1])."""
+        h = self._m(name)["history"]
+        if not h or now - h[0][0] < 7 * DAY:
+            return 0.0, 0.0
+        navs = []
+        for k in range(30, -1, -1):
+            cut = now - k * DAY
+            prev = [nav for ts, nav in h if ts <= cut]
+            if prev and prev[-1] > 0:
+                navs.append(prev[-1])
+        rets = [math.log(b / a) for a, b in zip(navs, navs[1:]) if a > 0 and b > 0]
+        n = len(rets)
+        if n < 5:
+            return 0.0, 0.0
+        mean = sum(rets) / n
+        var = sum((x - mean) ** 2 for x in rets) / (n - 1)
+        tau = float(_setting("exploration_shrink_tau", 0.001))
+        k = tau * tau / (tau * tau + var / n) if (tau > 0 or var > 0) else 0.0
+        return math.exp(30 * mean * k) - 1, k
+
     # ------------------------------------------------------------ money flows
     def _transfer(self, name, amount, market, broker=None):
         """Give (+) or take (-) capital; units move at the current NAV."""
@@ -278,6 +307,8 @@ class Exploration:
         if w is None or bar == m["last_bar"]:
             return []
         eq = self.member_equity(name, market, broker)
+        from ..risk.manager import risk
+        blocked = risk.killed or risk.halted_today      # exits only, no new buys
         acts = []
         for a in set(w) | set(m["positions"]):
             px = market.price(a)
@@ -290,7 +321,7 @@ class Exploration:
                 if self._sell(broker, name, a, pos["qty"], px, "signal exit"):
                     acts.append(f"{name}: sold {a}")
             elif cur == 0 or abs(cur - tgt) > DRIFT_BAND * tgt:
-                if cur < tgt and self._buy(broker, name, a, tgt - cur, px):
+                if cur < tgt and not blocked and self._buy(broker, name, a, tgt - cur, px):
                     acts.append(f"{name}: bought ${tgt - cur:,.0f} {a}")
                 elif cur > tgt and pos and self._sell(broker, name, a, (cur - tgt) / px, px,
                                                       "rebalance trim"):
@@ -361,7 +392,8 @@ class Exploration:
                     self._transfer(name, -eq, market, broker)
         total = account_equity * exploration_pct()
         if active:
-            raw = {n: min(2.0, max(0.5, math.exp(5 * self.r30(n, now)))) for n in active}
+            raw = {n: min(2.0, max(0.5, math.exp(5 * self.r30_shrunk(n, now)[0])))
+                   for n in active}
             z = sum(raw.values())
             for n in active:
                 target = total * raw[n] / z
@@ -386,6 +418,7 @@ class Exploration:
             out[name] = {"status": m["status"], "capital": round(m["capital"], 2),
                          "equity": round(eq, 2), "nav_return_pct": round((m["nav"] - 1) * 100, 2),
                          "r30_pct": round(self.r30(name, time.time()) * 100, 2),
+                         "r30_shrunk_pct": round(self.r30_shrunk(name, time.time())[0] * 100, 2),
                          "trades": m["trades"], "benched_at": m["benched_at"],
                          "positions": {a: {"qty": p["qty"], "entry": p["entry"],
                                            "price": market.price(a)}

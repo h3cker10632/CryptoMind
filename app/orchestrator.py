@@ -227,6 +227,11 @@ class Orchestrator:
                         msg = "; ".join(actions)
                         db.log_event("trade", f"CORE holding: {msg}")
                         alert("info", "Core holding rebalanced", msg)
+                    drift = core.tracking_alert()
+                    if drift:
+                        from .alerts import alert
+                        db.log_event("warn", f"CORE tracking: {drift}")
+                        alert("warn", "Core off its champion", drift)
             except Exception as e:
                 db.log_event("error", f"core loop failed: {e}")
             await asyncio.sleep(3600)
@@ -1198,9 +1203,15 @@ class Orchestrator:
         # 4. risk update
         regime = market.regime()
         equity = self._total_equity(market)
-        self.last_risk_status = risk.update(equity, regime)
-        # the bot sizes against its own sleeve, never the optional core holding
+        # the drawdown / daily-loss limits measure the account WITHOUT the core
+        # holding's P&L (see RiskManager.dd_basis); they stop new entries in
+        # the bot, exploration and Polymarket — the core has its own monitor
         from .strategies.core import core as _core
+        active_equity = equity - _core.pnl(market)
+        if risk.dd_basis != "active_ex_core":
+            risk.rebase(active_equity, "active_ex_core")
+        self.last_risk_status = risk.update(active_equity, regime)
+        # the bot sizes against its own sleeve, never the optional core holding
         bot_equity = _core.bot_equity(equity, market)
 
         # 5. manage open positions (stops / take-profits / trailing)

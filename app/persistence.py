@@ -131,6 +131,7 @@ def capture():
         "risk": {
             "peak_equity": risk.peak_equity,
             "kill_arm_peak": risk.kill_arm_peak,
+            "dd_basis": risk.dd_basis,
             "day_start_equity": risk.day_start_equity,
             "day_start_ts": risk.day_start_ts,
             "killed": risk.killed,
@@ -374,6 +375,9 @@ def load():
             # fall back to the true peak for snapshots written before the
             # kill_arm_peak split existed.
             risk.kill_arm_peak = r.get("kill_arm_peak", risk.peak_equity)
+            # snapshots from before the ex-core basis have none -> the first
+            # tick re-baselines (orchestrator.tick)
+            risk.dd_basis = r.get("dd_basis")
             risk.day_start_equity = r.get("day_start_equity")
             risk.day_start_ts = r.get("day_start_ts", time.time())
             risk.killed = r.get("killed", False)
