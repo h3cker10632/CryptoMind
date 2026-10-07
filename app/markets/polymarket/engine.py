@@ -364,6 +364,9 @@ class PolymarketEngine:
                                    research_lean=m["research_lean"],
                                    research_influence=research_infl)
             self._record_forecast(m, sig, evidence, research_result, edge_scale)
+            if gate.get("use_calibration"):            # the ledger keeps the raw forecast
+                from . import calibration
+                sig = calibration.adjust(m, sig, calibration.status()["model"])
             if m["condition_id"] in {p["condition_id"]
                                      for p in broker.positions.values()}:
                 continue

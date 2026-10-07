@@ -14,7 +14,10 @@ makes sense if the bot's probabilities are BETTER than the market's, so:
 
 `pm_trade_mode`: "off", "on", or "auto" (default) = the gate decides. While
 closed the engine keeps forecasting and recording would-open decisions, so
-evidence keeps accumulating.
+evidence keeps accumulating. With `pm_calibration_mode` "auto" the learned
+calibration (calibration.py) is judged the same way on its walk-forward
+predictions; when it is the one that passes, the engine bets on calibrated
+probabilities (`use_calibration`).
 """
 from __future__ import annotations
 import math
@@ -83,5 +86,21 @@ def status(now=None):
             rows = db.pm_forecast_rows(limit=100000)
         except Exception:
             rows = []
-        _cache.update(ts=now, result=evaluate(rows, min_markets=min_m))
+        raw = evaluate(rows, min_markets=min_m)
+        res = dict(raw, use_calibration=False, calibrated=None)
+        try:
+            cal_mode = settings.get("pm_calibration_mode")
+        except Exception:
+            cal_mode = "auto"
+        if cal_mode == "auto":
+            from . import calibration
+            cal = calibration.status(rows=rows, min_markets=min_m)["report"]
+            res["calibrated"] = cal
+            # trade on the calibrated probability when its OUT-OF-SAMPLE record
+            # passes and is at least as good as the raw bot's
+            if cal.get("open") and (not raw["open"] or
+                                    (cal.get("t") or 0) <= (raw.get("t") or 0)):
+                res.update(open=True, use_calibration=True,
+                           why="calibrated (walk-forward) " + cal["why"])
+        _cache.update(ts=now, result=res)
     return dict(_cache["result"], mode="auto")

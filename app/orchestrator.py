@@ -584,13 +584,15 @@ class Orchestrator:
 
     async def _maybe_run_research_extras(self, now=None):
         """Weekly: the signal screen (does a feature predict anything before a
-        strategy is built on it — app/engine/screen.py) and the replay of the
-        promotion process itself (app/engine/promotion_backtest.py)."""
+        strategy is built on it — app/engine/screen.py), the replay of the
+        promotion process itself (app/engine/promotion_backtest.py) and the ML
+        lab (app/ml/: queues a model as a candidate only if it passes)."""
         import os
         for script, report, label in (
                 ("signal_screen.py", "signal_screen_latest.json", "Signal screen"),
                 ("promotion_backtest.py", "promotion_backtest_latest.json",
-                 "Promotion-process backtest")):
+                 "Promotion-process backtest"),
+                ("ml_lab.py", "ml_lab_latest.json", "ML lab (pooled walk-forward models)")):
             try:
                 last = os.path.getmtime(self._replay_path(report))
             except OSError:

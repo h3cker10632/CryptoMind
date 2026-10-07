@@ -114,6 +114,10 @@ class CoreBook:
 
     def enabled(self):
         pct, assets, _ = self._settings()
+        if self.follows_champion():
+            # a universe-wide champion (alt momentum, ML ranker) has no fixed
+            # asset list; it used to switch the core OFF when promoted
+            return pct > 0
         return pct > 0 and bool(assets)
 
     # ---------- accounting ----------
@@ -234,8 +238,10 @@ class CoreBook:
         of the champion's own backtest function."""
         from ..engine import panel as P, challengers as C
         name, cfg = _champion()
-        p = P.from_store(cfg.get("assets"))
         today = int((now or time.time()) // DAILY)
+        if cfg.get("selection") in C.ML_SELECTIONS:
+            return self._ml_champion_weights(name, cfg, today)
+        p = P.from_store(cfg.get("assets"))
         if not p.T or today - int(p.days[-1]) > STALE_DAYS:
             self.mode_used = ("champion", f"{name} (no fresh data: holding)")
             db.log_event("warn", f"CORE: no daily data newer than {STALE_DAYS} days for "
@@ -249,6 +255,25 @@ class CoreBook:
             self.last_decision[c] = {"hold": c in w, "weight": round(w.get(c, 0.0), 4),
                                      "close": None if px != px else float(px),
                                      "as_of_day": int(p.days[-1]), "strategy": name}
+        return w
+
+    def _ml_champion_weights(self, name, cfg, today):
+        """An ML champion's walk-forward fit takes minutes, so the daily
+        research loop saves its weights (app/ml/strategies.py) and the core
+        holds the newest saved row — none, or older than STALE_DAYS, means
+        hold and don't trade (never trade blind)."""
+        from ..ml import strategies as MLS
+        got = MLS.latest_saved(cfg, today, max_age_days=STALE_DAYS)
+        if got is None:
+            self.mode_used = ("champion", f"{name} (no fresh saved weights: holding)")
+            db.log_event("warn", f"CORE: no saved weights newer than {STALE_DAYS} days for "
+                         f"ML champion {name} — holding positions, no trades")
+            return None
+        day, w = got
+        self.mode_used = ("champion", name)
+        for c in set(w) | set(self.positions):
+            self.last_decision[c] = {"hold": c in w, "weight": round(w.get(c, 0.0), 4),
+                                     "as_of_day": day, "strategy": name}
         return w
 
     def _engine_weights(self, assets, daily_by_asset, now, sel, siz, sma):

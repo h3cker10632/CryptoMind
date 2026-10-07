@@ -116,6 +116,10 @@ DEFAULTS = {
     # least `pm_gate_min_markets` markets; forecasts keep being recorded either
     # way. "on" / "off" override.
     "pm_trade_mode": "auto",
+    # learned calibration of the bot's probabilities from resolved markets
+    # (app/markets/polymarket/calibration.py): "auto" = used for betting only
+    # when its walk-forward record beats the market price (and the raw bot).
+    "pm_calibration_mode": "auto",
     "pm_gate_min_markets": 100,
     # Polymarket's share of the account (app/strategies/allocator.py), capped by
     # what the core and exploration leave.
@@ -339,6 +343,7 @@ STR_KEYS = {"trade_mode": {"passive", "auto", "aggressive"},
             "core_strategy": {"champion", "settings"},
             "hourly_bot_mode": {"off", "on", "auto"},
             "pm_trade_mode": {"off", "on", "auto"},
+            "pm_calibration_mode": {"off", "auto"},
             "core_sizing": {"equal", "inverse_vol", "vol_target", "auto"},
             "invo_method": {"GET", "POST"},
             "invo_positions_method": {"GET", "POST"}}
