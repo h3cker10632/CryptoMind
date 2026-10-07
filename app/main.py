@@ -50,15 +50,6 @@ async def startup():
         db.log_event("system", "No saved state found — starting fresh ($100k paper account)")
     from . import portfolio as portfolio_module
     portfolio_module.bootstrap(broker.cash)
-    # Polymarket runs on its own bankroll, never the shared account
-    from .markets.polymarket.broker import broker as pm_broker
-    split = pm_broker.make_standalone(float(app_settings.get("pm_start_cash")),
-                                      portfolio_module.portfolio)
-    if split["migrated"]:
-        db.log_event("system", f"Polymarket split onto its own ${split['start_cash']:,.0f} "
-                     f"paper bankroll (refunded ${split['refunded']:,.2f} of "
-                     f"{split['dropped_positions']} open bet(s) to the main account)")
-        persistence.save()
     if portfolio_module.portfolio.ready:
         broker.bind_portfolio(portfolio_module.portfolio)
     else:
@@ -66,6 +57,16 @@ async def startup():
                                 "POST /api/portfolio/migration/confirm once legacy "
                                 "Polymarket positions are confirmed settled/empty. "
                                 "New entries are paused until then.")
+    # Polymarket runs on its own bankroll, never the shared account (one-time
+    # split from a snapshot taken before that; a no-op afterwards)
+    from .markets.polymarket.broker import broker as pm_broker
+    split = pm_broker.make_standalone(float(app_settings.get("pm_start_cash")),
+                                      portfolio_module.portfolio)
+    if split["migrated"]:
+        db.log_event("system", f"Polymarket split onto its own ${split['start_cash']:,.0f} "
+                     f"paper bankroll (refunded ${split['refunded']:,.2f} of "
+                     f"{split['dropped_positions']} open bet(s) to the main account)")
+        persistence.save()        # after the crypto broker is bound
     # Reconcile the alert/bot config (Telegram token, chat id, webhook) from
     # alerts.json BEFORE the worker tasks start, so the dashboard, /api/alerts
     # and the first outgoing alert all see the persisted credentials right away

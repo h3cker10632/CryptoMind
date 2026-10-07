@@ -665,6 +665,6 @@ def _restore_pm_broker(pmb):
     if start_cash is not None:
         pm_broker.start_cash = start_cash
     # a snapshot from before the split holds a stale, unused local balance;
-    # make_standalone() replaces it at startup, so only trust it once split
+    # main.py's startup calls make_standalone(), which replaces it then
     if local_cash is not None and pm_broker._portfolio is None:
         pm_broker._local_cash = local_cash
