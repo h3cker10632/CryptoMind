@@ -1,5 +1,5 @@
 """Per-sleeve risk: the kill switch ignores the core's own P&L, the core has
-its tracking monitor, Polymarket has a budget and an evidence gate, the
+its tracking monitor, Polymarket has an evidence gate (own bankroll), the
 exploration sleeve reallocates on shrunk evidence and stops buying while
 the account is halted."""
 import math
@@ -130,14 +130,10 @@ def test_pm_skill_gate():
     assert evaluate(_rows(60, per_market=5), min_markets=100)["markets"] == 60
 
 
-def test_polymarket_gets_its_own_share_not_the_remainder(monkeypatch):
+def test_polymarket_takes_no_share_of_the_main_account():
+    # Polymarket runs its own bankroll (pm_start_cash; test_pm_standalone.py)
     from app.strategies import allocator as A
-    _settings(monkeypatch, core_allocation_pct=0, exploration_enabled=False,
-              polymarket_allocation_pct=10)
-    assert abs(A.polymarket_pct() - 0.10) < 1e-12        # was 1.0 with these defaults
-    _settings(monkeypatch, core_allocation_pct=95, exploration_enabled=False,
-              polymarket_allocation_pct=10)
-    assert abs(A.polymarket_pct() - 0.05) < 1e-12        # capped by what is left
+    assert not hasattr(A, "polymarket_pct") and not hasattr(A, "polymarket_budget")
 
 
 # ------------------------------------------------------------------ exploration

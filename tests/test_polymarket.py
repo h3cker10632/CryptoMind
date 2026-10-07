@@ -638,7 +638,7 @@ def test_skipped_market_forecast_is_scored_once_at_resolution(monkeypatch):
     assert pm_learner.online.n == 1
 
 
-def test_pm_auto_trade_paused_until_portfolio_migration_confirmed(monkeypatch):
+def test_pm_auto_trade_runs_on_own_bankroll_without_shared_account(monkeypatch):
     import importlib
     from types import SimpleNamespace
 
@@ -672,16 +672,13 @@ def test_pm_auto_trade_paused_until_portfolio_migration_confirmed(monkeypatch):
                         lambda key, default=None: {"pm_auto_trade": True,
                                                    "pm_trade_mode": "on"}.get(key, default))
 
-    assert engine_module.paper_portfolio.ready is False
+    # Polymarket has its own bankroll, so the main account's one-time
+    # migration (still pending here) must not hold it back
+    assert db.paper_portfolio_account() is None
     engine = engine_module.PolymarketEngine()
     engine.tick()
-    assert len(paper_broker.positions) == 0        # paused: migration pending
-
-    db.initialize_paper_portfolio(100_000.0, "unified-paper-v1-test")
-    assert engine_module.paper_portfolio.ready is True
-    engine.tick()
-    assert len(paper_broker.positions) == 1        # unblocked once confirmed
-    db.reset_paper_portfolio_for_tests()
+    assert len(paper_broker.positions) == 1
+    assert abs(paper_broker.cash - (paper_broker.start_cash - 50.0)) < 1e-9
 
 
 def test_pm_scan_defaults_use_20_seconds_and_200_markets():

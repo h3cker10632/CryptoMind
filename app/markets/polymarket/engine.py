@@ -25,7 +25,6 @@ import time
 from ... import db
 from ... import settings as app_settings
 from ...tunables import tv
-from ...portfolio import portfolio as paper_portfolio
 from . import signals
 from .broker import broker, PM_START_CASH
 from .client import client
@@ -307,33 +306,22 @@ class PolymarketEngine:
         self._settle_forecasts()
 
         # (4) evaluate + (optionally) open --------------------------------
-        auto = bool(app_settings.get("pm_auto_trade")) and paper_portfolio.ready
-        # evidence gate (skill_gate.py): bets only once the forecast ledger
-        # shows the bot beating the market price; and never while the
-        # account's kill switch / daily halt is on
+        # Polymarket's own bankroll: the main account's ledger migration and
+        # kill switch / daily halt don't apply to it. Its own evidence gate
+        # (skill_gate.py) does: bets only once the forecast ledger shows the
+        # bot beating the market price (or pm_trade_mode "on").
+        auto = bool(app_settings.get("pm_auto_trade"))
         from .skill_gate import status as _skill
-        from ...risk.manager import risk as _risk
         gate = _skill()
-        self.trade_gate = dict(gate, killed=bool(_risk.killed or _risk.halted_today))
-        auto = auto and gate["open"] and not (_risk.killed or _risk.halted_today)
+        self.trade_gate = gate
+        auto = auto and gate["open"]
         edge_scale = tv("pm_edge_scale")
         max_pos = int(tv("pm_max_positions"))
         llm_infl = tv("pm_llm_influence")
         research_infl = tv("pm_research_influence")
-        equity = broker.equity(self._mid_lookup)
-        # its OWN budget (app/strategies/allocator.py), not the whole shared
-        # pool — cash the core / exploration strategies hold is not its to bet
-        pm_equity, pm_cash = equity, broker.cash
-        if paper_portfolio.ready:
-            try:
-                from ...orchestrator import orch
-                from ...data.market import market as crypto_market
-                from ...strategies.allocator import polymarket_budget
-                pm_equity, pm_cash = polymarket_budget(
-                    orch._total_equity(crypto_market), broker.exposure(self._mid_lookup),
-                    broker.cash)
-            except Exception:
-                pass
+        # its own bankroll: bets are sized off what Polymarket itself has grown
+        # (or shrunk) to, never the main account
+        pm_equity, pm_cash = broker.equity(self._mid_lookup), broker.cash
         # refresh a bounded batch of LLM leans (cached; no-op if the LLM sleeve
         # is off) BEFORE evaluating, so the `llm` strategy + ML feature see them.
         try:
@@ -460,7 +448,11 @@ class PolymarketEngine:
         return {"ok": True, **self.snapshot()}
 
     def reset(self, start_cash: float | None = None) -> dict:
-        broker.reset(start_cash if start_cash is not None else PM_START_CASH)
+        """Wipe Polymarket's book and restart its bankroll (default: the
+        `pm_start_cash` setting). The main account is untouched."""
+        if start_cash is None:
+            start_cash = float(app_settings.get("pm_start_cash") or PM_START_CASH)
+        broker.reset(start_cash)
         self.decisions.clear()
         return {"ok": True, **broker.stats()}
 
@@ -541,11 +533,9 @@ class PolymarketEngine:
             "last_tick_ts": self.last_tick_ts,
             "last_error": self.last_error or client.last_error,
             "equity": round(eq, 2),
-            # unified paper-capital labeling (Task 5): once the shared-ledger
-            # migration is confirmed, "equity"/broker.cash above are the SAME
-            # pool the crypto sleeve uses -- this is a sleeve VIEW, not a
-            # second account. False before confirmation (legacy local cash).
-            "shared_ledger_ready": paper_portfolio.ready,
+            # its own bankroll: growth since the last reset
+            "return_pct": round((eq / broker.start_cash - 1) * 100, 2)
+                          if broker.start_cash else 0.0,
             "broker": broker.stats(),
             "positions": positions,
             "decisions": self.decisions[:25],

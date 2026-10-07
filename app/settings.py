@@ -121,9 +121,10 @@ DEFAULTS = {
     # when its walk-forward record beats the market price (and the raw bot).
     "pm_calibration_mode": "auto",
     "pm_gate_min_markets": 100,
-    # Polymarket's share of the account (app/strategies/allocator.py), capped by
-    # what the core and exploration leave.
-    "polymarket_allocation_pct": 10,
+    # Polymarket runs its OWN paper bankroll, separate from the main account:
+    # it starts with this much, keeps what it wins / loses, and never touches
+    # crypto cash. Changing it takes effect on the next Polymarket reset.
+    "pm_start_cash": 500,
     # ---- External-signal ingest (crawl4ai / Maxun / any standalone producer) ----
     # Master switch for accepting ingested external rows via /api/ingest/push.
     # When False the endpoint rejects pushes; the store is still readable.
@@ -419,12 +420,12 @@ INT_KEYS = {
     "exploration_allocation_pct": (0, 100),
     "exploration_reinstate_days": (1, 365),
     "pm_gate_min_markets": (10, 100000),
-    "polymarket_allocation_pct": (0, 100),
     "core_tracking_alert_days": (1, 30),
     "research_min_forward_days": (7, 365),
     "research_max_forward_days": (30, 1095),
     "daily_lab_interval_sec": (86400, 2592000),
     "daily_lab_max_age_days": (1, 60),
+    "pm_start_cash": (5, 10_000_000),
 }
 
 

@@ -341,14 +341,12 @@ def test_reset_account_endpoint_resets_shared_cash_once_flat(monkeypatch, tmp_pa
     (tmp_path / "forward_test_baseline.json").write_text("{}")
     monkeypatch.setattr(core, "positions", {"BTC-USD": {"qty": 1.0, "entry": 1.0, "opened": 0}})
 
+    # Polymarket runs its own bankroll: its open bets neither block nor are
+    # touched by a main-account reset
     monkeypatch.setattr(pm_broker, "positions", {"tok": {"shares": 1.0}})
-    refused = main.reset_account()                    # Polymarket not flat -> refuse
-    assert refused["ok"] is False and "Polymarket" in refused["error"]
-    assert core.positions                             # nothing touched on refusal
-
-    monkeypatch.setattr(pm_broker, "positions", {})
     result = main.reset_account()
     assert result["reset"] is True
+    assert pm_broker.positions == {"tok": {"shares": 1.0}}
     assert main.broker.cash == START_CASH
     assert core.positions == {}                       # the core book is part of the account
     assert not (tmp_path / "forward_test_baseline.json").exists()   # fresh forward test
@@ -477,7 +475,7 @@ class _CryptoMkt:
         return self._price
 
 
-def test_total_equity_counts_shared_cash_once_plus_each_sleeve(monkeypatch):
+def test_total_equity_counts_shared_cash_once_plus_crypto_not_polymarket(monkeypatch):
     from app.execution.paper import broker as crypto_broker
     from app.markets.polymarket.broker import broker as pm_broker
 
@@ -493,11 +491,9 @@ def test_total_equity_counts_shared_cash_once_plus_each_sleeve(monkeypatch):
     pm_pos = pm_broker.open(_pm_market(), 0, 0.40, 50.0, 0.0, 0.0, 0.1, 0.9, "t")
     assert pm_pos is not None
 
-    eq = portfolio.total_equity(_CryptoMkt(110.0), lambda tid: 0.5)
-    expected = (portfolio.cash
-                + crypto_broker.position_value(crypto_pos, 110.0)
-                + pm_broker.market_value(pm_pos, 0.5))
-    assert eq == pytest.approx(expected)
+    eq = portfolio.total_equity(_CryptoMkt(110.0))
+    expected = portfolio.cash + crypto_broker.position_value(crypto_pos, 110.0)
+    assert eq == pytest.approx(expected)          # Polymarket's bet not counted
 
 
 def test_total_equity_short_position_and_missing_price_fallback(monkeypatch):
@@ -517,14 +513,12 @@ def test_total_equity_short_position_and_missing_price_fallback(monkeypatch):
     assert pm_pos is not None
 
     # no live price for either sleeve -> falls back to entry price
-    eq = portfolio.total_equity(_CryptoMkt(None), lambda tid: None)
-    expected = (portfolio.cash
-                + crypto_broker.position_value(short_pos, short_pos["entry"])
-                + pm_broker.market_value(pm_pos, pm_pos["entry"]))
+    eq = portfolio.total_equity(_CryptoMkt(None))
+    expected = portfolio.cash + crypto_broker.position_value(short_pos, short_pos["entry"])
     assert eq == pytest.approx(expected)
 
 
-def test_total_exposure_sums_both_sleeves_and_excludes_shadow(monkeypatch):
+def test_total_exposure_is_crypto_only_and_excludes_shadow(monkeypatch):
     from app.execution.paper import broker as crypto_broker
     from app.markets.polymarket.broker import broker as pm_broker
 
@@ -540,9 +534,8 @@ def test_total_exposure_sums_both_sleeves_and_excludes_shadow(monkeypatch):
     pm_pos = pm_broker.open(_pm_market(), 0, 0.40, 50.0, 0.0, 0.0, 0.1, 0.9, "t")
     assert pm_pos is not None
 
-    exposure = portfolio.total_exposure(_CryptoMkt(110.0), lambda tid: 0.5)
-    expected = (crypto_pos["qty"] * 110.0
-                + pm_broker.market_value(pm_pos, 0.5))
+    exposure = portfolio.total_exposure(_CryptoMkt(110.0))
+    expected = crypto_pos["qty"] * 110.0
     assert exposure == pytest.approx(expected)
 
     # static regression guard: aggregate methods must never import/reference
@@ -585,8 +578,8 @@ def test_orchestrator_equity_helpers_aggregate_once_portfolio_ready(monkeypatch)
 
     orch = Orchestrator()
     mkt = _CryptoMkt(110.0)
-    expected_eq = portfolio.total_equity(mkt, pm_engine._mid_lookup)
-    expected_exp = portfolio.total_exposure(mkt, pm_engine._mid_lookup)
+    expected_eq = portfolio.total_equity(mkt)
+    expected_exp = portfolio.total_exposure(mkt)
     assert orch._total_equity(mkt) == pytest.approx(expected_eq)
     assert orch._total_exposure(mkt) == pytest.approx(expected_exp)
 

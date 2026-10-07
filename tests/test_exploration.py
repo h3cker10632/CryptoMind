@@ -127,9 +127,7 @@ def test_benched_hourly_bot_gets_no_sizing_equity(ex, broker):
     assert x.bot_equity(m, broker) == 0.0 and not x.is_active("hourly_bot")
 
 
-def test_polymarket_spends_only_its_own_budget(ex):
-    from app.strategies.allocator import polymarket_budget, polymarket_pct
-    assert abs(polymarket_pct() - 0.10) < 1e-9           # 100 - 40 core - 50 exploration
-    eq, cash = polymarket_budget(100_000.0, pm_exposure=3_000.0, cash=40_000.0)
-    assert eq == pytest.approx(10_000.0) and cash == pytest.approx(7_000.0)  # not the pool's 40k
-    assert polymarket_budget(100_000.0, 12_000.0, 40_000.0)[1] == 0.0
+def test_allocator_has_no_polymarket_share(ex):
+    # Polymarket runs its own bankroll (pm_start_cash), not a slice of this one
+    from app.strategies import allocator
+    assert not hasattr(allocator, "polymarket_budget")

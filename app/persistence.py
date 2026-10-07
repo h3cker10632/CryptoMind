@@ -298,11 +298,10 @@ def _capture_pm_broker():
     from .markets.polymarket.broker import broker as pm_broker
     return {
         "version": 1,
-        # only meaningful pre-migration (standalone cash); once bound to the
-        # shared ledger, cash lives durably in app.db and this is ignored on
-        # restore -- captured anyway so a pre-migration restart/kill never
-        # silently resets Polymarket's bankroll back to PM_START_CASH.
+        # Polymarket's own bankroll (it no longer shares the main account)
         "local_cash": pm_broker._local_cash,
+        "start_cash": pm_broker.start_cash,
+        "standalone": pm_broker.standalone,
         "positions": {k: dict(v) for k, v in pm_broker.positions.items()},
         "closed_trades": [dict(t) for t in pm_broker.closed_trades[-200:]],
         "realized_pnl": pm_broker.realized_pnl,
@@ -654,13 +653,18 @@ def _restore_pm_broker(pmb):
         closed_trades = [dict(t) for t in (pmb.get("closed_trades") or [])]
         realized_pnl = float(pmb.get("realized_pnl", 0.0))
         local_cash = float(pmb["local_cash"]) if "local_cash" in pmb else None
+        start_cash = float(pmb["start_cash"]) if "start_cash" in pmb else None
+        standalone = bool(pmb.get("standalone", False))
     except (TypeError, ValueError, AttributeError):
         return
     from .markets.polymarket.broker import broker as pm_broker
     pm_broker.positions = positions
     pm_broker.closed_trades = closed_trades
     pm_broker.realized_pnl = realized_pnl
-    # once bound to the shared ledger, cash is read-only (and already durable
-    # in app.db) -- only restore the standalone pre-migration balance.
+    pm_broker.standalone = standalone
+    if start_cash is not None:
+        pm_broker.start_cash = start_cash
+    # a snapshot from before the split holds a stale, unused local balance;
+    # make_standalone() replaces it at startup, so only trust it once split
     if local_cash is not None and pm_broker._portfolio is None:
         pm_broker._local_cash = local_cash

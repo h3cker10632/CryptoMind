@@ -50,10 +50,17 @@ async def startup():
         db.log_event("system", "No saved state found — starting fresh ($100k paper account)")
     from . import portfolio as portfolio_module
     portfolio_module.bootstrap(broker.cash)
+    # Polymarket runs on its own bankroll, never the shared account
+    from .markets.polymarket.broker import broker as pm_broker
+    split = pm_broker.make_standalone(float(app_settings.get("pm_start_cash")),
+                                      portfolio_module.portfolio)
+    if split["migrated"]:
+        db.log_event("system", f"Polymarket split onto its own ${split['start_cash']:,.0f} "
+                     f"paper bankroll (refunded ${split['refunded']:,.2f} of "
+                     f"{split['dropped_positions']} open bet(s) to the main account)")
+        persistence.save()
     if portfolio_module.portfolio.ready:
         broker.bind_portfolio(portfolio_module.portfolio)
-        from .markets.polymarket.broker import broker as pm_broker
-        pm_broker.bind_portfolio(portfolio_module.portfolio)
     else:
         db.log_event("system", "Shared paper portfolio migration PENDING — "
                                 "POST /api/portfolio/migration/confirm once legacy "
@@ -132,8 +139,6 @@ def confirm_portfolio_migration():
         portfolio_module.bootstrap(broker.cash, legacy_pm_confirmed=True)
     if portfolio_module.portfolio.ready:
         broker.bind_portfolio(portfolio_module.portfolio)
-        from .markets.polymarket.broker import broker as pm_broker
-        pm_broker.bind_portfolio(portfolio_module.portfolio)
     return {"ok": True, "ready": portfolio_module.portfolio.ready,
             "cash": portfolio_module.portfolio.cash,
             "already_migrated": was_ready}
@@ -865,21 +870,16 @@ def save_state():
 
 @app.post("/api/control/reset-account")
 def reset_account():
-    """Fresh paper account. Learned state (models, Q-table, bandit) is KEPT —
-    only the trading account resets. Once the shared ledger is active this is
-    a WHOLE-ACCOUNT reset (crypto + Polymarket share one balance), so it
-    refuses while the crypto sleeve still holds open positions."""
+    """Fresh main paper account. Learned state (models, Q-table, bandit) is
+    KEPT — only the trading account resets. Refuses while the crypto bot still
+    holds open positions. Polymarket runs its own bankroll and is untouched
+    (reset it with POST /api/polymarket/reset)."""
     from .config import START_CASH
     from . import portfolio as portfolio_module
-    from .markets.polymarket.broker import broker as pm_broker
     from .strategies.core import core
     if broker.positions:
         return {"ok": False,
                 "error": "crypto sleeve has open positions; close them first"}
-    if portfolio_module.portfolio.ready and pm_broker.positions:
-        # the shared cash reset never touches positions (portfolio.reset_account)
-        return {"ok": False,
-                "error": "Polymarket sleeve has open positions; close them first"}
     # the CORE book is part of the account: a fresh account holds nothing.
     # (Leaving it would count its coins on top of the fresh $100k.)
     core.positions, core.realized_pnl, core.picks = {}, 0.0, None

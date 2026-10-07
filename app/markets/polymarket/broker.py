@@ -24,7 +24,7 @@ from __future__ import annotations
 import time
 import uuid
 
-PM_START_CASH = 10_000.0        # separate paper bankroll from the crypto book
+PM_START_CASH = 500.0           # own paper bankroll, separate from the main account
 
 
 class PMBroker:
@@ -35,6 +35,35 @@ class PMBroker:
         self.positions: dict[str, dict] = {}     # token_id -> position
         self.closed_trades: list[dict] = []
         self.realized_pnl = 0.0
+        # True once this book runs on its own bankroll (see make_standalone).
+        # Persisted; False on a snapshot from before the split.
+        self.standalone = False
+
+    def make_standalone(self, start_cash: float, shared_portfolio=None) -> dict:
+        """One-time switch from the shared account to Polymarket's own bankroll.
+
+        Bets opened while Polymarket shared the main account were paid from
+        shared cash, so each one's cost is handed back to that account (keyed
+        per position, so a crash and re-run can never refund twice) and the
+        positions are dropped. Polymarket then starts fresh with `start_cash`.
+        A no-op once standalone."""
+        if self.standalone:
+            return {"migrated": False}
+        refunded = 0.0
+        if shared_portfolio is not None and shared_portfolio.ready:
+            for pos in self.positions.values():
+                lid = pos.get("_ledger_id")
+                if lid and shared_portfolio.apply(
+                        "polymarket", f"pm-standalone-refund-{lid}",
+                        float(pos["cost"]),
+                        f"refund {pos['condition_id']} (Polymarket split off)"):
+                    refunded += float(pos["cost"])
+        n = len(self.positions)
+        self._portfolio = None
+        self.reset(start_cash)
+        self.standalone = True
+        return {"migrated": True, "refunded": round(refunded, 2),
+                "dropped_positions": n, "start_cash": self.start_cash}
 
     def bind_portfolio(self, portfolio):
         """Route this broker's cash through the shared paper-capital ledger
@@ -192,11 +221,9 @@ class PMBroker:
 
     # ------------------------------ reporting ------------------------------
     def reset(self, start_cash: float | None = None):
-        """Clear PM's own positions/trade history. Once bound to the shared
-        ledger, this NEVER touches cash -- a sleeve-local reset must not reset
-        money shared with the crypto book (see app.portfolio). Only an
-        explicit whole-account reset (PaperPortfolio.reset_account) may do
-        that, after confirming every sleeve is flat."""
+        """Clear PM's own positions/trade history and, on its own bankroll,
+        restart it at `start_cash`. If bound to the shared ledger (unit tests
+        only), this NEVER touches cash -- that money belongs to every sleeve."""
         if self._portfolio is None:
             if start_cash is not None:
                 self.start_cash = float(start_cash)
@@ -215,6 +242,7 @@ class PMBroker:
             "realized_pnl": round(self.realized_pnl, 2),
             "start_cash": round(self.start_cash, 2),
             "cash": round(self.cash, 2),
+            "standalone": self.standalone,
             "avg_win": round(sum(t["pnl"] for t in wins) / len(wins), 2)
                        if wins else 0.0,
             "avg_loss": round(sum(t["pnl"] for t in self.closed_trades

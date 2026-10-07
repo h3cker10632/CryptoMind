@@ -1066,7 +1066,7 @@ async function refresh(){
     }
     $('#b-regime').textContent='regime: '+(st.regime?st.regime.label:'—');
 
-    $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD)'+(st.shared_ledger_ready?' · shared crypto+Polymarket':'')+' · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
+    $('#k-equity').innerHTML=fmt(st.equity)+'<small>Equity (USD)'+(st.shared_ledger_ready?' · shared (excl. Polymarket)':'')+' · dd '+fmt((st.risk?.drawdown||0)*100,1)+'%</small>';
     $('#k-pnl').innerHTML='<span class="'+cls(st.realized_pnl)+'">'+fmt(st.realized_pnl)+'</span><small>Realized PnL · '+ (st.stats.trades||0)+' trades · win '+(st.stats.win_rate!=null?fmt(st.stats.win_rate*100,0)+'%':'—')+'</small>';
     $('#k-exposure').innerHTML=fmt(st.exposure)+'<small>Exposure'+(st.shared_ledger_ready?' (shared)':'')+' · Cash '+fmt(st.cash)+'</small>';
     const fg=st.fear_greed?st.fear_greed.value+' ('+st.fear_greed.label+')':'—';
@@ -2167,10 +2167,11 @@ async function refreshPoly(){
   const b=s.broker||{};
   const pnlCol = (b.realized_pnl||0)>=0?'#2ecc71':'#e74c3c';
   $('#poly-kpis').innerHTML =
-    kpi(s.shared_ledger_ready ? 'Equity (shared, USDC)' : 'Equity (USDC)',
-        money(s.equity||0)) +
+    kpi('Equity (own bankroll)', money(s.equity||0)) +
+    kpi('Since start', (s.return_pct>=0?'+':'')+(s.return_pct||0).toFixed(2)+'% of '+money(b.start_cash||0),
+        (s.return_pct||0)>=0?'#2ecc71':'#e74c3c') +
     kpi('Realized PnL', money(b.realized_pnl||0), pnlCol) +
-    kpi(s.shared_ledger_ready ? 'Cash (shared)' : 'Cash', money(b.cash||0)) +
+    kpi('Cash', money(b.cash||0)) +
     kpi('Open bets', (b.open_positions||0)) +
     kpi('Closed', (b.trades||0)) +
     kpi('Win rate', b.win_rate!=null?fmtPct(b.win_rate):'—');
@@ -2268,7 +2269,7 @@ $('#poly-ticknow').onclick=async(e)=>{
   btn.disabled=false; btn.textContent='↻ run one cycle'; refreshPoly();
 };
 $('#poly-reset').onclick=async()=>{
-  if(!confirm('Reset the Polymarket paper book (cash, positions, trades)?'))return;
+  if(!confirm('Reset the Polymarket paper book back to its starting bankroll (pm_start_cash)? Its positions and trade history are cleared; the main account is untouched.'))return;
   await j('/api/polymarket/reset',{method:'POST'}); refreshPoly();
 };
 setInterval(()=>{ if(_mlView==='poly') refreshPoly(); }, 4000);

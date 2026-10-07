@@ -1164,9 +1164,9 @@ class Orchestrator:
         return core.bot_equity(self._total_equity(market), market)
 
     def _total_equity(self, market):
-        """Account-level equity: shared cash plus every sleeve's marked
-        positions once the ledger migration is confirmed; crypto-only
-        beforehand (matches pre-migration behavior exactly). Used for the
+        """Main-account equity: shared cash plus the crypto bot's marked
+        positions plus the core and exploration books (Polymarket runs its own
+        bankroll and is not included). Used for the
         account-level kill-switch/drawdown tracker, equity logging and
         reporting -- NOT for crypto-only gates like max_gross_exposure or
         meme caps, which stay scoped to the crypto book (see risk.can_open)."""
@@ -1175,20 +1175,18 @@ class Orchestrator:
         books = core.value(market) + explore.value(market)
         if not paper_portfolio.ready:
             return broker.equity(market) + books
-        from .markets.polymarket.engine import engine as pm_engine
-        return paper_portfolio.total_equity(market, pm_engine._mid_lookup) + books
+        return paper_portfolio.total_equity(market) + books
 
     def _total_exposure(self, market):
-        """Account-level committed exposure across both sleeves (reporting /
-        equity-curve logging only; crypto-only gates are unaffected)."""
+        """Main-account committed exposure (reporting / equity-curve logging
+        only; crypto-only gates are unaffected). Polymarket excluded."""
         from .strategies.core import core
         from .strategies.exploration import manager as explore
         if not paper_portfolio.ready:
             return broker.exposure(market) + core.value(market) + explore.value(market)
-        from .markets.polymarket.engine import engine as pm_engine
         # the core book is real exposure too (it was left out: the dashboard
         # showed 0 exposure with ~$99k in BTC/ETH)
-        return (paper_portfolio.total_exposure(market, pm_engine._mid_lookup)
+        return (paper_portfolio.total_exposure(market)
                 + core.value(market) + explore.value(market))
 
     def tick(self):
@@ -1219,7 +1217,8 @@ class Orchestrator:
         equity = self._total_equity(market)
         # the drawdown / daily-loss limits measure the account WITHOUT the core
         # holding's P&L (see RiskManager.dd_basis); they stop new entries in
-        # the bot, exploration and Polymarket — the core has its own monitor
+        # the bot and exploration (Polymarket has its own bankroll) — the core
+        # has its own monitor
         from .strategies.core import core as _core
         active_equity = equity - _core.pnl(market)
         if risk.dd_basis != "active_ex_core":

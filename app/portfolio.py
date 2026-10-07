@@ -1,7 +1,11 @@
-"""Shared paper-capital ledger used by every paper-trading sleeve (crypto,
-memes, Polymarket). This is the sole source of simulated cash: sleeves keep
-their own position/fill math but reserve/settle against this one account so
-they can never independently overspend the same buying power.
+"""Shared paper-capital ledger for the main account (crypto bot, memes, core,
+exploration). This is the sole source of the main account's simulated cash:
+sleeves keep their own position/fill math but reserve/settle against this one
+account so they can never independently overspend the same buying power.
+
+Polymarket is NOT part of it: it runs its own bankroll (see
+app.markets.polymarket.broker.PMBroker.make_standalone). The "polymarket"
+sleeve name stays valid only so its one-time refund on the split is recorded.
 
 No in-memory cash copy is kept here — `cash` always reads the durable SQLite
 ledger (app.db), so concurrent sleeves/processes observe the same balance.
@@ -54,29 +58,22 @@ class PaperPortfolio:
             raise ValueError("event_id is required")
         return db.reset_paper_portfolio_cash(opening_cash, event_id, reference)
 
-    def total_equity(self, crypto_market, pm_price_lookup) -> float:
-        """Shared cash plus every sleeve's marked position value, counted
-        exactly once. The shadow OMS mirror account is intentionally excluded
-        -- it tracks execution-quality divergence, not real paper capital."""
+    def total_equity(self, crypto_market) -> float:
+        """Shared cash plus the crypto bot's marked positions, counted exactly
+        once. Polymarket (own bankroll) and the shadow OMS mirror account are
+        excluded -- the mirror tracks execution-quality divergence, not real
+        paper capital."""
         from .execution.paper import broker as crypto_broker
-        from .markets.polymarket.broker import broker as pm_broker
         eq = self.cash
         for product, pos in crypto_broker.positions.items():
             price = crypto_market.price(product) or pos["entry"]
             eq += crypto_broker.position_value(pos, price)
-        for token_id, pos in pm_broker.positions.items():
-            mid = pm_price_lookup(token_id)
-            if mid is None:
-                mid = pos["entry"]
-            eq += pm_broker.market_value(pos, mid)
         return eq
 
-    def total_exposure(self, crypto_market, pm_price_lookup) -> float:
-        """Combined committed notional across both sleeves. Shadow excluded."""
+    def total_exposure(self, crypto_market) -> float:
+        """Crypto bot's committed notional. Polymarket and shadow excluded."""
         from .execution.paper import broker as crypto_broker
-        from .markets.polymarket.broker import broker as pm_broker
-        return (crypto_broker.exposure(crypto_market)
-                + pm_broker.exposure(pm_price_lookup))
+        return crypto_broker.exposure(crypto_market)
 
 
 def bootstrap(opening_cash: float, migration_id: str = "unified-paper-v1",

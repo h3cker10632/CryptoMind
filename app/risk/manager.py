@@ -151,8 +151,8 @@ class RiskManager:
             alert("critical", "KILL SWITCH TRIPPED",
                   f"Max drawdown {dd:.1%} breached (limit {tv('max_drawdown_kill'):.0%}) "
                   f"on account equity excluding the core holding (${equity:,.0f}). "
-                  f"New entries stopped in the hourly bot, exploration and Polymarket "
-                  f"sleeves until manual reset; open positions are still managed to "
+                  f"New entries stopped in the hourly bot and exploration sleeves until "
+                  f"manual reset (Polymarket runs its own bankroll); open positions are still managed to "
                   f"their exits. The core keeps following its champion (own tracking "
                   f"monitor).")
         if day_loss >= tv("daily_loss_limit") and not self.halted_today:
@@ -165,7 +165,7 @@ class RiskManager:
             alert("critical", "DAILY LOSS HALT",
                   f"Daily loss {day_loss:.1%} hit the {tv('daily_loss_limit'):.0%} limit "
                   f"on account equity excluding the core holding (${equity:,.0f}). "
-                  f"No new entries in the hourly bot, exploration and Polymarket sleeves "
+                  f"No new entries in the hourly bot and exploration sleeves "
                   f"until tomorrow (UTC); the core is unaffected.")
 
         # regime-adaptive scaling

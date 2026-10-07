@@ -1,5 +1,17 @@
 # CryptoMind — Hardening Changelog
 
+## 2026-10-06 — Polymarket on its own bankroll
+
+Operator choice: Polymarket gets its own $500 paper bankroll and grows (or
+shrinks) from there, fully separate from the main account.
+
+| Change | Where |
+|---|---|
+| **Own bankroll**: the Polymarket broker no longer draws on the shared main-account cash. It starts with `pm_start_cash` (setting, default $500), keeps what it wins and loses, and sizes bets off its own equity. Auto-trade no longer waits for the main account's ledger migration. | `app/markets/polymarket/broker.py`, `engine.py`, `app/settings.py`, `app/main.py` |
+| **One-time split at startup**: bets opened while Polymarket shared the main account are refunded at cost to that account (once per bet, idempotent across crashes) and dropped; Polymarket then starts fresh. The `standalone` flag and bankroll persist in `state.json`. | `PMBroker.make_standalone`, `app/persistence.py` |
+| **Main account excludes Polymarket**: account equity, exposure, drawdown/kill switch and the main-account reset no longer count or touch Polymarket; `POST /api/polymarket/reset` restarts its bankroll at `pm_start_cash`. The allocator's Polymarket remainder is gone (core + exploration; the rest is unallocated cash). | `app/portfolio.py`, `app/orchestrator.py`, `app/strategies/allocator.py`, `POST /api/control/reset-account` |
+| Dashboard: Polymarket tab shows its own equity, return since start and cash. | `static/index.html` |
+
 ## 2026-10-04 — Exploration sleeve (fast trading, live learning)
 
 Operator choice: 50% of the account to fast strategies trading live paper in
