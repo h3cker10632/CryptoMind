@@ -50,9 +50,10 @@ def pretrain_online(candles_by_product, horizon_sec=None, max_samples=MAX_SAMPLE
     def _train_matured(now):
         nonlocal n
         while pending and pending[0][0] <= now and n < max_samples:
-            _, x, fwd, pred = pending.popleft()
+            ready, x, fwd, pred = pending.popleft()
             committee.observe_outcome(x, fwd)
-            committee.update(x, fwd, pred_at_record=pred)
+            committee.update(x, fwd, pred_at_record=pred,
+                             cluster=int(ready // (horizon * 3600)))
             n += 1
 
     for t in usable[::step]:

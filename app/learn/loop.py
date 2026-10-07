@@ -177,8 +177,8 @@ class Learner:
                     from .online_model import TARGET_SCALE
                     target = max(-1.0, min(1.0, fwd / TARGET_SCALE))
                     ph_hit = page_hinkley.add(abs(pred - target))
-                    acc = model.stats()["directional_accuracy"]
-                    working = (acc is not None and acc > 0.50 and model.n_updates >= 40)
+                    from .online_model import trust as _trust
+                    working = model.n_updates >= 40 and _trust(model.stats()) > 0
                     if ph_hit and model.lr_boost <= 1.05 and working:
                         committee.lr_boost = 2.0
                         db.log_event("learn", "CONCEPT DRIFT (Page-Hinkley): model "
@@ -191,7 +191,8 @@ class Learner:
                 # run() resets a broken head BEFORE this, so samples land on a
                 # fresh net. Direct callers (tests) still train — freezing is
                 # the reset, not a silent skip that would drain the queue.
-                committee.update(x, fwd, pred_at_record=pred)
+                committee.update(x, fwd, pred_at_record=pred,
+                                 cluster=int(ts // ML_HORIZON_SEC))
                 trained += 1
         if dropped_dim:
             db.log_event("learn",
@@ -248,15 +249,17 @@ class Learner:
             # (this is exactly what happened: 20.7% dir-acc + PSI≈6 → LR×2.5).
             st = model.stats()
             acc = st["directional_accuracy"]
-            if acc is not None and acc > 0.50 and model.n_updates >= 40:
+            from .online_model import trust as _trust
+            if _trust(st) > 0 and model.n_updates >= 40:
                 committee.lr_boost = 3.0               # fast re-adaptation (all members)
                 db.log_event("learn", f"DRIFT on '{worst_f}' (PSI={psi:.3f}) "
                                       f"— LR boosted x3 (model acc {acc:.1%})")
             else:
                 db.log_event("learn", f"DRIFT on '{worst_f}' (PSI={psi:.3f}) "
                                       f"— LR boost SUPPRESSED (model acc "
-                                      f"{'n/a' if acc is None else format(acc,'.1%')} "
-                                      f"≤ coin flip; not chasing a broken head)")
+                                      f"{'n/a' if acc is None else format(acc,'.1%')}, "
+                                      f"no measured skill over the majority direction; "
+                                      f"not chasing a head that isn't working)")
 
     # ------------------------------------------------ background evolution
     def _next_evolution_product(self):
@@ -516,10 +519,10 @@ class Learner:
         silent = set(DISABLED_STRATEGIES)
         if not self._evolved_live():
             silent.add("evolved")
-        # ml votes 0 until acc > 50%; don't give it a 4% floor in the meantime
-        acc = model.stats()["directional_accuracy"]
+        # ml votes 0 until it has measured skill; no 4% floor in the meantime
         from .gate import active
-        if acc is None or acc <= 0.50 or not active("online_ml"):
+        from .online_model import trust as _trust
+        if _trust(model.stats()) <= 0 or not active("online_ml"):
             silent.add("ml")
         return silent
 

@@ -165,16 +165,15 @@ def strat_ml(f, sent, regime):
     from ..learn.gate import active
     if model.n_updates < 40 or not active("online_ml"):
         return 0.0
-    # Gate the vote on MEASURED directional accuracy BEFORE spending a forward
-    # pass. A model at or below a coin flip (or one we haven't measured yet)
-    # contributes NOTHING — no credit for being unmeasured, and no partial
-    # credit below 50%. Trust ramps in only once it's genuinely better than
-    # random, so a broken head (20.7% dir-acc) can no longer earn ensemble weight.
-    st = model.stats()
-    acc = st["directional_accuracy"]
-    if acc is None or acc <= 0.50:
+    # Gate the vote on MEASURED SKILL before spending a forward pass: accuracy
+    # above the hindsight "always the majority direction" baseline by more
+    # than 2 clustered standard errors over >= 20 independent label windows
+    # (online_model.trust). Accuracy vs a coin flip on a 300-sample window was
+    # mostly the market's direction that day, not skill.
+    from ..learn.online_model import trust as _trust
+    trust = _trust(model.stats())
+    if trust <= 0:
         return 0.0
-    trust = _clip((acc - 0.50) / 0.10, 0.0, 1.0)   # 50%→0, 60%→full
     d = derivatives.features(_cur_product())
     x = build_x(f, sent[0], _cur_market_sent(), d)
     # COMMITTEE + UNCERTAINTY: use the ensemble mean, and scale the vote down

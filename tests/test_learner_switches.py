@@ -90,15 +90,17 @@ def test_bandit_and_ml_vote_follow_gate(monkeypatch):
 
 def test_ml_reset_needs_confident_evidence():
     from app.learn.online_model import confidently_broken
+    st = lambda acc, n, clusters, se: {"skill_accuracy": acc, "skill_samples": n,
+                                       "skill_clusters": clusters, "accuracy_se": se,
+                                       "n_updates": 5000}
     # 20 scored predictions at 45%: noise, not broken (the old rule reset here)
-    assert not confidently_broken({"directional_accuracy": 0.45, "acc_samples": 20,
-                                   "n_updates": 5000})
+    assert not confidently_broken(st(0.45, 20, 20, 0.11))
     # 300 scored at 50%: a coin flip, not broken
-    assert not confidently_broken({"directional_accuracy": 0.50, "acc_samples": 300,
-                                   "n_updates": 5000})
-    # 300 scored at 40%: reliably worse than a coin flip
-    assert confidently_broken({"directional_accuracy": 0.40, "acc_samples": 300,
-                               "n_updates": 5000})
+    assert not confidently_broken(st(0.50, 300, 60, 0.03))
+    # 300 scored at 40% over 60 independent label windows: reliably worse
+    assert confidently_broken(st(0.40, 300, 60, 0.03))
+    # ...but 300 scored at 40% inside 3 label windows is one bad market day
+    assert not confidently_broken(st(0.40, 300, 3, 0.03))
 
 
 def test_warm_start_only_when_replay_state_is_more_experienced(tmp_path, monkeypatch):

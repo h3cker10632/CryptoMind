@@ -58,6 +58,8 @@ def _dump_mlp(m):
         "replay": [[x, t] for x, t in list(m.replay)[-1500:]],
         "replay_pr": list(m.replay_pr)[-1500:],
         "acc_window": list(m.acc_window),
+        "skill_clusters": [[k] + list(v) for k, v in m.skill_clusters.items()],
+        "n_scored": m._n_scored,
         "loss_window": list(m.loss_window),
         "feat_n": m.feat_n, "feat_mean": m.feat_mean, "feat_M2": m.feat_M2,
     }
@@ -99,6 +101,10 @@ def _load_mlp(m, d):
     if len(aw) >= 20 and sum(aw) == 0:
         aw = []
     m.acc_window = deque(aw, maxlen=m.acc_window.maxlen)
+    from collections import OrderedDict
+    m.skill_clusters = OrderedDict((r[0], list(r[1:4])) for r in d.get("skill_clusters", [])
+                                   if len(r) == 4)
+    m._n_scored = d.get("n_scored", 0)
     m.loss_window = deque(d.get("loss_window", []), maxlen=m.loss_window.maxlen)
     if len(d.get("feat_mean", [])) == len(m.feat_mean):
         m.feat_n = d.get("feat_n", 0)

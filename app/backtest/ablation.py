@@ -85,10 +85,11 @@ def ml_track(cache, horizon_bars=None, seed=7, progress=None):
     for k, t in enumerate(ts):
         # train matured samples (label fully known at t)
         while pending and pending[0][0] <= t:
-            _, p, i, x, pred = pending.popleft()
+            ready, p, i, x, pred = pending.popleft()
             fwd = C[p][i + H][4] / C[p][i][4] - 1
             committee.observe_outcome(list(x), fwd)
-            committee.update(list(x), fwd, pred_at_record=pred)
+            committee.update(list(x), fwd, pred_at_record=pred,
+                             cluster=int(ready // (H * BAR_SEC)))
             n_train += 1
         st = committee.primary.stats()
         acc = st["directional_accuracy"]
@@ -97,7 +98,8 @@ def ml_track(cache, horizon_bars=None, seed=7, progress=None):
             n_resets += 1
             acc = None
         ext = cache["bars"][t][4]
-        live = committee.primary.n_updates >= 40 and acc is not None and acc > 0.50
+        tr = om.trust(st)
+        live = committee.primary.n_updates >= 40 and tr > 0
         live_bars += live
         if k % 24 == 0:
             acc_trace.append(acc)
@@ -108,8 +110,7 @@ def ml_track(cache, horizon_bars=None, seed=7, progress=None):
             xl = list(x)
             if live:
                 u = committee.predict_with_uncertainty(xl)
-                trust = _clip((acc - 0.50) / 0.10, 0.0, 1.0)
-                out[(t, p)] = (_clip(u["mean"] * 1.3) * trust * u["confidence"], u["mean"])
+                out[(t, p)] = (_clip(u["mean"] * 1.3) * tr * u["confidence"], u["mean"])
             if i + H < len(C[p]):
                 pred = committee.predict(xl) if committee.primary.n_updates >= 10 else 0.0
                 pending.append((t + H * BAR_SEC, p, i, x, pred))

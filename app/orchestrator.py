@@ -1628,8 +1628,8 @@ class Orchestrator:
             ml_pos = 0.0
             ml_pos_hi = None
             if model.n_updates >= 40:
-                acc = model.stats().get("directional_accuracy")
-                if acc is not None and acc > 0.50:
+                from .learn.online_model import trust as _ml_trust
+                if _ml_trust(model.stats()) > 0:
                     asset_sent, _ = nlp.asset_score(p)
                     x = build_x(f, asset_sent, nlp.market_sentiment,
                                 derivatives.features(p))

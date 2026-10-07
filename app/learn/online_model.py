@@ -16,6 +16,7 @@ Uncertainty features (Phase 3):
     the model is unsure and only presses size when the heads agree.
 """
 import math, random
+from collections import OrderedDict
 from ..config import CANDLE_GRANULARITY as _GRAN
 from collections import deque
 
@@ -38,13 +39,67 @@ RESET_MIN_UPDATES = 500
 RESET_MIN_SCORED = 200
 
 
+# HONEST SKILL. The 300-sample accuracy window is ~14 hours of ~21 coins that
+# move together, each scored on an overlapping 24h move: it mostly records
+# whether the market went up that day. A zero-skill "always up" model scored
+# that way read >60% (full trust under the old rule) 42% of the time. So:
+#   * every scored prediction carries a CLUSTER key — its label window
+#     (record time // horizon); predictions in one cluster share one market
+#     move and count as ONE observation for the standard error;
+#   * skill = accuracy minus the hindsight "always predict the majority
+#     direction" baseline on the same samples (drift alone earns nothing);
+#   * trust needs >= SKILL_MIN_CLUSTERS clusters and skill above 2 clustered
+#     standard errors (tests/test_ml_pipeline.py replays the zero-skill case).
+SKILL_MAX_CLUSTERS = 180       # label windows kept (~6 months of daily windows)
+SKILL_MIN_CLUSTERS = 20
+TRUST_FULL_MARGIN = 0.05       # skill this far above 2 SE -> full trust
+
+
+def skill_stats(clusters):
+    """From {cluster: [n, correct, up]} (scored predictions per label window):
+    accuracy, the hindsight majority-direction baseline, skill = accuracy -
+    baseline, and CR0 cluster-robust standard errors of both."""
+    rows = list(clusters.values())
+    N = sum(r[0] for r in rows)
+    if not N:
+        return {"skill": None, "skill_se": None, "skill_clusters": 0, "skill_samples": 0,
+                "skill_accuracy": None, "skill_baseline": None, "accuracy_se": None}
+    up_frac = sum(r[2] for r in rows) / N
+    maj_up = up_frac >= 0.5
+    acc = sum(r[1] for r in rows) / N
+    skill = acc - max(up_frac, 1 - up_frac)
+    se_s = se_a = None
+    if len(rows) >= 2:
+        # per cluster: sum of (correct - majority-baseline-correct)
+        z = [r[1] - (r[2] if maj_up else r[0] - r[2]) for r in rows]
+        se_s = math.sqrt(sum((zk - r[0] * skill) ** 2 for zk, r in zip(z, rows))) / N
+        se_a = math.sqrt(sum((r[1] - r[0] * acc) ** 2 for r in rows)) / N
+    return {"skill": round(skill, 4), "skill_se": se_s, "skill_clusters": len(rows),
+            "skill_samples": N, "skill_accuracy": round(acc, 4),
+            "skill_baseline": round(max(up_frac, 1 - up_frac), 4), "accuracy_se": se_a}
+
+
+def trust(stats):
+    """[0, 1] weight for the model's vote: 0 until its skill over the
+    majority-direction baseline is more than 2 clustered standard errors above
+    zero on >= SKILL_MIN_CLUSTERS independent label windows."""
+    sk, se = stats.get("skill"), stats.get("skill_se")
+    if sk is None or se is None or stats.get("skill_clusters", 0) < SKILL_MIN_CLUSTERS:
+        return 0.0
+    return max(0.0, min(1.0, (sk - 2 * se) / TRUST_FULL_MARGIN))
+
+
 def confidently_broken(stats):
-    """True when a head's measured directional accuracy is reliably worse than
-    a coin flip (see RESET_MIN_* above)."""
-    acc, n = stats.get("directional_accuracy"), stats.get("acc_samples", 0)
-    if acc is None or n < RESET_MIN_SCORED or stats.get("n_updates", 0) < RESET_MIN_UPDATES:
+    """True when a head's directional accuracy is reliably WORSE than a coin
+    flip — below 0.5 by 2 clustered standard errors over enough independent
+    label windows (see RESET_MIN_* above). Overlapping labels across coins no
+    longer count as separate evidence."""
+    acc, se = stats.get("skill_accuracy"), stats.get("accuracy_se")
+    if (acc is None or se is None or stats.get("skill_samples", 0) < RESET_MIN_SCORED
+            or stats.get("skill_clusters", 0) < SKILL_MIN_CLUSTERS
+            or stats.get("n_updates", 0) < RESET_MIN_UPDATES):
         return False
-    return acc < 0.5 - 2 * math.sqrt(0.25 / n)
+    return acc < 0.5 - 2 * se
 
 
 # quantile levels for the aleatoric band (P10 / P90)
@@ -248,7 +303,11 @@ class TinyMLP:
         # efficiency than uniform replay.
         self.replay = deque(maxlen=4000)          # (x, target)
         self.replay_pr = deque(maxlen=4000)       # priority (last sq-error + eps)
-        self.acc_window = deque(maxlen=300)   # directional accuracy
+        self.acc_window = deque(maxlen=300)   # directional accuracy (display only)
+        # scored predictions aggregated per label window: {cluster: [n,
+        # correct, up]} — see skill_stats()
+        self.skill_clusters = OrderedDict()
+        self._n_scored = 0
         self.loss_window = deque(maxlen=300)
         # live sample stream for the ML-learning dashboard: each matured update
         # records (predicted, realized-target, correct?) so the UI can show the
@@ -373,8 +432,11 @@ class TinyMLP:
                 return i
         return len(self.replay) - 1
 
-    def update(self, x, fwd_return, pred_at_record=None):
-        """Learn from a labeled sample; also replays PRIORITIZED past samples."""
+    def update(self, x, fwd_return, pred_at_record=None, cluster=None):
+        """Learn from a labeled sample; also replays PRIORITIZED past samples.
+        `cluster`: the label window the prediction belongs to (record time //
+        label horizon); predictions sharing one are one observation for the
+        skill statistics. Without it each 50 scored samples form one cluster."""
         if not isinstance(x, (list, tuple)) or len(x) != len(self.feat_mean):
             return
         target = _clip(fwd_return / TARGET_SCALE, -1, 1)     # ±1.2% move = full signal
@@ -389,6 +451,16 @@ class TinyMLP:
                   and abs(pred_at_record) > ACC_MIN_CONVICTION)
         if scored:
             self.acc_window.append(1 if pred_at_record * target > 0 else 0)
+            key = cluster if cluster is not None else f"n{self._n_scored // 50}"
+            agg = self.skill_clusters.get(key)
+            if agg is None:
+                agg = self.skill_clusters[key] = [0, 0, 0]
+                while len(self.skill_clusters) > SKILL_MAX_CLUSTERS:
+                    self.skill_clusters.popitem(last=False)
+            agg[0] += 1
+            agg[1] += 1 if pred_at_record * target > 0 else 0
+            agg[2] += 1 if target > 0 else 0
+            self._n_scored += 1
             self.recent.append((round(float(pred_at_record), 4),
                                 round(float(target), 4),
                                 bool(pred_at_record * target > 0)))
@@ -471,6 +543,8 @@ class TinyMLP:
         self.replay = deque(maxlen=self.replay.maxlen)
         self.replay_pr = deque(maxlen=self.replay_pr.maxlen)
         self.acc_window = deque(maxlen=self.acc_window.maxlen)
+        self.skill_clusters = OrderedDict()
+        self._n_scored = 0
         self.loss_window = deque(maxlen=self.loss_window.maxlen)
         self.recent = deque(maxlen=self.recent.maxlen)
         self.feat_n = 0
@@ -482,7 +556,9 @@ class TinyMLP:
                if self.acc_window else None)
         loss = (sum(self.loss_window) / len(self.loss_window)
                 if self.loss_window else None)
+        sk = skill_stats(self.skill_clusters)
         return {
+            **sk,
             "n_updates": self.n_updates,
             "replay_buffer": len(self.replay),
             "directional_accuracy": round(acc, 3) if acc is not None else None,
@@ -697,11 +773,11 @@ class Committee:
         """Committee mean of the median heads."""
         return sum(m.predict(x) for m in self.members) / len(self.members)
 
-    def update(self, x, fwd_return, pred_at_record=None):
+    def update(self, x, fwd_return, pred_at_record=None, cluster=None):
         """Train every member. Members differ only by init seed + replay
         sampling, which is enough to keep their errors partially decorrelated."""
         for m in self.members:
-            m.update(x, fwd_return, pred_at_record=pred_at_record)
+            m.update(x, fwd_return, pred_at_record=pred_at_record, cluster=cluster)
 
     def update_aux(self, x, fwd_return, head):
         """Train the auxiliary horizon head on every member."""

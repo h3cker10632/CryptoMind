@@ -102,6 +102,9 @@ def test_broken_ml_resets_once_then_stops():
             m.n_updates = 500
             m.acc_window.clear()
             m.acc_window.extend([0] * 200)
+            # 200 wrong calls spread over 20 independent label windows
+            m.skill_clusters.clear()
+            m.skill_clusters.update({k: [10, 0, 5] for k in range(20)})
         L.bandit.update("bull", "ml", -0.005)
         assert L._maybe_reset_broken_ml() is True
         assert model.n_updates == 0
