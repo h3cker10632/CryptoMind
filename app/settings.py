@@ -91,6 +91,7 @@ DEFAULTS = {
     "ml_vote_mode": "auto",             # online-model committee vote
     "learner_ablation_interval_sec": 604800,   # re-run the ablation weekly
     "data_sync_interval_sec": 86400,    # refresh the market data store daily
+    "series_sync_interval_sec": 86400,  # external series store (tools/series_sync.py)
     "research_loop_interval_sec": 86400,    # champion / challenger loop daily
     # signal screen + promotion-process backtest (tools/signal_screen.py,
     # tools/promotion_backtest.py)
@@ -404,6 +405,7 @@ INT_KEYS = {
     "core_sma_days": (10, 250),
     "learner_ablation_interval_sec": (86400, 2592000),   # 1d .. 30d
     "data_sync_interval_sec": (3600, 604800),
+    "series_sync_interval_sec": (3600, 604800),
     "research_loop_interval_sec": (86400, 2592000),
     "research_extras_interval_sec": (86400, 2592000),
     "learner_gate_max_age_days": (1, 60),

@@ -29,3 +29,8 @@ _settings._settings = None
 # temp dir too, so tests never read or write the operator's .cache/
 import app.backtest.bar_cache as _bar_cache
 _bar_cache.DIR = os.path.join(_tmp, "replay_bars")
+
+# ...and the external series store (app/data/series.py), which ingest.push
+# also writes to
+import app.data.series as _series
+_series.STORE = os.path.join(_tmp, "series-store")

@@ -33,7 +33,7 @@ import time
 
 PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                     "external_signals.jsonl")
-MAX_ROWS = 5000                 # bounded append-only store
+MAX_ROWS = 5000                 # bounded live view (full history: app/data/series.py)
 DEFAULT_MAX_AGE = 6 * 3600      # a signal older than 6h no longer feeds features
 
 
@@ -110,7 +110,26 @@ def push(rows) -> dict:
         existing = _read_all()
         existing.extend(good)
         _write_all(existing)
+        _to_history(good)
     return {"accepted": len(good), "rejected": len(rows) - len(good)}
+
+
+def _to_history(rows):
+    """Also keep every accepted row, uncapped, in the point-in-time series
+    store (app/data/series.py) as `ext:<kind>:<asset>`, known from the moment
+    it arrived. The jsonl above is a bounded live view; this is the history a
+    signal must build up before it can be tested (tools/signal_screen.py)."""
+    try:
+        from . import series
+        now = time.time()
+        by = {}
+        for r in rows:
+            by.setdefault(f"ext:{r['kind']}:{r['asset']}", []).append(
+                (int(min(r["ts"], now)), r["value"], now))
+        for name, pts in by.items():
+            series.ingest(name, pts, source="ingest", now=now)
+    except Exception:
+        pass                      # history is best-effort; the live path never fails on it
 
 
 def feature(product: str, max_age_sec: float = DEFAULT_MAX_AGE) -> float | None:

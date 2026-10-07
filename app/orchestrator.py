@@ -486,6 +486,7 @@ class Orchestrator:
                             reason=("new coin(s) joined the universe" if new
                                     else "scheduled"), new=new)
                     await self._maybe_sync_data()
+                    await self._maybe_sync_series()
                     await self._maybe_run_research_loop()
                     await self._maybe_run_research_extras()
                     if self.hourly_bot_active():
@@ -569,6 +570,17 @@ class Orchestrator:
             alert("info", "New champion strategy", msg)
             db.log_event("learn", f"Champion promoted: {msg}")
         return ok
+
+    async def _maybe_sync_series(self, now=None):
+        """Daily: external series with history (Fear & Greed, DVOL, stablecoin
+        supply, on-chain activity) into the point-in-time series store."""
+        import os
+        try:
+            last = os.path.getmtime(self._replay_path("series_sync_latest.json"))
+        except OSError:
+            last = 0
+        return await self._run_tool_weekly("series_sync.py", "External series sync", last,
+                                           "series_sync_interval_sec", now)
 
     async def _maybe_run_research_extras(self, now=None):
         """Weekly: the signal screen (does a feature predict anything before a
