@@ -116,6 +116,9 @@ def test_champion_survives_leaving_the_queue(research_dirs):
     C._save(C.CHAMPION, {"name": "q1", "config": cfg})
     C.unregister("q1")
     assert C.champion() == ("q1", cfg)
+    from app.main import research_candidates
+    listed = research_candidates()["candidates"]["q1"]
+    assert listed["config"] == cfg and listed["queued"] is False
 
 
 def test_research_run_reports_forward_test_and_costs(research_dirs):

@@ -183,3 +183,16 @@ def test_ex_core_peak_below_start_cash_survives_restart(monkeypatch, tmp_path):
     risk.peak_equity = 0.0
     assert persistence.load() is True
     assert risk.peak_equity == 92_000.0 and risk.kill_arm_peak == 92_000.0
+
+
+def test_held_coin_on_target_but_unpriced_counts_off_target(monkeypatch):
+    from app.execution.paper import PaperBroker
+    from app.strategies import core as core_mod
+    _ml_champion(monkeypatch, {"XRP-USD": 0.5})
+    monkeypatch.setattr(core_mod.db, "log_event", lambda *a: None)
+    c = core_mod.CoreBook()
+    c.positions = {"XRP-USD": {"qty": 10_000.0, "entry": 2.5, "opened": 0}}   # $25k: on target
+    b = PaperBroker()
+    b.cash = 75_000.0
+    c.rebalance(b, _Mkt({}), 100_000.0, {}, now=time.time())
+    assert c.tracking[-1]["off_target"] == ["XRP-USD"]                       # can't trade or price it

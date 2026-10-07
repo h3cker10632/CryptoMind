@@ -35,8 +35,8 @@ verification for every step: **[docs/IMPROVEMENT_PIPELINE.md](docs/IMPROVEMENT_P
    ingested signal (same-second rows in one push stored as their mean)
    (`app/data/series.py`, `tools/series_sync.py`).
 2. **Screen** — does a feature predict anything at all? Cross-coin rank IC /
-   time-series correlation, t from non-overlapping every-h-th-day sub-series
-   (no verdict below 20 independent observations), both halves, Holm-adjusted
+   time-series correlation, Hansen-Hodrick t for the overlapping labels (no
+   verdict below 20 non-overlapping observations), both halves, Holm-adjusted
    (`app/engine/screen.py`, `tools/signal_screen.py`).
 3. **Model** — pooled walk-forward ML over every liquid coin's history
    (market-relative, vol-scaled, overlap-weighted labels; ridge / boosted trees),

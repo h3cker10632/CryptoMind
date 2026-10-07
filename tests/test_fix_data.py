@@ -93,3 +93,22 @@ def test_server_startup_hashes_the_replay_code_as_loaded():
     r = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), capture_output=True,
                        text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-2000:]
+
+
+def test_store_panel_ignores_a_newest_bar_only_some_coins_have(monkeypatch, tmp_path):
+    """The core / exploration loops ingest their own coins' newest day hourly;
+    until the full sync brings the rest, a universe-wide champion would see
+    every other coin as delisted on that row."""
+    from app.data import store
+    from app.engine import panel as P
+    monkeypatch.setattr(store, "STORE", str(tmp_path))
+    D = 86400
+    bar = lambda d: [d * D, 9.9, 10.1, 10.0, 10.0 + d, 1000.0]
+    for c in ("A-USD", "B-USD", "C-USD"):
+        store.ingest_candles(c, D, [bar(d) for d in range(30)], now=40 * D)
+    store.ingest_candles("A-USD", D, [bar(30)], now=40 * D)          # core loop: its coin only
+    assert P.from_store().days[-1] == 29
+    assert P.from_store(["A-USD"]).days[-1] == 30                   # complete for its own coins
+    for c in ("B-USD", "C-USD"):                                     # the full sync catches up
+        store.ingest_candles(c, D, [bar(30)], now=40 * D)
+    assert P.from_store().days[-1] == 30

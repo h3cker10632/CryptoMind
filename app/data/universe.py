@@ -278,11 +278,14 @@ class Universe:
 
         # apply changes to the live universe (mutate PRODUCTS in place).
         # never prune a coin we currently hold a position in.
+        held = set()
         try:
             from ..execution.paper import broker
-            held = set(broker.positions.keys())
+            held |= set(broker.positions.keys())
+            from ..strategies.core import core          # keeps its own book
+            held |= set(core.positions)
         except Exception:
-            held = set()
+            pass
         current = set(PRODUCTS)
         target = set(CORE) | set(chosen) | (held & current)
         added = sorted(target - current)

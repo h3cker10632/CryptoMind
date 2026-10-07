@@ -83,9 +83,10 @@ the original on your machine, diff the two before replacing either.
   market's direction drops out.
 - **Time series**: a market-wide series (e.g. Fear & Greed) vs BTC's next-h-day
   return.
-- t averaged over the `h` non-overlapping every-h-th-day sub-series (overlapping
-  labels inflate a plain t; no verdict below 20 independent observations),
-  both halves must agree in sign, Holm-adjusted across everything screened. Report:
+- Hansen-Hodrick t (overlapping h-day labels: variance plus the first h-1
+  autocovariances, demeaning-bias corrected; size ~5% from 60 non-overlapping
+  observations, 6-9% at 20-40, no verdict below 20), both halves must agree in
+  sign, Holm-adjusted across everything screened. Report:
   `reports/signal_screen_latest.json`.
 
 ## 3. Model — pooled, walk-forward, vs a baseline
@@ -102,7 +103,7 @@ the original on your machine, diff the two before replacing either.
   ensemble; logistic for the meta-model. Refit every 30 days on labels that
   ended before the refit day. Changing future prices leaves earlier
   predictions bit-identical (`tests/test_ml_pipeline.py`).
-- **Gate**: out-of-sample IC with t ≥ 2 (non-overlapping sub-series, as above), positive in both halves and above
+- **Gate**: out-of-sample IC with t ≥ 2 (Hansen-Hodrick, as above), positive in both halves and above
   the 30-day-momentum baseline in both halves; calibration by decile. The
   trend meta-model must beat the base rate's Brier in both halves.
 - **Candidates it can queue**: `ml_rank` (pooled ranker inside the trend

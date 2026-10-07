@@ -72,7 +72,20 @@ def from_candles(candles_by_product, now=None, data_version="", bar_sec=DAY):
 
 
 def from_store(products=None, start=None, end=None, as_of=None, bar_sec=DAY):
-    """Panel straight from the versioned data store (daily unless `bar_sec`)."""
+    """Panel straight from the versioned data store (daily unless `bar_sec`).
+    Trailing bars only some coins have reached are dropped (< 90% of the
+    best coverage of the last 30 bars): the core and exploration loops ingest
+    their own coins' newest bars hourly, the full sync every coin's once a
+    day, and on such a partial row the missing coins look delisted."""
     from ..data import store
     data, ver = store.load_candles(bar_sec, products, start=start, end=end, as_of=as_of)
-    return from_candles(data, data_version=ver, bar_sec=bar_sec)
+    p = from_candles(data, data_version=ver, bar_sec=bar_sec)
+    n = np.isfinite(p.close).sum(axis=1)
+    k = p.T
+    while k and n[k - 1] < 0.9 * n[-30:].max():
+        k -= 1
+    if k < p.T:
+        cut = (lambda a: None if a is None else a[:k])
+        p = Panel(p.days[:k], p.coins, p.close[:k], p.volume[:k], ver,
+                  cut(p.high), cut(p.low), bar_sec)
+    return p

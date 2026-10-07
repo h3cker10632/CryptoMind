@@ -2,8 +2,8 @@
 feature — and against what the model has to beat.
 
   ranking   daily rank correlation (IC) of the prediction with the realized
-            label across the universe, t from non-overlapping sub-series
-            (evidence.overlap_tstat), both halves; the SAME statistic for
+            label across the universe, Hansen-Hodrick t for the overlapping
+            labels (evidence.overlap_tstat), both halves; the SAME statistic for
             the baseline (30-day momentum rank) on the same days; the model
             must beat it in both halves.
   calibration  mean realized label per prediction decile (should rise).

@@ -1,14 +1,19 @@
 """The IC t-statistic on overlapping h-day labels must hold its size: a feature
-with no predictive power passes |t| >= 2 about 5% of the time, not ~10%."""
+with no predictive power passes |t| >= 2 about 5% of the time — not ~10%
+(Bartlett NW, persistent feature), and not ~0% (an average of sub-series t's,
+fast-changing feature: real signals of that kind could never pass)."""
 import numpy as np
 import pytest
 
 
-def _null_ic(seed, T=1200, N=30, h=7):
-    """Daily cross-sectional rank IC of a persistent feature (per-coin random
-    walk) against independent next-h-day returns: overlapping labels, no signal."""
+def _null_ic(seed, T=1200, N=30, h=7, persistent=True):
+    """Daily cross-sectional rank IC of a feature — persistent (per-coin random
+    walk) or redrawn daily — against independent next-h-day returns:
+    overlapping labels, no signal."""
     rng = np.random.default_rng(seed)
-    X = np.cumsum(rng.normal(size=(T, N)), axis=0)
+    X = rng.normal(size=(T, N))
+    if persistent:
+        X = np.cumsum(X, axis=0)
     c = np.vstack([np.zeros((1, N)), np.cumsum(rng.normal(0, 0.03, (T + h, N)), axis=0)])
     Y = c[1 + h:T + 1 + h] - c[1:T + 1]
     a = X.argsort(1).argsort(1).astype(float)
@@ -18,20 +23,21 @@ def _null_ic(seed, T=1200, N=30, h=7):
     return (a * b).sum(1) / np.sqrt((a * a).sum(1) * (b * b).sum(1))
 
 
+@pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("h", [7, 30])
-def test_overlapping_ic_t_has_nominal_size_under_the_null(h, monkeypatch):
+def test_overlapping_ic_t_has_nominal_size_under_the_null(h, persistent, monkeypatch):
     from app.engine import screen as S
     from app.ml import evaluate as Ev
     monkeypatch.setattr(S, "ic_series", lambda X, Y, mask=None: X[:, 0])   # feed ICs as-is
     t_screen, t_eval = [], []
     for seed in range(600):
-        ic = _null_ic(seed, h=h)
+        ic = _null_ic(seed, h=h, persistent=persistent)
         t_screen.append(S._verdict(ic, h, 2.0)["t"])
         one = np.ones((len(ic), 1), bool)
         t_eval.append(Ev.ranking(ic[:, None], one * 0.0, one, one * 0.0, h=h)["ic_t"])
     for ts in (t_screen, t_eval):
         rate = float(np.mean(np.abs(np.array(ts, dtype=float)) >= 2))
-        assert rate <= 0.07, rate            # NW with h lags on the daily series: ~0.09-0.12
+        assert 0.025 <= rate <= 0.075, rate
 
 
 def test_overlap_tstat_gives_no_verdict_without_enough_independent_data():

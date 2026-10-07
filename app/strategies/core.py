@@ -425,7 +425,8 @@ class CoreBook:
                 px[a] = p
         off = [a for a in target
                if (target[a] == 0 and actual[a] > 0.01) or (target[a] > 0 and actual[a] == 0)
-               or (target[a] > 0 and abs(actual[a] - target[a]) > DRIFT_BAND * target[a] + 0.02)]
+               or (target[a] > 0 and abs(actual[a] - target[a]) > DRIFT_BAND * target[a] + 0.02)
+               or (a not in px and (target[a] > 0 or actual[a] > 0))]      # can't trade it
         self.off_target_days = self.off_target_days + 1 if off else 0
         self.tracking.append({"day": day, "actual": actual, "target": target, "px": px,
                               "off_target": off})

@@ -3,8 +3,7 @@ actually tells us, so decisions wait for evidence and no longer.
 
   newey_west_var       long-run variance of a series (overlap / autocorrelation)
   overlap_tstat        t of a mean over overlapping h-day labels (the screen's
-                       and the ML evaluation's IC t), from non-overlapping
-                       sub-series
+                       and the ML evaluation's IC t), Hansen-Hodrick
   paired_sequential    challenger vs champion on the SAME days: is the
                        difference real? An always-valid (mixture SPRT) test,
                        so it can be checked every day without inflating the
@@ -57,21 +56,28 @@ def nw_tstat(x, lags=None):
     return float(x.mean() / math.sqrt(v / n)) if v > 0 else float("nan")
 
 
-def overlap_tstat(x, h, lags=0, min_obs=20):
+def overlap_tstat(x, h, min_obs=20):
     """t-statistic of the mean of a daily series built on overlapping h-day
-    labels (e.g. daily ICs of next-h-day returns): the mean of the t-stats of
-    the h non-overlapping offset sub-series x[o::h] (their labels don't
-    overlap, so no lag is needed). (Bartlett NW with h lags on the daily
-    series missed ~30% of the overlap's long-run variance: a null feature
-    passed |t| >= 2 about twice as often as it should.) NaN — no verdict —
-    with fewer than `min_obs` non-overlapping observations, where a normal
-    critical value would still over-reject. NaNs are dropped per sub-series."""
+    labels (e.g. daily ICs of next-h-day returns), Hansen-Hodrick: under no
+    predictability the series is MA(h-1), so its long-run variance is the
+    variance plus the first h-1 autocovariances, unweighted; n / (n - 2h + 1)
+    corrects the bias of demeaning. Bartlett NW with h lags missed ~30% of it
+    for a persistent feature (a null passed |t| >= 2 ~10% of the time);
+    averaging the t's of the h non-overlapping sub-series fit only a
+    persistent feature and shrank the t of one that changes within h days
+    by up to sqrt(h). Simulated size at |t| >= 2: ~5% from 60 non-overlapping
+    observations, 6-9% at 20-40. NaN — no verdict — below `min_obs`
+    non-overlapping observations or on a non-positive variance. Missing days
+    count as zero deviations, so lags stay in days."""
     x = np.asarray(x, dtype=float)
-    h = max(1, int(h))
-    if np.isfinite(x).sum() / h < min_obs:
+    ok = np.isfinite(x)
+    n, h = int(ok.sum()), max(1, int(h))
+    if n / h < min_obs:
         return float("nan")
-    ts = [t for t in (nw_tstat(x[o::h], lags) for o in range(h)) if t == t]
-    return float(np.mean(ts)) if ts else float("nan")
+    mu = float(x[ok].mean())
+    d = np.where(ok, x - mu, 0.0)
+    v = (d @ d + 2 * sum(float(d[k:] @ d[:-k]) for k in range(1, h))) / (n - 2 * h + 1)
+    return mu / math.sqrt(v / n) if v > 0 else float("nan")
 
 
 def msprt_lr(z, n, c):

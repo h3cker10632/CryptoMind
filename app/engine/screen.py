@@ -13,8 +13,8 @@ building, backtesting and forward-tracking a strategy for each.
   time_series      one asset (e.g. BTC) against a market-wide series such as
                    Fear & Greed: correlation with the next-h-day return.
 
-Both compute t from the h non-overlapping every-h-th-day sub-series
-(overlapping h-day labels are not independent; evidence.overlap_tstat),
+Both compute a Hansen-Hodrick t (overlapping h-day labels are not
+independent; evidence.overlap_tstat),
 report each half separately, and a feature PASSES only with |t| >= `min_t`
 and the same sign in both halves. Across a batch, p-values are Holm-adjusted
 for the number of features tried.

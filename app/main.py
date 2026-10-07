@@ -964,7 +964,7 @@ def research_candidates():
     champ, champ_cfg = C.champion()
     cands = dict(C.candidates(), **{champ: champ_cfg})     # what the champion really trades
     return {"champion": champ,
-            "candidates": {n: {"config": cfg, "queued": n in queued,
+            "candidates": {n: {"config": cfg, "queued": n in queued and not queued[n].get("removed"),
                                "registered_day": (st.get(n) or {}).get("registered_day"),
                                "retired": (st.get(n) or {}).get("retired")}
                            for n, cfg in cands.items()}}
