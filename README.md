@@ -98,7 +98,7 @@ one's `state.json` and database, even if it fails to bind the port.
 | Supervisor (Linux/macOS) | `bash run.sh` | Loops `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000` and relaunches 2 s after any exit, so code changes are picked up on restart. **Ctrl+C restarts it** — press Ctrl+C twice within 2 s, or use the dashboard's *Kill server*. Port and host are fixed in the script. |
 | Supervisor (Windows) | `.\run.ps1` (PowerShell) | Same loop. If scripts are blocked: `powershell -ExecutionPolicy Bypass -File .\run.ps1`. |
 | systemd (Linux server) | `deploy/cryptomind.service` | Expects the code in `/opt/cryptomind` with a venv in `/opt/cryptomind/.venv`, user `cryptomind`, optional env file `/etc/cryptomind.env` (chmod 600). Install: `sudo cp deploy/cryptomind.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now cryptomind`. Logs: `journalctl -u cryptomind -f`. The unit can only write inside `/opt/cryptomind`. |
-| Docker | `export CRYPTOMIND_API_TOKEN=$(openssl rand -base64 32)` then `docker compose up -d` | Port bound to `127.0.0.1:8000` only; the token is required for every control action, and the dashboard's buttons can't send it (see [Remote access](#remote-access-and-the-api-token)). Read [Docker notes](#docker-notes) before upgrading. |
+| Docker | `export CRYPTOMIND_API_TOKEN=$(openssl rand -base64 32)` then `docker compose up -d` | Port bound to `127.0.0.1:8000` only; the token is required for every control action (see [Remote access](#remote-access-and-the-api-token)). Read [Docker notes](#docker-notes) before upgrading. |
 
 **Dashboard buttons.** *Restart server* saves state and relaunches with the
 current code: under `run.sh` / `run.ps1` / systemd the supervisor restarts it;
@@ -150,9 +150,10 @@ kept across a plain stop.
 ## Configure
 
 **Settings** (`GET/POST /api/settings`, also the dashboard's ⚙️ Settings; saved
-in `settings.json`, secrets in `.secrets.json`, shown masked). Booleans must be
-JSON `true` / `false` — the string `"false"` is read as **true**. Numbers are
-clamped to their range; unknown keys and invalid choices are ignored silently.
+in `settings.json`, secrets in `.secrets.json`, shown masked). Booleans may be JSON
+`true` / `false` or the strings `"true"` / `"false"` / `"on"` / `"off"`. Numbers
+are clamped to their range; unknown keys and invalid choices are ignored
+silently.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -192,27 +193,25 @@ halt). Others: `risk_per_trade` 0.0075, `max_open_positions` 4,
 
 ### Remote access and the API token
 
-Reading (every `GET`) is open. Changing state — `/api/control/*`,
-`/api/settings`, `/api/tunables`, `/api/alerts/config`, `/api/alerts/test`,
-`/api/portfolio/migration` — needs the token unless the request comes from the
-same machine (and `CRYPTOMIND_ALLOW_LOOPBACK` is not `0`).
+Reading (every `GET`) is open. **Every** state-changing call (`POST` / `PUT` /
+`DELETE` / `PATCH` under `/api/`) needs the token unless the request comes from
+the same machine (and `CRYPTOMIND_ALLOW_LOOPBACK` is not `0`). That includes
+`/api/ingest/push`: an external signal producer must send the token header.
 
 - The token is `CRYPTOMIND_API_TOKEN`, or else the text in `api_token.txt`
   (created on first start). Send it as `Authorization: Bearer <token>`,
   `X-API-Token: <token>` or `?token=<token>`:
   `curl -X POST -H "Authorization: Bearer $(cat api_token.txt)" http://HOST:8000/api/control/pause`
-- **The dashboard on this branch never sends the token**, so from another
-  machine (or under Docker) its buttons fail with 401. Use an SSH tunnel —
-  `ssh -L 8000:127.0.0.1:8000 you@host`, then http://localhost:8000 — or have
-  your reverse proxy add the `Authorization` header.
+- **Dashboard from another machine:** open `http://HOST:8000/?token=<token>`
+  once — the page stores it in the browser (it also asks for it on the first
+  401). Or tunnel: `ssh -L 8000:127.0.0.1:8000 you@host`, then use
+  http://localhost:8000.
 - **Behind a reverse proxy on the same machine,** set
   `CRYPTOMIND_ALLOW_LOOPBACK=0` unless the proxy sends `X-Forwarded-For`:
   otherwise proxied requests look local and skip the token.
 - `GET /api/security` shows whether your request would be authorized.
-- Not every write is protected: `POST /api/polymarket/{start,stop,tick,reset}`,
-  `/api/research/*`, `/api/ingest/*`, `/api/invo/*`, `/api/ml/autotrain/run`
-  need no token, and all reads (including `GET /api/export`) are open. Don't
-  expose the port to an untrusted network; front it with a TLS reverse proxy.
+- Don't expose the port to an untrusted network; front it with a TLS reverse
+  proxy.
 
 ## Operate
 
@@ -252,18 +251,14 @@ redirect the database and settings files to a temp folder.
 
 ### Docker notes
 
-- `docker-compose.yml` mounts its volume over the **whole `/app` folder**, code
-  included. After the first start, a rebuilt image's new code is hidden by the
-  old copy in the volume — `docker compose up -d --build` keeps running the old
-  version. To upgrade: copy your state out
-  (`docker compose cp cryptomind:/app/state.json .` and likewise
-  `cryptomind.db`, `settings.json`, `tunables.json`, `alerts.json`,
-  `api_token.txt`), `docker compose down -v`, `docker compose up -d --build`,
-  copy the files back with `docker compose cp`, then `docker compose restart`.
-- Plain `docker run` without that volume loses all state when the container is
-  removed (the Dockerfile's `VOLUME /app/data` is unused).
-- `.dockerignore` does not exclude `.secrets.json` or `llm_key.txt`: build from
-  a clean checkout, or they end up inside the image.
+- The volume holds the whole `/app` folder (state files live next to the code).
+  The image keeps its code in `/src` and copies it over `/app` on every start,
+  so `git pull && docker compose up -d --build` upgrades the code and keeps
+  your state. Plain `docker run` gets an anonymous volume at `/app`; give it a
+  name (`-v cryptomind-data:/app`) to keep state when the container is removed.
+- Runtime data and secrets (`state.json`, the database, `.secrets.json`,
+  `llm_key.txt`, `reports/`, `.cache/`, …) are excluded from the image by
+  `.dockerignore`.
 - No token in the environment? `docker compose exec cryptomind cat /app/api_token.txt`.
 - The container health check only tests that the web server answers; it stays
   green while the price feed is down.
@@ -383,9 +378,9 @@ raise `evolve_every_sec` (GA, default 1200 s), turn off `researcher_enabled`,
 ### Dashboard problems
 
 - **Buttons do nothing / `401 unauthorized`**: you are not on the same machine
-  (or `CRYPTOMIND_ALLOW_LOOPBACK=0`, as under Docker). This dashboard can't
-  send the token — use an SSH tunnel or a proxy that adds it (see
-  [Remote access](#remote-access-and-the-api-token)).
+  (or `CRYPTOMIND_ALLOW_LOOPBACK=0`, as under Docker). Open
+  `http://HOST:8000/?token=<token>` once, or enter the token when asked. A
+  wrong token is forgotten on the next 401.
 - **Can't reach it from another device**: started with `--host 127.0.0.1`
   (default), a firewall, or Docker's `127.0.0.1:8000` binding. Prefer an SSH
   tunnel over opening the port.

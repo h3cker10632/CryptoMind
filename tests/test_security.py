@@ -33,3 +33,20 @@ def test_wrong_token_denied():
     os.environ["CRYPTOMIND_ALLOW_LOOPBACK"] = "0"
     assert security.check(_Req("203.0.113.9",
                               headers={"authorization": "Bearer nope"})) is False
+
+
+def test_settings_never_leak_secrets_and_read_false_strings_as_false(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import db, export, main, settings
+    monkeypatch.setattr(settings, "SECRETS_PATH", str(tmp_path / ".secrets.json"))
+    monkeypatch.setattr(settings, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(settings, "_settings", None)   # restored after: no key leaks to other tests
+    settings.update({"llm_api_key": "sk-test-secret", "allow_shorts": "false"})
+    assert settings.get("allow_shorts") is False
+    os.environ["CRYPTOMIND_ALLOW_LOOPBACK"] = "1"
+    r = TestClient(main.app, client=("127.0.0.1", 5000)).post(
+        "/api/settings", json={"llm_api_key": "sk-test-secret2"})
+    assert "sk-test-secret" not in r.text
+    db.flush()
+    assert "sk-test-secret" not in str(db.recent("events", 50))
+    assert "sk-test-secret" not in str(export.build_export(history_limit=5)["settings"])

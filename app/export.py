@@ -383,7 +383,7 @@ def build_export(history_limit=1000, include_features=True, include_analytics=Tr
     out["db_counts"] = _safe(db.learning_counts)
 
     # ---- config surfaces
-    out["settings"] = _safe(app_settings.load)
+    out["settings"] = _safe(app_settings.public)
     out["tunables"] = _safe(lambda: {"meta": tunables.TUNABLES,
                                      "values": tunables.values()})
     out["alerts"] = _safe(alerts.status)

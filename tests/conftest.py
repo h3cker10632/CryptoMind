@@ -23,4 +23,5 @@ _tunables._overrides = None
 # advisor toggle) never touch the real settings.json at the repo root.
 import app.settings as _settings
 _settings.SETTINGS_PATH = os.path.join(_tmp, "settings.json")
+_settings.SECRETS_PATH = os.path.join(_tmp, ".secrets.json")
 _settings._settings = None

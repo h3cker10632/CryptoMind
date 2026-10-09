@@ -78,10 +78,9 @@ def check(request: Request) -> bool:
     return hmac.compare_digest(presented, token())
 
 
-# paths that mutate state / touch secrets — everything else is read-only
-_PROTECTED_PREFIXES = ("/api/control/", "/api/settings", "/api/tunables",
-                       "/api/alerts/config", "/api/alerts/test",
-                       "/api/portfolio/migration")
+# every state-changing API call (a prefix allow-list kept missing new routes:
+# polymarket reset, ingest push, research run, ...); reads stay open
+_PROTECTED_PREFIXES = ("/api/",)
 
 
 async def auth_middleware(request: Request, call_next):

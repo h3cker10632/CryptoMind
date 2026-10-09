@@ -15,3 +15,13 @@ api_token.txt
 relaunch.log
 .pytest_cache/
 .ruff_cache/
+# runtime data and secrets: never bake them into the image
+.secrets.json
+llm_key.txt
+.env
+reports/
+.cache/
+backups/
+model_artifact/
+discovered_strategies.json
+external_signals.jsonl
