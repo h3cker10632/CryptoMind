@@ -507,6 +507,8 @@ def _coerce(key, v):
         return _coerce_float(key, v)
     if key in INT_KEYS:
         return _coerce_int(key, v)
+    if isinstance(v, str):                 # "false" / "0" / "off" -> False
+        return v.strip().lower() in ("1", "true", "yes", "on")
     return bool(v)
 
 

@@ -245,7 +245,7 @@ class Orchestrator:
                     if drift:
                         from .alerts import alert
                         db.log_event("warn", f"CORE tracking: {drift}")
-                        alert("warn", "Core off its champion", drift)
+                        alert("warning", "Core off its champion", drift)
             except Exception as e:
                 db.log_event("error", f"core loop failed: {e}")
             await asyncio.sleep(3600)

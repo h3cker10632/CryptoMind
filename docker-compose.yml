@@ -23,7 +23,7 @@ services:
       # optional real sentiment model (requires transformers+torch in image):
       # - CRYPTOMIND_SENTIMENT_MODEL=ElKulako/cryptobert
     volumes:
-      - cryptomind-data:/app         # persist state.json / db / tunables
+      - cryptomind-data:/app         # state lives here; the image's code is copied over it on start
     logging:
       driver: json-file
       options:

@@ -140,8 +140,9 @@ def test_migration_bootstrap_does_not_touch_risk_kill_halt_state():
 def test_portfolio_migration_prefix_is_authenticated():
     from app import security
 
-    assert any(p.startswith("/api/portfolio/migration")
-              for p in security._PROTECTED_PREFIXES)
+    for path in ("/api/portfolio/migration/confirm", "/api/polymarket/reset",
+                 "/api/ingest/push", "/api/research/run", "/api/ml/autotrain/run"):
+        assert any(path.startswith(p) for p in security._PROTECTED_PREFIXES), path
 
 
 def test_entries_enabled_requires_running_and_portfolio_ready(monkeypatch):

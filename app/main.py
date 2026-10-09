@@ -648,9 +648,11 @@ def get_settings():
 @app.post("/api/settings")
 async def set_settings(request: Request):
     changes = await request.json()
-    updated = app_settings.update(changes)
-    db.log_event("system", f"Settings updated: {changes}", updated)
-    return updated
+    app_settings.update(changes)
+    shown = {k: (app_settings.MASK if k in app_settings.SECRET_KEYS else v)
+             for k, v in changes.items()}
+    db.log_event("system", f"Settings updated: {shown}")
+    return app_settings.public()
 
 
 @app.get("/api/invo/status")

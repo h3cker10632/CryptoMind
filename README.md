@@ -207,9 +207,10 @@ curl -X POST $S -H 'Content-Type: application/json' -d '{"hourly_bot_mode": "on"
 curl -X POST http://127.0.0.1:8000/api/polymarket/start
 ```
 
-`GET /api/settings` shows every current value. Booleans must be sent as JSON
-`true` / `false`: the string `"false"` is read as **true**. Numbers are clamped
-to their allowed range; unknown keys and invalid choices are silently ignored.
+`GET /api/settings` shows every current value. Booleans may be JSON
+`true` / `false` or the strings `"true"` / `"false"` / `"on"` / `"off"`.
+Numbers are clamped to their allowed range; unknown keys and invalid choices are
+silently ignored.
 
 ## Configure
 
@@ -261,10 +262,10 @@ halt). Others: `risk_per_trade`, `max_open_positions` 4, `max_gross_exposure`
 
 ### Remote access and the API token
 
-Reading (every `GET`) is open. Changing state — `/api/control/*`,
-`/api/settings`, `/api/tunables`, `/api/alerts/config`, `/api/alerts/test`,
-`/api/portfolio/migration` — needs the token unless the request comes from the
-same machine (and `CRYPTOMIND_ALLOW_LOOPBACK` is not `0`).
+Reading (every `GET`) is open. **Every** state-changing call (`POST` / `PUT` /
+`DELETE` / `PATCH` under `/api/`) needs the token unless the request comes from
+the same machine (and `CRYPTOMIND_ALLOW_LOOPBACK` is not `0`). That includes
+`/api/ingest/push`: an external signal producer must send the token header.
 
 - The token is `CRYPTOMIND_API_TOKEN`, or else the text in `api_token.txt`
   (created on first start). Send it as `Authorization: Bearer <token>`,
@@ -278,13 +279,10 @@ same machine (and `CRYPTOMIND_ALLOW_LOOPBACK` is not `0`).
   `CRYPTOMIND_ALLOW_LOOPBACK=0`: proxied requests arrive from 127.0.0.1 and
   would otherwise skip the token unless the proxy sends `X-Forwarded-For`.
 - `GET /api/security` shows whether your request would be authorized.
-- Not every write is protected: `POST /api/polymarket/{start,stop,tick,reset}`,
-  `/api/research/*`, `/api/ingest/*`, `/api/invo/*`, `/api/ml/autotrain/run`
-  need no token. Don't expose the port to an untrusted network; front it with a
-  TLS reverse proxy.
-- `GET /api/export` and the auto-export reports in `reports/` contain saved
-  secrets (e.g. the LLM key) in plain text, and a settings change is echoed into
-  the event log. Treat `reports/`, exports and `/api/events` as sensitive.
+- Don't expose the port to an untrusted network; front it with a TLS reverse
+  proxy.
+- Saved secrets (LLM key, wallet key, tokens) are masked in `GET /api/settings`,
+  `GET /api/export`, the auto-export reports and the event log.
 
 ## Operate
 
@@ -338,20 +336,14 @@ them in a separate checkout if this one holds live data.
 
 ### Docker notes
 
-- `docker-compose.yml` mounts its volume over the **whole `/app` folder**, code
-  included. After the first start, a rebuilt image's new code is hidden by the
-  old copy in the volume — `docker compose up -d --build` keeps running the old
-  version. To upgrade: copy your state out
-  (`docker compose cp cryptomind:/app/state.json .` and likewise
-  `cryptomind.db`, `settings.json`, `tunables.json`, `alerts.json`,
-  `api_token.txt`, `reports`, `.cache/store`), `docker compose down -v`,
-  `docker compose up -d --build`, copy the files back with `docker compose cp`,
-  then `docker compose restart`.
-- Plain `docker run` without that volume loses all state when the container is
-  removed (the Dockerfile's `VOLUME /app/data` is unused — nothing is written
-  there).
-- `.dockerignore` does not exclude `.secrets.json`, `llm_key.txt`, `reports/` or
-  `.cache/`: build from a clean checkout, or those end up inside the image.
+- The volume holds the whole `/app` folder (state files live next to the code).
+  The image keeps its code in `/src` and copies it over `/app` on every start,
+  so `git pull && docker compose up -d --build` upgrades the code and keeps
+  your state. Plain `docker run` gets an anonymous volume at `/app`; give it a
+  name (`-v cryptomind-data:/app`) to keep state when the container is removed.
+- Runtime data and secrets (`state.json`, the database, `.secrets.json`,
+  `llm_key.txt`, `reports/`, `.cache/`, …) are excluded from the image by
+  `.dockerignore`.
 - No token in the environment? Read the generated one:
   `docker compose exec cryptomind cat /app/api_token.txt`.
 - The container health check only tests that the web server answers; it stays
@@ -496,8 +488,7 @@ That is usually the design, not a fault — each sleeve has its own exit rule:
 - Configure Telegram / webhook in the 🔔 panel or `POST /api/alerts/config`,
   then `POST /api/alerts/test`. Failures log `Telegram send failed: …`.
 - Only alerts at or above `push_level` (default `warning`) are pushed; the same
-  title is sent at most once per 15 minutes. `Core off its champion` is sent at
-  info level today — set `push_level` to `info` to receive it.
+  title is sent at most once per 15 minutes. `Core off its champion` is a warning.
 - `Market data feed DOWN` fires only when a working feed fails, not when it
   never came up.
 
