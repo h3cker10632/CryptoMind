@@ -14,6 +14,7 @@ class MarketData:
         self.candles = {p: [] for p in PRODUCTS}   # [ts, low, high, open, close, volume]
         self.tickers = {}                          # product -> {price, bid, ask, ts}
         self.books = {}                            # product -> {bid_depth, ask_depth, imbalance, spread_bps}
+        self._failing = set()                      # products skipped on the last pass
         self.last_update = 0.0
         self.healthy = False
 
@@ -49,16 +50,38 @@ class MarketData:
             "spread_bps": spread_bps,
         }
 
+    async def refresh_all(self, client):
+        """One pass over the universe (dynamic: PRODUCTS changes). A coin that
+        fails — a 429, a 404 on a newly discovered coin, a timeout — is skipped
+        this pass instead of failing the whole feed; once its price is stale it
+        is dropped, so it is never traded blind. Raises only when most coins
+        fail (then the feed really is down)."""
+        failed = {}
+        for p in list(PRODUCTS):
+            if p not in self.candles:
+                self.candles[p] = []
+                db.log_event("data", f"Market feed tracking new asset: {p}")
+            try:
+                await self.refresh_product(client, p)
+            except Exception as e:
+                failed[p] = e
+                t = self.tickers.get(p)
+                if t and time.time() - t.get("ts", 0) > 3 * MARKET_POLL_SEC:
+                    self.tickers.pop(p, None)
+                if "429" in str(e):
+                    await asyncio.sleep(2)            # rate-limited: back off
+            await asyncio.sleep(0.25)                 # be polite / rate limits
+        if len(failed) * 2 > len(PRODUCTS):
+            raise next(iter(failed.values()))
+        for p in set(failed) - self._failing:         # log each coin once, not every 30 s
+            db.log_event("warn", f"Market data: skipping {p} until it recovers ({failed[p]})")
+        self._failing = set(failed)
+
     async def run(self):
         async with httpx.AsyncClient(headers={"User-Agent": "CryptoMind/1.0"}) as client:
             while True:
                 try:
-                    for p in list(PRODUCTS):          # dynamic universe
-                        if p not in self.candles:
-                            self.candles[p] = []
-                            db.log_event("data", f"Market feed tracking new asset: {p}")
-                        await self.refresh_product(client, p)
-                        await asyncio.sleep(0.25)  # be polite / rate limits
+                    await self.refresh_all(client)
                     # drop assets pruned from the universe (keep no stale state)
                     for p in list(self.candles):
                         if p not in PRODUCTS:

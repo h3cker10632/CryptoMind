@@ -301,8 +301,9 @@ Work down this list — the first match is usually it:
    30 s. Check that the machine can reach `api.exchange.coinbase.com`
    (`curl -sI https://api.exchange.coinbase.com/products/BTC-USD/ticker`), its
    clock, any proxy or firewall. A feed that never came up raises no
-   "feed DOWN" alert — only those log lines. One failing coin fails the whole
-   price cycle.
+   "feed DOWN" alert — only those log lines. A single coin that fails (e.g. a
+   `429 Too Many Requests` on a newly discovered coin) is only skipped —
+   `Market data: skipping X until it recovers` — and doesn't take the feed down.
 3. **Safe mode** (`🟡 SAFE MODE engaged — …`): the feed is unhealthy, prices
    are older than 3 minutes, or the decision loop failed 4 times in a row. It
    clears by itself 2 minutes after the cause goes away.
